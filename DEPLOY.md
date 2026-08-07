@@ -5,9 +5,14 @@
 
 Все команды выполняются на самом Pi — по SSH или с подключённой клавиатурой.
 
+> **Выполняйте команды по одной, дожидаясь завершения каждой.** Если вставить
+> в терминал несколько строк сразу, следующая команда попадёт в буфер, пока
+> предыдущая ещё работает, и будет потеряна — а установка продолжится с
+> пропущенным шагом, что выяснится позже и не очевидным образом.
+
 > **Проверено на Windows, не на Pi.** Конфигурации написаны по документации,
-> но на живом устройстве не обкатывались. При первом развёртывании что-то
-> может потребовать правки — раздел «Если что-то не работает» в конце.
+> но на живом устройстве обкатываются впервые. Раздел «Если что-то не
+> работает» — в конце.
 
 ---
 
@@ -38,18 +43,27 @@ UPS, дающий пару минут, позволяет корректно з�
 
 ## 2. Подготовка системы
 
+Обновите систему:
+
 ```bash
 sudo apt update && sudo apt upgrade -y
+```
+
+Установите пакеты:
+
+```bash
 sudo apt install -y python3-venv python3-pip nginx git sqlite3
 ```
 
-Создайте отдельного пользователя для приложения — работать от `root` или
-от вашей учётной записи не нужно:
+Создайте пользователя для приложения — работать от `root` или от вашей
+учётной записи не нужно:
 
 ```bash
 sudo useradd --system --home-dir /opt/lifteam --shell /bin/bash lifteam
-sudo mkdir -p /opt/lifteam
-sudo chown lifteam:lifteam /opt/lifteam
+```
+
+```bash
+sudo mkdir -p /opt/lifteam && sudo chown lifteam:lifteam /opt/lifteam
 ```
 
 Каталог создаётся отдельно, без `--create-home`: иначе `useradd` положит
@@ -62,10 +76,23 @@ sudo chown lifteam:lifteam /opt/lifteam
 
 ```bash
 sudo -u lifteam git clone https://github.com/yachtsman13/Lifteam.git /opt/lifteam
-cd /opt/lifteam
+```
 
+```bash
+cd /opt/lifteam
+```
+
+```bash
 sudo -u lifteam python3 -m venv venv
+```
+
+```bash
 sudo -u lifteam venv/bin/pip install --upgrade pip
+```
+
+Установка зависимостей — самый долгий шаг, несколько минут:
+
+```bash
 sudo -u lifteam venv/bin/pip install -r requirements-pi.txt
 ```
 
@@ -83,11 +110,13 @@ sudo -u lifteam venv/bin/pip install -r requirements-pi.txt
 sudo -u lifteam venv/bin/python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 ```
 
-Создайте файл `/opt/lifteam/.env`:
+Скопируйте полученную строку и создайте файл `.env`:
 
 ```bash
 sudo -u lifteam nano /opt/lifteam/.env
 ```
+
+Содержимое:
 
 ```ini
 SECRET_KEY=сюда-вставить-сгенерированный-ключ
@@ -98,42 +127,52 @@ TIME_ZONE=Europe/Moscow
 
 В `ALLOWED_HOSTS` перечислите адреса, по которым будете открывать приложение:
 локальный IP Pi в офисной сети и имя устройства в Tailscale (появится
-после шага 7). Если адрес не указан, Django ответит `400 Bad Request` —
-это не ошибка, а защита от подмены заголовка `Host`.
+на шаге 7). Если адрес не указан, Django ответит `400 Bad Request` — это
+не ошибка, а защита от подмены заголовка `Host`.
+
+Сохранить в nano: `Ctrl+O`, `Enter`, затем `Ctrl+X`.
 
 Закройте файл от посторонних — в нём ключ приложения:
 
 ```bash
-sudo chmod 600 /opt/lifteam/.env
-sudo chown lifteam:lifteam /opt/lifteam/.env
+sudo chmod 600 /opt/lifteam/.env && sudo chown lifteam:lifteam /opt/lifteam/.env
 ```
 
 ---
 
-## 5. База данных и первый запуск
+## 5. База данных и администратор
 
 ```bash
 cd /opt/lifteam
+```
 
+```bash
 sudo -u lifteam venv/bin/python manage.py migrate --settings=lifteam.settings_pi
+```
+
+```bash
 sudo -u lifteam venv/bin/python manage.py init_cells --settings=lifteam.settings_pi
+```
+
+```bash
 sudo -u lifteam venv/bin/python manage.py collectstatic --noinput --settings=lifteam.settings_pi
 ```
 
 Флаг `--settings` указывается в каждой команде намеренно. `sudo` по умолчанию
 очищает переменные окружения, поэтому заданный заранее `DJANGO_SETTINGS_MODULE`
 до приложения не дойдёт, и команда молча выполнится с настройками для
-разработки — с `DEBUG=True` и несобранной статикой.
+разработки — с `DEBUG=True`.
 
 Создайте администратора:
 
 ```bash
-sudo -u lifteam venv/bin/python manage.py create_admin \
-    --username admin --name "Администратор" --password "временный-пароль" \
-    --settings=lifteam.settings_pi
+sudo -u lifteam venv/bin/python manage.py create_admin --username admin --name "Администратор" --password "временный" --settings=lifteam.settings_pi
+```
 
-# и сразу задайте настоящий пароль — интерактивно, чтобы он не попал
-# в историю команд оболочки
+Сразу задайте настоящий пароль — интерактивно, чтобы он не попал в историю
+команд оболочки:
+
+```bash
 sudo -u lifteam venv/bin/python manage.py changepassword admin --settings=lifteam.settings_pi
 ```
 
@@ -145,24 +184,52 @@ sudo -u lifteam venv/bin/python manage.py changepassword admin --settings=liftea
 ## 6. Автозапуск и веб-сервер
 
 ```bash
-# Приложение
 sudo cp /opt/lifteam/deploy/lifteam.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now lifteam
-sudo systemctl status lifteam
+```
 
-# nginx
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo systemctl enable --now lifteam
+```
+
+```bash
+sudo systemctl status lifteam
+```
+
+Должно быть `active (running)`. Выйти из просмотра — `q`.
+
+Теперь nginx:
+
+```bash
 sudo cp /opt/lifteam/deploy/nginx-lifteam.conf /etc/nginx/sites-available/lifteam
+```
+
+```bash
 sudo ln -sf /etc/nginx/sites-available/lifteam /etc/nginx/sites-enabled/lifteam
+```
+
+```bash
 sudo rm -f /etc/nginx/sites-enabled/default
+```
+
+```bash
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Проверьте с любого компьютера в офисной сети: `http://192.168.1.50`
-(подставьте IP вашего Pi, узнать — `hostname -I`).
+Узнайте адрес Pi:
 
-Рекомендую закрепить за Pi постоянный адрес в настройках роутера Xiaomi,
-иначе после перезагрузки он сменится и перестанет совпадать с `ALLOWED_HOSTS`.
+```bash
+hostname -I
+```
+
+Откройте `http://<этот-адрес>` с любого компьютера в офисной сети —
+появится страница входа.
+
+Закрепите за Pi постоянный адрес в настройках роутера Xiaomi, иначе после
+перезагрузки он сменится и перестанет совпадать с `ALLOWED_HOSTS`.
 
 ---
 
@@ -177,24 +244,30 @@ Tailscale: это VPN на базе WireGuard, который сам устан�
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+```bash
 sudo tailscale up
 ```
 
 Команда покажет ссылку — откройте её в браузере и войдите в учётную запись.
-После подключения посмотрите выданное имя устройства:
+Затем посмотрите выданное имя устройства:
 
 ```bash
 tailscale status
 ```
 
-Имя вида `lifteam.ваша-сеть.ts.net` впишите в `ALLOWED_HOSTS` в `.env`
-и перезапустите приложение:
+Имя вида `lifteam.ваша-сеть.ts.net` добавьте в `ALLOWED_HOSTS` в файле `.env`:
+
+```bash
+sudo -u lifteam nano /opt/lifteam/.env
+```
 
 ```bash
 sudo systemctl restart lifteam
 ```
 
-Чтобы авторизация не истекала каждые несколько месяцев, отключите срок
+Чтобы авторизация не истекала через несколько месяцев, отключите срок
 действия ключа для этого устройства в панели управления Tailscale
 (Machines → устройство → Disable key expiry).
 
@@ -229,11 +302,23 @@ sudo systemctl restart lifteam
 
 ```bash
 sudo cp /opt/lifteam/deploy/lifteam-backup.service /etc/systemd/system/
-sudo cp /opt/lifteam/deploy/lifteam-backup.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now lifteam-backup.timer
+```
 
-# проверить, что расписание встало
+```bash
+sudo cp /opt/lifteam/deploy/lifteam-backup.timer /etc/systemd/system/
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo systemctl enable --now lifteam-backup.timer
+```
+
+Проверьте, что расписание встало:
+
+```bash
 systemctl list-timers lifteam-backup.timer
 ```
 
@@ -241,36 +326,52 @@ systemctl list-timers lifteam-backup.timer
 
 ```bash
 sudo systemctl start lifteam-backup
+```
+
+```bash
 journalctl -u lifteam-backup -n 20
+```
+
+```bash
 ls -la /opt/lifteam/backups/
 ```
 
 ### Копия за пределами устройства
 
 Копии в `/opt/lifteam/backups/` лежат на том же диске, что и база. От ошибки
-оператора это защищает, от отказа диска или кражи — нет. Нужна выгрузка наружу.
+оператора это защищает, от отказа диска или кражи — нет.
 
 Официального клиента Яндекс.Диска под ARM не существует, поэтому используем
 `rclone` — он умеет Яндекс.Диск и работает на Pi:
 
 ```bash
 sudo apt install -y rclone
+```
+
+```bash
 sudo -u lifteam RCLONE_CONFIG=/opt/lifteam/rclone.conf rclone config
 ```
 
 В диалоге: `n` (новый remote) → имя `yandex` → тип `yandex` → далее по
 подсказкам, авторизация через браузер.
 
-Затем включите выгрузку в `/etc/systemd/system/lifteam-backup.service` —
-раскомментируйте строку:
+Затем включите выгрузку — откройте файл службы:
+
+```bash
+sudo nano /etc/systemd/system/lifteam-backup.service
+```
+
+Раскомментируйте строку (уберите `#` в начале):
 
 ```ini
 Environment=LIFTEAM_RCLONE_REMOTE=yandex:LiftTeam/backups
 ```
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl start lifteam-backup
+sudo systemctl daemon-reload && sudo systemctl start lifteam-backup
+```
+
+```bash
 journalctl -u lifteam-backup -n 20
 ```
 
@@ -280,28 +381,39 @@ journalctl -u lifteam-backup -n 20
 ### Проверка восстановления
 
 Бэкап, который ни разу не разворачивали, — это не бэкап, а надежда.
-Проверьте хотя бы раз, а потом повторяйте раз в несколько месяцев:
+Проверьте хотя бы раз, а потом повторяйте раз в несколько месяцев.
+
+Список копий:
 
 ```bash
-cd /opt/lifteam
-sudo -u lifteam venv/bin/python manage.py restore_db --list --settings=lifteam.settings_pi
+cd /opt/lifteam && sudo -u lifteam venv/bin/python manage.py restore_db --list --settings=lifteam.settings_pi
 ```
 
-Полная проверка на копии базы, без риска для рабочих данных:
+Безопасная проверка на копии, без риска для рабочих данных:
 
 ```bash
-cd /tmp
-sudo -u lifteam cp /opt/lifteam/backups/db_*.sqlite3 /tmp/test.sqlite3
+sudo cp $(ls -t /opt/lifteam/backups/db_*.sqlite3 | head -1) /tmp/test.sqlite3
+```
+
+```bash
 sqlite3 /tmp/test.sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM core_sparepart;"
+```
+
+```bash
 rm /tmp/test.sqlite3
 ```
 
-Если понадобится настоящее восстановление — остановите приложение:
+Если понадобится настоящее восстановление:
 
 ```bash
 sudo systemctl stop lifteam
-cd /opt/lifteam
-sudo -u lifteam venv/bin/python manage.py restore_db --settings=lifteam.settings_pi
+```
+
+```bash
+cd /opt/lifteam && sudo -u lifteam venv/bin/python manage.py restore_db --settings=lifteam.settings_pi
+```
+
+```bash
 sudo systemctl start lifteam
 ```
 
@@ -312,18 +424,56 @@ sudo systemctl start lifteam
 
 ## 9. Обновление
 
+Одной командой:
+
+```bash
+sudo /opt/lifteam/deploy/update.sh
+```
+
+Скрипт по порядку: делает копию базы, останавливает приложение, забирает
+изменения из GitHub, ставит зависимости, применяет миграции, пересобирает
+статику и запускает приложение обратно. В конце проверяет, что служба
+действительно поднялась.
+
+Если на каком-то шаге произойдёт ошибка, приложение останется остановленным —
+это сделано намеренно, чтобы оно не работало со схемой базы, не совпадающей
+с кодом. Скрипт выведет команды для возврата к предыдущей версии.
+
+> Скрипт `update.sh` в корне проекта для сервера не подходит: он делает
+> `git reset --hard` и на этом заканчивает — без копии базы, миграций
+> и перезапуска службы.
+
+### Вручную, если нужно по шагам
+
 ```bash
 cd /opt/lifteam
-sudo systemctl stop lifteam
+```
 
-# копия перед обновлением — если миграция пойдёт не так, будет откуда вернуться
+```bash
 sudo -u lifteam venv/bin/python manage.py backup_db --settings=lifteam.settings_pi
+```
 
+```bash
+sudo systemctl stop lifteam
+```
+
+```bash
 sudo -u lifteam git pull
-sudo -u lifteam venv/bin/pip install -r requirements-pi.txt
-sudo -u lifteam venv/bin/python manage.py migrate --settings=lifteam.settings_pi
-sudo -u lifteam venv/bin/python manage.py collectstatic --noinput --settings=lifteam.settings_pi
+```
 
+```bash
+sudo -u lifteam venv/bin/pip install -r requirements-pi.txt
+```
+
+```bash
+sudo -u lifteam venv/bin/python manage.py migrate --settings=lifteam.settings_pi
+```
+
+```bash
+sudo -u lifteam venv/bin/python manage.py collectstatic --noinput --settings=lifteam.settings_pi
+```
+
+```bash
 sudo systemctl start lifteam
 ```
 
@@ -331,12 +481,22 @@ sudo systemctl start lifteam
 
 ## 10. Если что-то не работает
 
-**Смотреть логи:**
+Логи приложения:
 
 ```bash
-journalctl -u lifteam -f              # приложение
-journalctl -u lifteam-backup -n 50    # бэкапы
-sudo tail -f /var/log/nginx/error.log # веб-сервер
+journalctl -u lifteam -f
+```
+
+Логи резервного копирования:
+
+```bash
+journalctl -u lifteam-backup -n 50
+```
+
+Логи веб-сервера:
+
+```bash
+sudo tail -f /var/log/nginx/error.log
 ```
 
 **`400 Bad Request`** — адрес, по которому вы открываете приложение, не указан
@@ -346,20 +506,31 @@ sudo tail -f /var/log/nginx/error.log # веб-сервер
 покажет причину.
 
 **Служба не стартует, ошибка про путь в `ExecStart`** — в файле оказались
-переводы строк Windows. Проверить: `file /opt/lifteam/deploy/backup.sh`
-(должно быть без «CRLF»). Исправить: `sudo sed -i 's/\r$//' /opt/lifteam/deploy/*.sh`.
+переводы строк Windows:
+
+```bash
+sudo sed -i 's/\r$//' /opt/lifteam/deploy/*.sh
+```
 
 **Остатки на складе не обновляются без перезагрузки страницы** — не проходит
 WebSocket-соединение. Проверьте, что в конфигурации nginx есть секция
-`location /ws/` с заголовками `Upgrade`, и перезагрузите: `sudo nginx -t && sudo systemctl reload nginx`.
+`location /ws/` с заголовками `Upgrade`, и перезагрузите nginx.
 
 **`database is locked`** — не должно возникать, база работает в режиме WAL.
-Если появилось, проверьте: `sqlite3 /opt/lifteam/db.sqlite3 "PRAGMA journal_mode;"`
-— ответ должен быть `wal`.
+Проверить:
 
-**Нет места на диске** — вероятно, накопились копии базы.
-Проверить: `du -sh /opt/lifteam/backups/`. Глубина хранения задаётся
-параметром `KEEP_DAYS` в `deploy/backup.sh`.
+```bash
+sqlite3 /opt/lifteam/db.sqlite3 "PRAGMA journal_mode;"
+```
+
+Ответ должен быть `wal`.
+
+**Нет места на диске** — вероятно, накопились копии базы. Глубина хранения
+задаётся параметром `KEEP_DAYS` в `deploy/backup.sh`:
+
+```bash
+du -sh /opt/lifteam/backups/
+```
 
 ---
 
