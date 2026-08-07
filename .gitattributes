@@ -7,6 +7,19 @@
 *.html text eol=lf
 *.css text eol=lf
 *.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+
+# Бинарные файлы — git не должен трогать в них переводы строк
+*.xlsx binary
+*.xls binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
 
 
 
