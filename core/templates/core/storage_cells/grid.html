@@ -1,0 +1,510 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Кассетницы — LiftTeam v2.5.8{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Убираем отступы и ограничения, чтобы сетка занимала всё доступное пространство */
+    .grid-page {
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 60px); /* минус заголовок и padding */
+        overflow: hidden;
+    }
+    .grid-toolbar {
+        flex-shrink: 0;
+        margin-bottom: 8px;
+    }
+    .grid-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        min-height: 0;
+    }
+    .grid-legend {
+        flex-shrink: 0;
+        display: flex;
+        justify-content: center;
+        gap: 14px;
+        padding: 6px 0;
+        margin-bottom: 6px;
+    }
+    .grid-legend .badge {
+        font-size: 0.95rem;
+        padding: 6px 14px;
+    }
+    .grid-scroll-area {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        min-height: 0;
+    }
+    /* Заголовок столбцов */
+    .col-header-row {
+        display: flex;
+        flex-shrink: 0;
+        margin-left: 44px; /* место под подписи рядов */
+    }
+    .col-header-cell {
+        flex: 1;
+        text-align: center;
+        font-weight: bold;
+        color: #6c757d;
+        font-size: 1rem;
+        padding: 3px 0;
+        min-width: 0;
+    }
+    /* Ряд с подписью и ячейками */
+    .grid-row-wrapper {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+    }
+    .row-label {
+        width: 44px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        color: #6c757d;
+        font-size: 1rem;
+    }
+    .grid-row {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+    }
+    .cell-item {
+        flex: 1;
+        min-width: 0;
+        border-radius: 5px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+        border: 2px solid transparent;
+        padding: 3px;
+        line-height: 1.15;
+        overflow: hidden;
+        margin: 2px;
+    }
+    .cell-item .cell-num {
+        font-size: 0.7rem;
+        opacity: 0.6;
+    }
+    .cell-item .cell-part {
+        font-size: 0.78rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+    }
+    .cell-item .cell-part-count {
+        font-size: 0.68rem;
+        opacity: 0.8;
+    }
+    .cell-item.free { background: #e9ecef; color: #6c757d; }
+    .cell-item.normal { background: #d1e7dd; color: #0f5132; }
+    .cell-item.low_stock { background: #f8d7da; color: #842029; }
+    .cell-item.selected { background: #0d6efd !important; color: #fff !important; border-color: #0a58ca; }
+    .cell-item:hover { transform: scale(1.06); box-shadow: 0 2px 10px rgba(0,0,0,0.25); z-index: 10; }
+    .cell-item.highlighted { border-color: #ffc107; box-shadow: 0 0 0 3px rgba(255,193,7,0.3); }
+    .cell-item.move-target {
+        border: 2px dashed #0d6efd !important;
+        background: #e7f1ff !important;
+        color: #0d6efd !important;
+        animation: pulse-border 1.5s infinite;
+    }
+    @keyframes pulse-border {
+        0% { border-color: #0d6efd; }
+        50% { border-color: #6ea8fe; }
+        100% { border-color: #0d6efd; }
+    }
+    .cell-info-modal .modal-body { padding: 1.75rem; font-size: 1.05rem; }
+    .cell-info-item { margin-bottom: 0.75rem; }
+    .cell-info-label { font-weight: 600; color: #6c757d; font-size: 0.95rem; }
+    .cell-info-value { font-size: 1.15rem; }
+    .cell-parts-list { border: 1px solid #dee2e6; border-radius: 6px; margin-bottom: 1rem; }
+    .cell-part-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        border-bottom: 1px solid #eee;
+        gap: 10px;
+    }
+    .cell-part-row:last-child { border-bottom: none; }
+    .cell-part-row .cell-part-info { min-width: 0; }
+    .cell-part-row .cell-part-info .name { font-weight: 600; font-size: 1.05rem; }
+    .cell-part-row .cell-part-info .meta { font-size: 0.9rem; color: #6c757d; }
+    .cell-part-row .cell-part-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .cell-parts-empty { padding: 14px; text-align: center; color: #6c757d; }
+    .move-mode-banner {
+        background: #0d6efd;
+        color: white;
+        padding: 10px 18px;
+        border-radius: 6px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-shrink: 0;
+        font-size: 1.05rem;
+    }
+    .move-mode-banner .btn-close-white {
+        filter: invert(1) grayscale(100%) brightness(200%);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h2><i class="bi bi-grid-3x3 me-2"></i>Кассетница №{{ cabinet }}</h2>
+    <div class="d-flex gap-2">
+        <form method="get" class="d-flex gap-2" action="{% url 'part_list' %}">
+            <input type="text" name="q" class="form-control" placeholder="Поиск деталей..." style="width: 200px;">
+            <button type="submit" class="btn btn-outline-primary"><i class="bi bi-search"></i></button>
+        </form>
+        <select class="form-select" style="width: 160px;" onchange="window.location.href='?cabinet='+this.value{% if selected_part %}+'&selected_part={{ selected_part.pk }}'{% endif %}">
+            {% for c in cabinet_range %}
+            <option value="{{ c }}" {% if cabinet == c %}selected{% endif %}>Кассетница {{ c }}</option>
+            {% endfor %}
+        </select>
+        <select class="form-select" style="width: 220px;" onchange="window.location.href='?cabinet={{ cabinet }}&selected_part='+this.value">
+            <option value="">Выбрать деталь...</option>
+            {% for p in parts %}
+            <option value="{{ p.pk }}" {% if selected_part == p %}selected{% endif %}>{{ p.part_number }} — {{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+</div>
+
+<div class="grid-page">
+    <!-- Баннер режима перемещения -->
+    <div id="moveModeBanner" class="move-mode-banner" style="display: none;">
+        <span><i class="bi bi-arrows-move me-2"></i><strong>Режим перемещения</strong> — кликните по ячейке назначения (можно и не пустую)</span>
+        <button type="button" class="btn-close btn-close-white" onclick="cancelMoveMode()"></button>
+    </div>
+
+    <div class="grid-container">
+        <div class="grid-legend">
+            <span class="badge bg-secondary">Свободно</span>
+            <span class="badge bg-success">В норме</span>
+            <span class="badge bg-danger">Дефицит</span>
+            <span class="badge bg-primary">Выбрано</span>
+        </div>
+
+        <div class="grid-scroll-area">
+            <!-- Заголовок столбцов -->
+            <div class="col-header-row">
+                {% for col in col_range %}
+                <div class="col-header-cell">{{ col }}</div>
+                {% endfor %}
+            </div>
+
+            <!-- Сетка ячеек с подписями рядов -->
+            {% for row in grid %}
+            <div class="grid-row-wrapper">
+                <div class="row-label">{{ forloop.counter }}</div>
+                <div class="grid-row">
+                    {% for cell in row %}
+                        {% if cell.exists %}
+                        <div class="cell-item {{ cell.status }}"
+                             data-cell-id="{{ cell.cell.pk }}"
+                             data-address="{{ cell.cell.address }}"
+                             data-is-free="{% if cell.part_count == 0 %}true{% else %}false{% endif %}"
+                             title="{{ cell.cell.address }}{% for p in cell.cell.parts.all %} — {{ p.name }} ({{ p.current_stock }}){% endfor %}"
+                             onclick="handleCellClick(this)">
+                            <span class="cell-num">{{ cell.cell.cell_row }}</span>
+                            {% if cell.part_count == 1 %}
+                            <span class="cell-part">{{ cell.cell.parts.all.0.part_number|truncatechars:9 }}</span>
+                            {% elif cell.part_count > 1 %}
+                            <span class="cell-part">{{ cell.cell.parts.all.0.part_number|truncatechars:6 }}</span>
+                            <span class="cell-part-count">+{{ cell.part_count|add:"-1" }} ещё</span>
+                            {% endif %}
+                        </div>
+                        {% else %}
+                        <div class="cell-item free" style="opacity:0.3">
+                            <span class="cell-num">—</span>
+                        </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно информации о ячейке -->
+<div class="modal fade" id="cellInfoModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-info-circle me-2"></i>Ячейка <span id="infoAddress"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body cell-info-modal">
+                <div id="infoPartsList" class="cell-parts-list"></div>
+
+                <form id="addPartForm" class="d-flex gap-2 mb-3" onsubmit="return submitAddPart(event)">
+                    <select id="addPartSelect" class="form-select">
+                        <option value="">Добавить деталь в эту ячейку...</option>
+                    </select>
+                    <button type="submit" class="btn btn-success text-nowrap"><i class="bi bi-plus-lg me-1"></i>Добавить</button>
+                </form>
+
+                <div class="d-flex gap-2 flex-wrap">
+                    <a href="#" id="infoLabelLink" class="btn btn-outline-secondary btn-sm" target="_blank">
+                        <i class="bi bi-printer me-1"></i>Этикетка ячейки
+                    </a>
+                    <a href="{% url 'part_list' %}" class="btn btn-outline-info btn-sm">
+                        <i class="bi bi-search me-1"></i>Все детали
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно выбора кассетницы для перемещения -->
+<div class="modal fade" id="moveCabinetModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-arrows-move me-2"></i>Перемещение детали</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Выберите кассетницу, в которую хотите переместить деталь. Затем кликните по ячейке назначения (можно занятую — деталь просто добавится к её содержимому).</p>
+                <div class="list-group">
+                    {% for c in cabinet_range %}
+                    <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectMoveCabinet({{ c }})">
+                        Кассетница {{ c }}
+                        {% if c == cabinet %}
+                        <span class="badge bg-primary">Текущая</span>
+                        {% endif %}
+                    </button>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const CELLS_DATA = {{ cells_data_json|safe }};
+const ALL_PARTS = {{ all_parts_json|safe }};
+
+let selectedCellId = null;
+let moveFromCellId = null;
+let moveFromPartId = null;
+let moveToCabinet = null;
+let cellInfoModal = null;
+let moveCabinetModal = null;
+let isMoveMode = false;
+
+document.addEventListener('DOMContentLoaded', function() {
+    cellInfoModal = new bootstrap.Modal(document.getElementById('cellInfoModal'));
+    moveCabinetModal = new bootstrap.Modal(document.getElementById('moveCabinetModal'));
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const moveFrom = urlParams.get('move_from');
+    if (moveFrom) {
+        moveFromCellId = moveFrom;
+        isMoveMode = true;
+        document.getElementById('moveModeBanner').style.display = 'flex';
+        highlightMoveTargets();
+    }
+});
+
+function handleCellClick(el) {
+    const cellId = el.dataset.cellId;
+
+    if (isMoveMode) {
+        if (cellId && cellId !== moveFromCellId) {
+            performMoveToCell(cellId);
+        }
+        return;
+    }
+
+    showCellInfo(el);
+}
+
+function showCellInfo(el) {
+    selectedCellId = el.dataset.cellId;
+    const data = CELLS_DATA[selectedCellId] || { address: el.dataset.address, parts: [] };
+
+    document.getElementById('infoAddress').textContent = data.address;
+
+    const listEl = document.getElementById('infoPartsList');
+    if (data.parts.length === 0) {
+        listEl.innerHTML = '<div class="cell-parts-empty">В ячейке пока нет деталей</div>';
+    } else {
+        listEl.innerHTML = data.parts.map(function(p) {
+            const lowStock = p.min_stock > 0 && p.stock <= p.min_stock;
+            return '<div class="cell-part-row">' +
+                '<div class="cell-part-info">' +
+                    '<div class="name">' + escapeHtml(p.part_number) + ' — ' + escapeHtml(p.name) + '</div>' +
+                    '<div class="meta">' + escapeHtml(p.component_type || '') + ' · Остаток: ' +
+                        '<span class="' + (lowStock ? 'text-danger fw-bold' : '') + '">' + p.stock + ' / ' + p.min_stock + '</span>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="cell-part-actions">' +
+                    '<a href="/parts/' + p.id + '/" class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a>' +
+                    '<button type="button" class="btn btn-sm btn-outline-warning" onclick="startMoveMode(' + p.id + ')"><i class="bi bi-arrows-move"></i></button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removePartFromCell(' + p.id + ')"><i class="bi bi-x-lg"></i></button>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+    }
+
+    const inCellIds = data.parts.map(function(p) { return p.id; });
+    const select = document.getElementById('addPartSelect');
+    select.innerHTML = '<option value="">Добавить деталь в эту ячейку...</option>' +
+        ALL_PARTS.filter(function(p) { return inCellIds.indexOf(p.id) === -1; })
+            .map(function(p) { return '<option value="' + p.id + '">' + escapeHtml(p.label) + '</option>'; })
+            .join('');
+
+    document.getElementById('infoLabelLink').href = '/storage-cells/' + selectedCellId + '/label/';
+
+    cellInfoModal.show();
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+}
+
+function submitAddPart(event) {
+    event.preventDefault();
+    const partId = document.getElementById('addPartSelect').value;
+    if (!partId) return false;
+
+    fetch('/storage-cells/' + selectedCellId + '/add-part/', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'part_id=' + partId
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert(data.error || 'Ошибка добавления детали');
+        }
+    }).catch(err => alert('Ошибка сети: ' + err));
+
+    return false;
+}
+
+function removePartFromCell(partId) {
+    if (!confirm('Убрать деталь из этой ячейки?')) return;
+
+    fetch('/storage-cells/' + selectedCellId + '/remove-part/', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'part_id=' + partId
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert(data.error || 'Ошибка удаления детали');
+        }
+    }).catch(err => alert('Ошибка сети: ' + err));
+}
+
+function startMoveMode(partId) {
+    cellInfoModal.hide();
+    moveFromCellId = selectedCellId;
+    moveFromPartId = partId;
+
+    if (!moveFromCellId || !moveFromPartId) {
+        alert('Ошибка: не выбрана деталь для перемещения');
+        return;
+    }
+
+    moveCabinetModal.show();
+}
+
+function selectMoveCabinet(cabinet) {
+    moveToCabinet = cabinet;
+    moveCabinetModal.hide();
+
+    isMoveMode = true;
+    document.getElementById('moveModeBanner').style.display = 'flex';
+
+    if (cabinet != {{ cabinet }}) {
+        window.location.href = '?cabinet=' + cabinet + '&move_from=' + moveFromCellId + '&move_part=' + moveFromPartId;
+        return;
+    }
+
+    highlightMoveTargets();
+}
+
+function highlightMoveTargets() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const movePart = urlParams.get('move_part');
+    if (movePart) {
+        moveFromPartId = movePart;
+    }
+    document.querySelectorAll('.cell-item[data-cell-id]').forEach(function(el) {
+        if (el.dataset.cellId !== moveFromCellId) {
+            el.classList.add('move-target');
+        }
+    });
+}
+
+function cancelMoveMode() {
+    isMoveMode = false;
+    moveFromCellId = null;
+    moveFromPartId = null;
+    moveToCabinet = null;
+    document.getElementById('moveModeBanner').style.display = 'none';
+    document.querySelectorAll('.cell-item').forEach(function(el) {
+        el.classList.remove('move-target');
+    });
+}
+
+function performMoveToCell(toCellId) {
+    if (!moveFromPartId || !toCellId) {
+        alert('Ошибка: не выбрана деталь или ячейка назначения');
+        return;
+    }
+
+    fetch('{% url "storage_cell_move" %}', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'from_cell=' + moveFromCellId + '&to_cell=' + toCellId + '&part_id=' + moveFromPartId
+    }).then(r => r.json()).then(data => {
+        cancelMoveMode();
+        if (data.success) {
+            location.reload();
+        } else {
+            alert(data.error || 'Ошибка перемещения');
+        }
+    }).catch(err => {
+        cancelMoveMode();
+        alert('Ошибка сети: ' + err);
+    });
+}
+</script>
+{% endblock %}

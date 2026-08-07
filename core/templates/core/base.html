@@ -1,0 +1,251 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}LiftTeam v2.5.8{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --sidebar-width: 260px;
+            --primary: #0d6efd;
+            --sidebar-bg: #1a1a2e;
+            --sidebar-hover: #16213e;
+        }
+        body {
+            min-height: 100vh;
+            background: #f8f9fa;
+        }
+        .sidebar {
+            width: var(--sidebar-width);
+            min-height: 100vh;
+            background: var(--sidebar-bg);
+            color: #fff;
+            position: fixed;
+            left: 0;
+            top: 0;
+            z-index: 1000;
+            transition: all 0.3s;
+        }
+        .sidebar .nav-link {
+            color: rgba(255,255,255,0.8);
+            padding: 12px 20px;
+            border-radius: 0;
+            transition: all 0.2s;
+        }
+        .sidebar .nav-link:hover, .sidebar .nav-link.active {
+            background: var(--sidebar-hover);
+            color: #fff;
+        }
+        .sidebar .nav-link i {
+            width: 24px;
+            text-align: center;
+            margin-right: 10px;
+        }
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .navbar-brand {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 10px;
+        }
+        .navbar-brand img {
+            height: 40px;
+            margin-right: 10px;
+        }
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 20px;
+        }
+        .cell-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+            max-width: 600px;
+        }
+        .cell-item {
+            aspect-ratio: 1;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .cell-item.free { background: #e9ecef; color: #6c757d; }
+        .cell-item.normal { background: #d1e7dd; color: #0f5132; }
+        .cell-item.low_stock { background: #f8d7da; color: #842029; }
+        .cell-item.selected { background: #0d6efd; color: #fff; }
+        .cell-item:hover { transform: scale(1.1); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        .clickable-row { cursor: pointer; }
+        .clickable-row:hover { background-color: rgba(13, 110, 253, 0.05) !important; }
+        .clickable-row td { vertical-align: middle; }
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.show { transform: translateX(0); }
+            .main-content { margin-left: 0; }
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Sidebar -->
+    <nav class="sidebar d-flex flex-column">
+        <div class="navbar-brand d-flex align-items-center">
+            <img src="{% static 'img/lift_team_logo.png' %}" alt="LiftTeam" onerror="this.style.display='none'">
+            <span class="fw-bold">LiftTeam</span>
+            <span class="ms-auto badge bg-primary">v2.5.8</span>
+        </div>
+        <ul class="nav flex-column flex-grow-1">
+            <li class="nav-item">
+                <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}">
+                    <i class="bi bi-speedometer2"></i> Дашборд
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'repair_order' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'repair_order_list' %}">
+                    <i class="bi bi-tools"></i> Заказы на ремонт
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'client' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'client_list' %}">
+                    <i class="bi bi-people"></i> Заказчики
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'equipment' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'equipment_list' %}">
+                    <i class="bi bi-hdd-rack"></i> Оборудование
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'part' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'part_list' %}">
+                    <i class="bi bi-cpu"></i> Радиодетали
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'storage_cell' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'storage_cell_grid' %}">
+                    <i class="bi bi-grid-3x3"></i> Кассетницы
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if 'report' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'reports' %}">
+                    <i class="bi bi-graph-up"></i> Отчёты
+                </a>
+            </li>
+            {% if user.role == 'admin' %}
+            <li class="nav-item">
+                <a class="nav-link {% if 'admin_user' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'admin_users' %}">
+                    <i class="bi bi-shield-lock"></i> Пользователи
+                </a>
+            </li>
+            {% endif %}
+        </ul>
+        <div class="p-3 border-top border-secondary">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-person-circle fs-4 me-2"></i>
+                <div>
+                    <div class="small fw-bold">{{ user.full_name }}</div>
+                    <div class="small text-muted">{{ user.get_role_display }}</div>
+                </div>
+                <a href="{% url 'logout' %}" class="ms-auto text-danger" title="Выйти"><i class="bi bi-box-arrow-right"></i></a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Клик по строке таблицы — переход на детальную страницу
+    document.addEventListener('click', function(e) {
+        const row = e.target.closest('.clickable-row');
+        if (row && !e.target.closest('a, button, input, select, textarea')) {
+            const href = row.getAttribute('data-href');
+            if (href) {
+                window.location.href = href;
+            }
+        }
+    });
+    </script>
+    <script>
+    // Проверка несохранённых изменений в формах
+    (function() {
+        let formDirty = false;
+        let formElement = null;
+        let targetHref = null;
+
+        function initDirtyCheck() {
+            const forms = document.querySelectorAll('form[method="post"]');
+            forms.forEach(function(form) {
+                // Исключаем формы поиска, фильтров, удаления и inline-формы
+                if (form.closest('.modal') || form.querySelector('input[type="file"]') || 
+                    form.getAttribute('action') && form.getAttribute('action').includes('delete')) {
+                    return;
+                }
+                formElement = form;
+                const inputs = form.querySelectorAll('input, select, textarea');
+                inputs.forEach(function(input) {
+                    if (input.type === 'hidden' || input.name === 'csrfmiddlewaretoken') return;
+                    input.addEventListener('change', function() { formDirty = true; });
+                    input.addEventListener('input', function() { formDirty = true; });
+                });
+                form.addEventListener('submit', function() { formDirty = false; });
+            });
+        }
+
+        // Перехватываем клики по ссылкам (кнопка "Назад" и др.)
+        document.addEventListener('click', function(e) {
+            if (!formDirty || !formElement) return;
+            const link = e.target.closest('a');
+            if (link && !link.getAttribute('href').startsWith('#') && 
+                !link.getAttribute('href').startsWith('javascript:') &&
+                !link.hasAttribute('download') &&
+                !link.target) {
+                e.preventDefault();
+                targetHref = link.getAttribute('href');
+                const msg = 'У вас есть несохранённые изменения. Сохранить перед уходом?';
+                if (confirm(msg)) {
+                    // Сохраняем форму, затем переходим по ссылке
+                    formElement.addEventListener('submit', function onSubmit() {
+                        window.location.href = targetHref;
+                    });
+                    formElement.submit();
+                }
+                // Если "Отмена" — остаёмся на странице
+                return false;
+            }
+        });
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initDirtyCheck);
+        } else {
+            initDirtyCheck();
+        }
+    })();
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+
+
+
+

@@ -1,0 +1,482 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ title }} — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-tools me-2"></i>{{ title }}</h2>
+    <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="post" id="repairOrderForm">
+            {% csrf_token %}
+            <div class="row g-3">
+                {% for field in form %}
+                <div class="col-md-6">
+                    <label class="form-label">{{ field.label }}</label>
+                    {% if field.name == 'client' %}
+                    <div class="input-group">
+                        {{ field }}
+                        <button type="button" class="btn btn-outline-success" onclick="openCreateClientModal()" title="Создать заказчика">
+                            <i class="bi bi-plus-lg"></i>
+                        </button>
+                    </div>
+                    {% else %}
+                    {{ field }}
+                    {% endif %}
+                    {% if field.errors %}
+                    <div class="text-danger small">{{ field.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Оборудование в заказе -->
+            <div class="mt-4">
+                <h5><i class="bi bi-hdd-rack me-2"></i>Оборудование в заказе</h5>
+                <div id="equipmentFormset">
+                    {{ formset.management_form }}
+                    {% for eq_form in formset %}
+                    <div class="equipment-row border rounded p-3 mb-2">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.equipment.label }}</label>
+                                <div class="input-group">
+                                    {{ eq_form.equipment }}
+                                    <button type="button" class="btn btn-outline-success" onclick="openCreateEquipmentModal(this)" title="Создать оборудование">
+                                        <i class="bi bi-plus-lg"></i>
+                                    </button>
+                                </div>
+                                {% if eq_form.equipment.errors %}
+                                <div class="text-danger small">{{ eq_form.equipment.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.fault_description.label }}</label>
+                                {{ eq_form.fault_description }}
+                                {% if eq_form.fault_description.errors %}
+                                <div class="text-danger small">{{ eq_form.fault_description.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">{{ eq_form.seal_numbers.label }}</label>
+                                {{ eq_form.seal_numbers }}
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end">
+                                {% if eq_form.instance.pk %}
+                                <div class="form-check mb-2">
+                                    {{ eq_form.DELETE }}
+                                    <label class="form-check-label small">Удалить</label>
+                                </div>
+                                {% else %}
+                                <button type="button" class="btn btn-outline-danger btn-sm remove-equipment" onclick="removeEquipmentRow(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
+                                {{ eq_form.initial_condition }}
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">{{ eq_form.repair_cost.label }}</label>
+                                {{ eq_form.repair_cost }}
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label small">{{ eq_form.yandex_disk_folder.label }}</label>
+                                {{ eq_form.yandex_disk_folder }}
+                            </div>
+                        </div>
+                        {% for hidden in eq_form.hidden_fields %}{{ hidden }}{% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="addEquipmentRow()">
+                    <i class="bi bi-plus-lg me-1"></i>Добавить оборудование
+                </button>
+            </div>
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
+                <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">Отмена</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+let totalForms = document.getElementById('id_equipments-TOTAL_FORMS');
+let formNum = parseInt(totalForms.value);
+
+// Отслеживаем выбранное оборудование, чтобы скрыть его из других select
+function updateEquipmentOptions() {
+    const allSelects = document.querySelectorAll('select[name*="-equipment"]');
+    const selectedValues = [];
+    allSelects.forEach(function(sel) {
+        if (sel.value) selectedValues.push(sel.value);
+    });
+
+    allSelects.forEach(function(sel) {
+        const currentValue = sel.value;
+        Array.from(sel.options).forEach(function(opt) {
+            if (!opt.value) return; // пропускаем пустой option
+            // Скрываем option, если он выбран в другом select
+            if (opt.value !== currentValue && selectedValues.includes(opt.value)) {
+                opt.style.display = 'none';
+            } else {
+                opt.style.display = '';
+            }
+        });
+    });
+}
+
+// Инициализируем отслеживание
+document.addEventListener('change', function(e) {
+    if (e.target.name && e.target.name.includes('-equipment')) {
+        updateEquipmentOptions();
+    }
+});
+
+// Первоначальная фильтрация
+updateEquipmentOptions();
+
+function addEquipmentRow() {
+    const container = document.getElementById('equipmentFormset');
+    const template = container.querySelector('.equipment-row');
+    if (!template) return;
+
+    const newRow = template.cloneNode(true);
+
+    // Обновляем индексы
+    const oldPrefix = 'equipments-' + (formNum - 1) + '-';
+    const newPrefix = 'equipments-' + formNum + '-';
+    newRow.innerHTML = newRow.innerHTML.split(oldPrefix).join(newPrefix);
+
+    // Очищаем значения
+    newRow.querySelectorAll('input, select, textarea').forEach(function(el) {
+        if (el.type !== 'hidden' && el.name.indexOf('DELETE') === -1) {
+            el.value = '';
+        }
+    });
+
+    // Убираем checkbox удаления для новых строк
+    const deleteCheck = newRow.querySelector('.form-check');
+    if (deleteCheck) {
+        deleteCheck.innerHTML = '<button type="button" class="btn btn-outline-danger btn-sm" onclick="removeEquipmentRow(this)"><i class="bi bi-trash"></i></button>';
+    }
+
+    container.appendChild(newRow);
+    formNum++;
+    totalForms.value = formNum;
+
+    // Обновляем фильтрацию option-ов
+    updateEquipmentOptions();
+}
+
+function removeEquipmentRow(btn) {
+    const row = btn.closest('.equipment-row');
+    row.remove();
+    // Пересчитываем индексы
+    const rows = document.querySelectorAll('.equipment-row');
+    rows.forEach(function(r, idx) {
+        r.querySelectorAll('input, select, textarea').forEach(function(el) {
+            if (el.name) {
+                el.name = el.name.replace(/equipments-[0-9]+-/, 'equipments-' + idx + '-');
+                el.id = el.id.replace(/equipments-[0-9]+-/, 'equipments-' + idx + '-');
+            }
+        });
+    });
+    formNum = rows.length;
+    totalForms.value = formNum;
+
+    // Обновляем фильтрацию option-ов
+    updateEquipmentOptions();
+}
+
+// ===== МОДАЛЬНЫЕ ОКНА: Создание модели и оборудования =====
+
+let currentEquipmentSelect = null;
+
+function openCreateEquipmentModal(btn) {
+    currentEquipmentSelect = btn.closest('.input-group').querySelector('select');
+    const modal = new bootstrap.Modal(document.getElementById('createEquipmentModal'));
+    modal.show();
+    // Загружаем список моделей
+    loadModelSelect(document.getElementById('ceModelSelect'));
+}
+
+function loadModelSelect(selectEl) {
+    fetch('{% url "ajax_equipment_model_list" %}')
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.models) {
+                selectEl.innerHTML = '<option value="">Выберите модель...</option>' + 
+                    data.models.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+            } else {
+                selectEl.innerHTML = '<option value="">Нет моделей</option>';
+            }
+        })
+        .catch(() => {
+            selectEl.innerHTML = '<option value="">Ошибка загрузки</option>';
+        });
+}
+
+function openCreateModelFromEquipment() {
+    // Скрываем окно оборудования, показываем окно модели
+    const eqModal = bootstrap.Modal.getInstance(document.getElementById('createEquipmentModal'));
+    if (eqModal) eqModal.hide();
+    const modelModal = new bootstrap.Modal(document.getElementById('createModelModal'));
+    modelModal.show();
+}
+
+function createEquipmentModel() {
+    const name = document.getElementById('newModelName').value.trim();
+    if (!name) {
+        alert('Введите название модели');
+        return;
+    }
+    fetch('{% url "ajax_equipment_model_create" %}', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'name=' + encodeURIComponent(name)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Добавляем модель во все select моделей на странице
+            document.querySelectorAll('select').forEach(function(sel) {
+                if (sel.name && sel.name.includes('model')) {
+                    const opt = document.createElement('option');
+                    opt.value = data.id;
+                    opt.textContent = data.name;
+                    sel.appendChild(opt);
+                }
+            });
+            document.getElementById('newModelName').value = '';
+            bootstrap.Modal.getInstance(document.getElementById('createModelModal')).hide();
+            alert(data.message);
+            // Если открыто окно оборудования — обновляем список моделей в нём
+            const eqModalEl = document.getElementById('createEquipmentModal');
+            if (eqModalEl && eqModalEl.classList.contains('show')) {
+                // Окно уже открыто или откроем заново
+            } else {
+                // Возвращаемся к окну оборудования
+                setTimeout(function() {
+                    const eqModal = new bootstrap.Modal(eqModalEl);
+                    eqModal.show();
+                    // Обновляем список моделей
+                    loadModelSelect(document.getElementById('ceModelSelect'));
+                }, 300);
+            }
+        } else {
+            alert(data.error);
+        }
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+function createEquipment() {
+    const modelId = document.getElementById('ceModelSelect').value;
+    const serial = document.getElementById('ceSerialNumber').value.trim();
+
+    if (!modelId) { alert('Выберите модель'); return; }
+    if (!serial) { alert('Введите серийный номер'); return; }
+
+    fetch('{% url "ajax_equipment_create" %}', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'model_id=' + encodeURIComponent(modelId) + '&serial_number=' + encodeURIComponent(serial)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Добавляем оборудование во все select equipment
+            document.querySelectorAll('select[name*="equipment"]').forEach(function(sel) {
+                const opt = document.createElement('option');
+                opt.value = data.id;
+                opt.textContent = data.name;
+                sel.appendChild(opt);
+            });
+            // Выбираем созданное оборудование в текущем select
+            if (currentEquipmentSelect) {
+                currentEquipmentSelect.value = data.id;
+            }
+            document.getElementById('ceSerialNumber').value = '';
+            bootstrap.Modal.getInstance(document.getElementById('createEquipmentModal')).hide();
+            alert(data.message);
+        } else {
+            alert(data.error);
+        }
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+// ===== Создание заказчика =====
+
+let currentClientSelect = null;
+
+function openCreateClientModal() {
+    currentClientSelect = document.querySelector('select[name="client"]');
+    const modal = new bootstrap.Modal(document.getElementById('createClientModal'));
+    modal.show();
+}
+
+function createClient() {
+    const name = document.getElementById('newClientName').value.trim();
+    const inn = document.getElementById('newClientInn').value.trim();
+    const phone = document.getElementById('newClientPhone').value.trim();
+    const email = document.getElementById('newClientEmail').value.trim();
+    const contact = document.getElementById('newClientContact').value.trim();
+
+    if (!name) { alert('Введите название заказчика'); return; }
+
+    const params = new URLSearchParams();
+    params.append('name', name);
+    params.append('inn', inn);
+    params.append('phone', phone);
+    params.append('email', email);
+    params.append('contact_person', contact);
+
+    fetch('{% url "ajax_client_create" %}', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: params.toString()
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Добавляем заказчика в select
+            const select = document.querySelector('select[name="client"]');
+            if (select) {
+                const opt = document.createElement('option');
+                opt.value = data.id;
+                opt.textContent = data.name;
+                select.appendChild(opt);
+                select.value = data.id;
+            }
+            // Очищаем поля
+            document.getElementById('newClientName').value = '';
+            document.getElementById('newClientInn').value = '';
+            document.getElementById('newClientPhone').value = '';
+            document.getElementById('newClientEmail').value = '';
+            document.getElementById('newClientContact').value = '';
+            bootstrap.Modal.getInstance(document.getElementById('createClientModal')).hide();
+            alert(data.message);
+        } else {
+            alert(data.error);
+        }
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+</script>
+
+<!-- Модальное окно: Создание модели -->
+<div class="modal fade" id="createModelModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-lg me-2"></i>Новая модель</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Название модели</label>
+                    <input type="text" id="newModelName" class="form-control" placeholder="Например: КМЗ-2000">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="createEquipmentModel()">Создать</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно: Создание заказчика -->
+<div class="modal fade" id="createClientModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-lg me-2"></i>Новый заказчик</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Название <span class="text-danger">*</span></label>
+                    <input type="text" id="newClientName" class="form-control" placeholder="Название организации">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">ИНН</label>
+                    <input type="text" id="newClientInn" class="form-control" placeholder="ИНН">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Телефон</label>
+                    <input type="text" id="newClientPhone" class="form-control" placeholder="+7 (XXX) XXX-XX-XX">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Email</label>
+                    <input type="email" id="newClientEmail" class="form-control" placeholder="email@example.com">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Контактное лицо</label>
+                    <input type="text" id="newClientContact" class="form-control" placeholder="ФИО контактного лица">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="createClient()">Создать</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно: Создание оборудования -->
+<div class="modal fade" id="createEquipmentModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-lg me-2"></i>Новое оборудование</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Модель <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <select id="ceModelSelect" class="form-select">
+                            <option value="">Загрузка...</option>
+                        </select>
+                        <button type="button" class="btn btn-outline-success" onclick="openCreateModelFromEquipment()" title="Создать модель">
+                            <i class="bi bi-plus-lg"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Серийный номер <span class="text-danger">*</span></label>
+                    <input type="text" id="ceSerialNumber" class="form-control" placeholder="Введите заводской номер">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="createEquipment()">Создать</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+
+

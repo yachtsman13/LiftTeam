@@ -1,0 +1,170 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-tools me-2"></i>Заказ {{ order.order_number }}</h2>
+    <div>
+        <a href="{% url 'repair_order_edit' order.pk %}" class="btn btn-outline-primary me-2"><i class="bi bi-pencil me-2"></i>Редактировать</a>
+        <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <!-- Order Info -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Информация о заказе</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6"><strong>Заказчик:</strong> {{ order.client.name }}</div>
+                    <div class="col-md-6"><strong>Статус:</strong> <span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></div>
+                    <div class="col-md-6"><strong>Оплата:</strong> <span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></div>
+                    <div class="col-md-6"><strong>Общая стоимость:</strong> {{ order.total_repair_cost }} ₽</div>
+                    <div class="col-md-6"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>
+                    <div class="col-md-12"><strong>Начальное состояние:</strong><br>{{ order.initial_condition|default:"—"|linebreaks }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Equipment List -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-hdd-rack me-2"></i>Оборудование в заказе</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead><tr><th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th class="text-end">Действия</th></tr></thead>
+                        <tbody>
+                            {% for oe in order_equipments %}
+                            <tr>
+                                <td><span class="badge bg-primary">{{ forloop.counter }}</span></td>
+                                <td>{{ oe.equipment.model.name }}</td>
+                                <td class="fw-bold">{{ oe.equipment.serial_number }}</td>
+                                <td>{{ oe.fault_description|default:"—"|linebreaksbr }}</td>
+                                <td class="text-end">
+                                    <a href="{% url 'repair_order_equipment_label' order.pk oe.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка" target="_blank"><i class="bi bi-printer"></i></a>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="5" class="text-center text-muted">Оборудование не добавлено</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Used Parts -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Использованные детали</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-3 mb-3">
+                    {% csrf_token %}
+                    <div class="col-md-5">{{ detail_form.part }}</div>
+                    <div class="col-md-3">{{ detail_form.quantity_used }}</div>
+                    <div class="col-md-4"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                </form>
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead><tr><th>Деталь</th><th>Кол-во</th></tr></thead>
+                        <tbody>
+                            {% for detail in details %}
+                            <tr><td>{{ detail.part.name }}</td><td>{{ detail.quantity_used }}</td></tr>
+                            {% empty %}
+                            <tr><td colspan="2" class="text-center text-muted">Детали не добавлены</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Change -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-arrow-repeat me-2"></i>Изменить статус ремонта</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{% url 'repair_order_change_status' order.pk %}">
+                    {% csrf_token %}
+                    <div class="row g-3">
+                        <div class="col-md-4">{{ status_form.new_status }}</div>
+                        <div class="col-md-5">{{ status_form.notes }}</div>
+                        <div class="col-md-3"><button type="submit" class="btn btn-warning w-100"><i class="bi bi-check-lg me-2"></i>Изменить</button></div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Payment Status Change -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-credit-card me-2"></i>Изменить статус оплаты</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{% url 'repair_order_change_payment_status' order.pk %}">
+                    {% csrf_token %}
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <select name="payment_status" class="form-select">
+                                {% for value, label in order.PAYMENT_STATUS_CHOICES %}
+                                <option value="{{ value }}" {% if order.payment_status == value %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <input type="text" name="notes" class="form-control" placeholder="Примечание">
+                        </div>
+                        <div class="col-md-3">
+                            <button type="submit" class="btn btn-info w-100"><i class="bi bi-check-lg me-2"></i>Изменить</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- History -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>История статусов</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    {% for h in history %}
+                    <div class="list-group-item">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                {% if h.status %}
+                                <span class="status-badge bg-{% if h.status == 'accepted' %}info{% elif h.status == 'diagnostic' %}warning{% elif h.status == 'repair' %}primary{% elif h.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ h.get_status_display }}</span>
+                                {% endif %}
+                                {% if h.payment_status %}
+                                <span class="status-badge bg-{% if h.payment_status == 'unpaid' %}danger{% elif h.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ h.get_payment_status_display }}</span>
+                                {% endif %}
+                            </div>
+                            <small class="text-muted">{{ h.changed_at|date:"d.m.Y H:i" }}</small>
+                        </div>
+                        <small class="text-muted">{{ h.changed_by.full_name|default:"Система" }}</small>
+                        {% if h.notes %}<div class="small text-muted mt-1">{{ h.notes }}</div>{% endif %}
+                    </div>
+                    {% empty %}
+                    <div class="list-group-item text-center text-muted py-4">История пуста</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+
+

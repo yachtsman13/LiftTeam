@@ -1,0 +1,132 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Дашборд — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-speedometer2 me-2"></i>Дашборд</h2>
+    <span class="text-muted">{{ now|date:"d.m.Y H:i" }}</span>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Всего заказов</h6>
+                        <h3 class="mb-0">{{ total_orders }}</h3>
+                    </div>
+                    <i class="bi bi-clipboard-data fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-dark">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Активные заказы</h6>
+                        <h3 class="mb-0">{{ active_orders }}</h3>
+                    </div>
+                    <i class="bi bi-tools fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-danger text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Дефицит деталей</h6>
+                        <h3 class="mb-0">{{ low_stock_count }}</h3>
+                    </div>
+                    <i class="bi bi-exclamation-triangle fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Должников / Долг</h6>
+                        <h3 class="mb-0">{{ debtors|length }} / {{ total_debt }} ₽</h3>
+                    </div>
+                    <i class="bi bi-cash-stack fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Recent Orders -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Последние заказы</h5>
+                <a href="{% url 'repair_order_list' %}" class="btn btn-sm btn-outline-primary">Все заказы</a>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>№ заказа</th>
+                                <th>Заказчик</th>
+                                <th>Статус</th>
+                                <th>Дата</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in recent_orders %}
+                            <tr>
+                                <td><a href="{% url 'repair_order_detail' order.pk %}" class="fw-bold">{{ order.order_number }}</a></td>
+                                <td>{{ order.client.name }}</td>
+                                <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                                <td>{{ order.date_received|date:"d.m.Y H:i" }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="4" class="text-center text-muted py-4">Нет заказов</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Low Stock Alert -->
+    <div class="col-lg-4">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Дефицит деталей</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    {% for part in low_stock_parts %}
+                    <a href="{% url 'part_detail' part.pk %}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="fw-bold">{{ part.part_number }}</div>
+                            <small class="text-muted">{{ part.name }}</small>
+                        </div>
+                        <span class="badge bg-danger rounded-pill">{{ part.current_stock }} / {{ part.min_stock }}</span>
+                    </a>
+                    {% empty %}
+                    <div class="list-group-item text-center text-muted py-4">Все детали в норме</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+
+

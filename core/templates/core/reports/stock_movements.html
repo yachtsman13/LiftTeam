@@ -1,0 +1,76 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Журнал движений — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-arrow-left-right me-2"></i>Журнал движений</h2>
+    <a href="{% url 'reports' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="get" class="row g-3 mb-3">
+            <div class="col-md-3">
+                <select name="part" class="form-select">
+                    <option value="">Все детали</option>
+                    {% for p in parts_list %}
+                    <option value="{{ p.pk }}" {% if request.GET.part == p.pk|stringformat:"s" %}selected{% endif %}>{{ p.part_number }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <select name="type" class="form-select">
+                    <option value="">Все типы</option>
+                    <option value="incoming" {% if request.GET.type == 'incoming' %}selected{% endif %}>Приход</option>
+                    <option value="outgoing" {% if request.GET.type == 'outgoing' %}selected{% endif %}>Расход</option>
+                </select>
+            </div>
+            <div class="col-md-2"><input type="date" name="date_from" class="form-control" value="{{ request.GET.date_from }}"></div>
+            <div class="col-md-2"><input type="date" name="date_to" class="form-control" value="{{ request.GET.date_to }}"></div>
+            <div class="col-md-3"><button type="submit" class="btn btn-outline-primary w-100">Фильтр</button></div>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr><th>Дата</th><th>Деталь</th><th>Тип</th><th>Кол-во</th><th>Документ</th><th>Заказ</th><th>Пользователь</th></tr>
+                </thead>
+                <tbody>
+                    {% for m in movements %}
+                    <tr class="clickable-row" data-href="{% url 'part_detail' m.part.pk %}">
+                        <td>{{ m.movement_date|date:"d.m.Y H:i" }}</td>
+                        <td>{{ m.part.part_number }} — {{ m.part.name }}</td>
+                        <td><span class="badge bg-{% if m.movement_type == 'incoming' %}success{% else %}danger{% endif %}">{{ m.get_movement_type_display }}</span></td>
+                        <td>{{ m.quantity }}</td>
+                        <td>{{ m.document_number|default:"—" }}</td>
+                        <td>{{ m.repair_order.order_number|default:"—" }}</td>
+                        <td>{{ m.created_by.full_name|default:"—" }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="7" class="text-center text-muted py-4">Движений не найдено</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if movements.has_other_pages %}
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if movements.has_previous %}
+                <li class="page-item"><a class="page-link" href="?page={{ movements.previous_page_number }}{% if request.GET.part %}&part={{ request.GET.part }}{% endif %}{% if request.GET.type %}&type={{ request.GET.type }}{% endif %}">←</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ movements.number }} / {{ movements.paginator.num_pages }}</span></li>
+                {% if movements.has_next %}
+                <li class="page-item"><a class="page-link" href="?page={{ movements.next_page_number }}{% if request.GET.part %}&part={{ request.GET.part }}{% endif %}{% if request.GET.type %}&type={{ request.GET.type }}{% endif %}">→</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+
+
+

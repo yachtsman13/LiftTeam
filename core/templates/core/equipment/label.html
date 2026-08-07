@@ -1,0 +1,106 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Этикетка {{ equipment.model.name }} — {{ equipment.serial_number }} — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="label-container">
+    <div class="label-sheet">
+        <div class="label-header">
+            <span class="label-model">{{ equipment.model.name|truncatechars:18 }}</span>
+            <span class="label-id">#{{ equipment.id }}</span>
+        </div>
+        <div class="label-serial">{{ equipment.serial_number }}</div>
+        <div class="label-codes">
+            {% if barcode_img %}
+            <img src="{{ barcode_img }}" alt="{{ equipment.serial_number }}" class="label-barcode">
+            {% endif %}
+            {% if qr_img %}
+            <img src="{{ qr_img }}" alt="QR" class="label-qr">
+            {% endif %}
+        </div>
+    </div>
+    <div class="label-controls no-print">
+        <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
+        <a href="{% url 'equipment_list' %}" class="btn btn-outline-secondary">Назад</a>
+    </div>
+</div>
+
+<style>
+    @media screen {
+        .label-container { display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .label-sheet {
+            width: 43mm;
+            height: 25mm;
+            border: 1px dashed #999;
+            padding: 2mm;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+            background: #fff;
+            position: relative;
+            overflow: hidden;
+        }
+        .label-controls { margin-top: 20px; }
+    }
+    @media print {
+        @page { size: 43mm 25mm; margin: 0; }
+        body { margin: 0; padding: 0; background: white; }
+        .sidebar, .main-content > *:not(.label-container), .no-print, nav, .btn { display: none !important; }
+        .main-content { margin-left: 0 !important; padding: 0 !important; }
+        .label-container { display: block; padding: 0; }
+        .label-sheet {
+            width: 43mm;
+            height: 25mm;
+            border: none;
+            padding: 1.5mm;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+            page-break-inside: avoid;
+        }
+    }
+    .label-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 0.5mm;
+    }
+    .label-model {
+        font-size: 7pt;
+        font-weight: bold;
+        color: #0d6efd;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 30mm;
+    }
+    .label-id {
+        font-size: 6pt;
+        color: #6c757d;
+        font-weight: bold;
+    }
+    .label-serial {
+        font-size: 8pt;
+        font-weight: bold;
+        color: #333;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 0.5mm;
+    }
+    .label-codes {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        height: 10mm;
+    }
+    .label-barcode {
+        height: 9mm;
+        width: auto;
+        max-width: 22mm;
+    }
+    .label-qr {
+        height: 9mm;
+        width: 9mm;
+    }
+</style>
+{% endblock %}
+

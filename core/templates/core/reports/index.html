@@ -1,0 +1,46 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Отчёты — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-graph-up me-2"></i>Отчёты</h2>
+</div>
+
+<div class="row g-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-cart-plus fs-1 text-primary mb-3"></i>
+                <h5>План закупок</h5>
+                <p class="text-muted">Детали ниже минимального остатка</p>
+                <a href="{% url 'report_purchase_plan' %}" class="btn btn-primary">Открыть</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-arrow-left-right fs-1 text-success mb-3"></i>
+                <h5>Журнал движений</h5>
+                <p class="text-muted">История прихода и расхода</p>
+                <a href="{% url 'report_stock_movements' %}" class="btn btn-success">Открыть</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-cash-coin fs-1 text-danger mb-3"></i>
+                <h5>Задолженности</h5>
+                <p class="text-muted">Неоплаченные заказы</p>
+                <a href="{% url 'report_debtors' %}" class="btn btn-danger">Открыть</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+
+

@@ -1,0 +1,24 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление заказа — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Подтверждение удаления</h5>
+    </div>
+    <div class="card-body">
+        <p>Вы действительно хотите удалить заказ <strong>{{ order.order_number }}</strong>?</p>
+        <p class="text-muted">Это действие нельзя отменить. Все данные о заказе будут удалены.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+
+
+

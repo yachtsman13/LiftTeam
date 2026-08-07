@@ -1,0 +1,34 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление оборудования — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Подтверждение удаления</h5>
+    </div>
+    <div class="card-body">
+        {% if is_model %}
+        <p>Вы действительно хотите удалить модель <strong>{{ equipment.name }}</strong>?</p>
+        <p class="text-muted">Это действие нельзя отменить. Все единицы оборудования этой модели останутся без модели.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+        {% else %}
+        <p>Вы действительно хотите удалить оборудование <strong>{{ equipment }}</strong>?</p>
+        <p class="text-muted">Это действие нельзя отменить.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'equipment_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+
+
+

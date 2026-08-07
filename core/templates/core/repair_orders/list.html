@@ -1,0 +1,86 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Заказы на ремонт — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-tools me-2"></i>Заказы на ремонт</h2>
+    <a href="{% url 'repair_order_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новый заказ</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="get" class="row g-3 mb-3">
+            <div class="col-md-4">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" name="q" class="form-control" placeholder="Поиск..." value="{{ search }}">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <select name="status" class="form-select" onchange="this.form.submit()">
+                    <option value="">Все статусы</option>
+                    {% for value, label in status_choices %}
+                    <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-outline-primary w-100">Фильтр</button>
+            </div>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr>
+                        <th>№ заказа</th>
+                        <th>Заказчик</th>
+                        <th>Статус</th>
+                        <th>Оплата</th>
+                        <th>Стоимость</th>
+                        <th>Дата</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in orders %}
+                    <tr class="clickable-row" data-href="{% url 'repair_order_detail' order.pk %}">
+                        <td class="fw-bold">{{ order.order_number }}</td>
+                        <td>{{ order.client.name }}</td>
+                        <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                        <td><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></td>
+                        <td>{{ order.total_repair_cost }} ₽</td>
+                        <td>{{ order.date_received|date:"d.m.Y" }}</td>
+                        <td class="text-end">
+                            <a href="{% url 'repair_order_edit' order.pk %}" class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'repair_order_delete' order.pk %}" class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="7" class="text-center text-muted py-4">Заказы не найдены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if orders.has_other_pages %}
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if orders.has_previous %}
+                <li class="page-item"><a class="page-link" href="?page={{ orders.previous_page_number }}&q={{ search }}&status={{ status_filter }}">←</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ orders.number }} / {{ orders.paginator.num_pages }}</span></li>
+                {% if orders.has_next %}
+                <li class="page-item"><a class="page-link" href="?page={{ orders.next_page_number }}&q={{ search }}&status={{ status_filter }}">→</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+
+
+

@@ -1,0 +1,28 @@
+# Секреты и окружение
+.env
+.env.*
+!.env.example
+
+# База данных (standalone)
+db.sqlite3
+db.sqlite3-journal
+
+# Django
+staticfiles/
+media/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.lnk

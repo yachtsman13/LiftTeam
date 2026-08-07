@@ -1,0 +1,112 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Радиодетали — LiftTeam v2.5.8{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-cpu me-2"></i>Радиодетали</h2>
+    <div>
+        <a href="{% url 'part_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success me-2"><i class="bi bi-download me-2"></i>Экспорт</a>
+        <a href="{% url 'part_import' %}" class="btn btn-success me-2"><i class="bi bi-upload me-2"></i>Импорт</a>
+        <a href="{% url 'part_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новая деталь</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="get" class="row g-2 mb-3">
+            <div class="col-md-3">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" name="q" class="form-control" placeholder="Поиск по артикулу/названию..." value="{{ search }}">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <select name="component_type" class="form-select" onchange="this.form.submit()">
+                    <option value="">Все типы</option>
+                    {% for ct in component_types %}
+                    <option value="{{ ct }}" {% if component_type == ct %}selected{% endif %}>{{ ct }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <div class="input-group input-group-sm">
+                    <input type="number" name="voltage_from" class="form-control" placeholder="В от" value="{{ voltage_from }}" step="any">
+                    <span class="input-group-text">-</span>
+                    <input type="number" name="voltage_to" class="form-control" placeholder="до" value="{{ voltage_to }}" step="any">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="input-group input-group-sm">
+                    <input type="number" name="resistance_from" class="form-control" placeholder="Ом от" value="{{ resistance_from }}" step="any">
+                    <span class="input-group-text">-</span>
+                    <input type="number" name="resistance_to" class="form-control" placeholder="до" value="{{ resistance_to }}" step="any">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="input-group input-group-sm">
+                    <input type="number" name="capacitance_from" class="form-control" placeholder="Ф от" value="{{ capacitance_from }}" step="any">
+                    <span class="input-group-text">-</span>
+                    <input type="number" name="capacitance_to" class="form-control" placeholder="до" value="{{ capacitance_to }}" step="any">
+                </div>
+            </div>
+            <div class="col-md-1">
+                <button type="submit" class="btn btn-outline-primary w-100"><i class="bi bi-funnel"></i></button>
+            </div>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr>
+                        <th>Артикул</th>
+                        <th>Название</th>
+                        <th>Тип</th>
+                        <th>Остаток</th>
+                        <th>Мин.</th>
+                        <th>Ячейка</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for part in parts %}
+                    <tr class="clickable-row {% if part.is_below_min_stock %}table-danger{% endif %}" data-href="{% url 'part_detail' part.pk %}">
+                        <td class="fw-bold">{{ part.part_number }}</td>
+                        <td>{{ part.name }}</td>
+                        <td>{{ part.component_type|default:"—" }}</td>
+                        <td><span class="badge bg-{% if part.is_below_min_stock %}danger{% else %}success{% endif %}">{{ part.current_stock }}</span></td>
+                        <td>{{ part.min_stock }}</td>
+                        <td>{{ part.current_cell.address|default:"—" }}</td>
+                        <td class="text-end">
+                            <a href="{% if part.current_cell %}{% url 'storage_cell_label' part.current_cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.current_cell %} disabled{% endif %}" title="{% if part.current_cell %}Этикетка{% else %}Нет ячейки{% endif %}" {% if part.current_cell %}target="_blank"{% endif %} onclick="{% if not part.current_cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-printer"></i></a>
+                            <a href="{% url 'part_edit' part.pk %}" class="btn btn-sm btn-outline-primary" title="Редактировать" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="7" class="text-center text-muted py-4">Детали не найдены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if parts.has_other_pages %}
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if parts.has_previous %}
+                <li class="page-item"><a class="page-link" href="?page={{ parts.previous_page_number }}&q={{ search }}&component_type={{ component_type }}&voltage={{ voltage }}&current={{ current }}&stock_from={{ stock_from }}&stock_to={{ stock_to }}">←</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ parts.number }} / {{ parts.paginator.num_pages }}</span></li>
+                {% if parts.has_next %}
+                <li class="page-item"><a class="page-link" href="?page={{ parts.next_page_number }}&q={{ search }}&component_type={{ component_type }}&voltage={{ voltage }}&current={{ current }}&stock_from={{ stock_from }}&stock_to={{ stock_to }}">→</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+
+
+
