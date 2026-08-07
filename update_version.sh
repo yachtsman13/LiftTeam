@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 if [ -z "$1" ]; then
     echo "  Использование: update_version.sh [ВЕРСИЯ]"
-    echo "  Пример: update_version.sh v2.5.8"
+    echo "  Пример: update_version.sh v2.6.0"
     exit 1
 fi
 
@@ -17,10 +17,11 @@ echo "   LiftTeam — Update Version to $NEW_VERSION"
 echo "  ================================================"
 echo ""
 
-# Обновляем версию в ключевых файлах
+# CHANGELOG.md намеренно НЕ обрабатывается: замена по всему файлу переписала бы
+# заголовки всех прошлых выпусков на новый номер и уничтожила историю версий.
+# Запись о новой версии добавляется в него вручную.
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" lifteam_launcher.py
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" README.md
-sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" CHANGELOG.md
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" PROMPT.md
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" TZ.md
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" start.bat

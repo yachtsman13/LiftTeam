@@ -1,27 +1,57 @@
 {% extends 'core/base.html' %}
-{% load static %}
 
-{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.5.8{% endblock %}
+{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.6.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
     <div class="label-sheet">
-        <div class="label-order-number">{{ order.order_number }}</div>
+        <div class="label-order-number">
+            {{ order.order_number }}<span class="label-position">/{{ position }}</span>
+        </div>
+
         <div class="label-body">
-            <div class="label-position-badge">{{ position }}</div>
-            <div class="label-equip-info">
+            <div class="label-info">
                 <div class="label-model">{{ roe.equipment.model.name }}</div>
                 <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
+                <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
+                <div class="label-of-total">оборудование {{ position }} из {{ total }}</div>
             </div>
-            {% if qr_img %}
-            <img src="{{ qr_img }}" alt="QR" class="label-qr">
-            {% endif %}
+
+            {% comment %}
+                Логотип нарисован контуром, а не залит цветом: сплошная заливка
+                на термопринтере печатается чёрным пятном, греет головку и может
+                слегка расплыться — расплывшийся край сделает QR внутри
+                нечитаемым.
+            {% endcomment %}
+            <div class="label-logo-wrap">
+            <svg class="label-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="100" cy="100" r="94" fill="none" stroke="#000" stroke-width="4"/>
+                <circle cx="100" cy="100" r="78" fill="none" stroke="#000" stroke-width="2"/>
+
+                <path id="logoTop" d="M 44.7 34.1 A 86 86 0 0 1 155.3 34.1" fill="none"/>
+                <text class="label-logo-text">
+                    <textPath href="#logoTop" startOffset="50%" text-anchor="middle">LIFT TEAM</textPath>
+                </text>
+
+                <path id="logoBottom" d="M 44.7 165.9 A 86 86 0 0 0 155.3 165.9" fill="none"/>
+                <text class="label-logo-text">
+                    <textPath href="#logoBottom" startOffset="50%" text-anchor="middle">LIFTTEAM.RU</textPath>
+                </text>
+
+                {% comment %}
+                    Сторона 108 из 200 — максимум, что помещается во внутреннюю
+                    окружность r=78: половина диагонали квадрата 108 равна 76,4.
+                {% endcomment %}
+                {% if qr_img %}
+                <image href="{{ qr_img }}" x="46" y="46" width="108" height="108"/>
+                {% endif %}
+            </svg>
+            </div>
         </div>
-        <div class="label-footer">
-            <img src="{% static 'img/lift_team_logo.png' %}" alt="" class="label-logo">
-            <span>liftteam.ru &middot; +7 925 282-40-31, +7 977 760-10-89</span>
-        </div>
+
+        <div class="label-phones">+7 925 282-40-31 · +7 977 760-10-89</div>
     </div>
+
     <div class="label-controls no-print">
         <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
         <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
@@ -32,15 +62,8 @@
     @media screen {
         .label-container { display: flex; flex-direction: column; align-items: center; padding: 40px; }
         .label-sheet {
-            width: 43mm;
-            height: 25mm;
             border: 1px dashed #999;
-            padding: 1.5mm;
-            box-sizing: border-box;
-            font-family: Arial, sans-serif;
             background: #fff;
-            position: relative;
-            overflow: hidden;
         }
         .label-controls { margin-top: 20px; }
     }
@@ -50,89 +73,96 @@
         .sidebar, .main-content > *:not(.label-container), .no-print, nav, .btn { display: none !important; }
         .main-content { margin-left: 0 !important; padding: 0 !important; }
         .label-container { display: block; padding: 0; }
-        .label-sheet {
-            width: 43mm;
-            height: 25mm;
-            border: none;
-            padding: 1.5mm;
-            box-sizing: border-box;
-            font-family: Arial, sans-serif;
-            page-break-inside: avoid;
-        }
+        .label-sheet { border: none; page-break-inside: avoid; }
     }
     .label-sheet {
+        width: 43mm;
+        height: 25mm;
+        padding: 0.7mm 1.5mm;
+        box-sizing: border-box;
+        font-family: Arial, sans-serif;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
+        color: #000;
     }
     .label-order-number {
         text-align: center;
-        font-size: 8.5pt;
+        font-size: 8pt;
         font-weight: bold;
-        color: #333;
+        line-height: 1;
+        border-bottom: 0.25mm solid #000;
+        padding-bottom: 0.3mm;
         flex-shrink: 0;
+        white-space: nowrap;
+    }
+    /* Номер позиции вынесен в ту же строку, что и номер заказа: по одной
+       строке сразу видно и заказ, и какая это единица оборудования. */
+    .label-position {
+        font-size: 10pt;
     }
     .label-body {
         display: flex;
         align-items: center;
-        gap: 1.5mm;
+        gap: 1mm;
         flex: 1;
         min-height: 0;
-        border-top: 0.2mm solid #ddd;
-        border-bottom: 0.2mm solid #ddd;
-        margin: 0.5mm 0;
+        padding-top: 0.4mm;
     }
-    .label-position-badge {
-        flex-shrink: 0;
-        width: 8mm;
-        height: 8mm;
-        border-radius: 50%;
-        background: #e6f1fb;
-        color: #185fa5;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 11pt;
-        font-weight: bold;
-    }
-    .label-equip-info {
-        flex: 1;
+    /* Ширины заданы явно: при flex: 1 колонка не сжималась под содержимое
+       и выталкивала логотип за край этикетки. 21 + 1 + 17 = 39 мм при
+       полезной ширине 40 мм. */
+    .label-info {
+        flex: 0 0 21mm;
+        width: 21mm;
         min-width: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4mm;
     }
     .label-model {
-        font-size: 7pt;
+        font-size: 8pt;
         font-weight: bold;
-        color: #333;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
     .label-serial {
-        font-size: 6.5pt;
-        color: #555;
+        font-size: 7pt;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .label-qr {
-        flex-shrink: 0;
-        width: 8mm;
-        height: 8mm;
-    }
-    .label-footer {
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 1mm;
-        font-size: 5pt;
-        color: #555;
-        line-height: 1;
+    .label-date { font-size: 5.5pt; }
+    .label-of-total { font-size: 5pt; }
+    /* SVG как flex-элемент резервирует в раскладке ширину из viewBox,
+       а не заданную в CSS, и выталкивает соседей за край. Обёртка обычным
+       блоком делает размер предсказуемым. */
+    .label-logo-wrap {
+        flex: 0 0 16.4mm;
+        width: 16.4mm;
+        height: 16.4mm;
+        overflow: hidden;
     }
     .label-logo {
-        width: 3mm;
-        height: 3mm;
-        border-radius: 50%;
+        display: block;
+        width: 100%;
+        height: 100%;
+    }
+    .label-logo-text {
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        font-weight: bold;
+        fill: #000;
+        letter-spacing: 0.5px;
+    }
+    .label-phones {
+        text-align: center;
+        font-size: 4.5pt;
+        line-height: 1;
         flex-shrink: 0;
+        padding-top: 0.2mm;
     }
 </style>
 {% endblock %}

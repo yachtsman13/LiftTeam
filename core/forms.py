@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.5.8.
+Формы для LiftTeam v2.6.0.
 """
 from django import forms
 from django.contrib.auth import authenticate

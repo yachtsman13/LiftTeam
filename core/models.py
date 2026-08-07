@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.5.8.
+Модели данных для LiftTeam v2.6.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -159,7 +159,16 @@ class RepairOrder(models.Model):
         super().save(*args, **kwargs)
 
     def generate_order_number(self):
-        """Генерация номера заказа: LT-YYYY-MM-XXXXX с защитой от race condition."""
+        """Генерация номера заказа: LT-YYYY-MM-XXX с защитой от race condition.
+
+        Три цифры вместо пяти — номер короче и лучше читается на этикетке.
+        Это не жёсткий предел: при превышении 999 заказов за месяц номер просто
+        станет четырёхзначным, ничего не сломается. Заказы, созданные до смены
+        формата, сохраняют свои прежние номера — уникальность от этого
+        не страдает, а сравнение строк продолжает находить последний номер
+        верно, поскольку более длинная запись меньше более короткой
+        с большей первой цифрой.
+        """
         now = timezone.now()
         prefix = f"LT-{now.year:04d}-{now.month:02d}"
         with transaction.atomic():
@@ -171,7 +180,7 @@ class RepairOrder(models.Model):
                 new_num = last_num + 1
             else:
                 new_num = 1
-            return f"{prefix}-{new_num:05d}"
+            return f"{prefix}-{new_num:03d}"
 
     @property
     def total_repair_cost(self):

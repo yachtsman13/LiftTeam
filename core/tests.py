@@ -41,7 +41,7 @@ class OrderNumberGenerationTests(TestCase):
         order1 = RepairOrder.objects.create(client=self.client_obj)
         order2 = RepairOrder.objects.create(client=self.client_obj)
 
-        self.assertRegex(order1.order_number, r'^LT-\d{4}-\d{2}-\d{5}$')
+        self.assertRegex(order1.order_number, r'^LT-\d{4}-\d{2}-\d{3}$')
         self.assertNotEqual(order1.order_number, order2.order_number)
 
         seq1 = int(order1.order_number.rsplit('-', 1)[-1])

@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 if "%~1"=="" (
     echo   Использование: update_version.bat [ВЕРСИЯ]
-    echo   Пример: update_version.bat v2.5.8
+    echo   Пример: update_version.bat v2.6.0
     pause
     exit /b 1
 )
@@ -17,10 +17,11 @@ echo    LiftTeam — Update Version to %NEW_VERSION%
 echo   ================================================
 echo.
 
-:: Обновляем версию в ключевых файлах
+:: CHANGELOG.md намеренно НЕ обрабатывается: замена по всему файлу переписала бы
+:: заголовки всех прошлых выпусков на новый номер и уничтожила историю версий.
+:: Запись о новой версии добавляется в него вручную.
 powershell -Command "(Get-Content lifteam_launcher.py) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content lifteam_launcher.py"
 powershell -Command "(Get-Content README.md) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content README.md"
-powershell -Command "(Get-Content CHANGELOG.md) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content CHANGELOG.md"
 powershell -Command "(Get-Content PROMPT.md) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content PROMPT.md"
 powershell -Command "(Get-Content TZ.md) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content TZ.md"
 powershell -Command "(Get-Content start.bat) -replace 'v[0-9]+\.[0-9]+\.[0-9]+([\.[0-9]+)*', '%NEW_VERSION%' | Set-Content start.bat"

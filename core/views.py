@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.5.8.
+Views для LiftTeam v2.6.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1061,14 +1061,12 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     roe = get_object_or_404(RepairOrderEquipment, pk=roe_pk, repair_order=order)
     position = next(i for i, r in enumerate(roe_list, start=1) if r.pk == roe.pk)
 
-    qr_data_dict = {
-        'order': order.order_number,
-        'position': position,
-        'equipment_id': roe.equipment.id,
-        'model': roe.equipment.model.name,
-        'serial': roe.equipment.serial_number,
-    }
-    qr_img = generate_qr_image(json.dumps(qr_data_dict, ensure_ascii=False))
+    # Компактная строка вместо JSON: только заглавные, цифры и '-', '/'.
+    # QR кодирует такой набор вдвое плотнее, чем произвольный текст, и код
+    # укладывается в минимальный размер 21x21 модуль — при печати 9 мм это
+    # даёт крупные модули, что решает, считается ли этикетка после месяца
+    # на складе. Заодно строка читается человеком, если QR не сканируется.
+    qr_img = generate_qr_image(f'{order.order_number}/{position}')
 
     return render(request, 'core/repair_orders/equipment_label.html', {
         'order': order,
