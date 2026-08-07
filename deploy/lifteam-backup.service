@@ -1,0 +1,36 @@
+# Разовый запуск резервного копирования. Расписание задаёт lifteam-backup.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-backup.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-backup
+# Посмотреть логи:    journalctl -u lifteam-backup
+# Когда следующий запуск: systemctl list-timers lifteam-backup.timer
+
+[Unit]
+Description=Резервное копирование базы LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+
+# Конфигурация rclone лежит внутри каталога приложения, а не в домашнем:
+# ProtectHome=true ниже закрывает доступ к /home, и токены оттуда прочитать
+# не удастся. Создать её: sudo -u lifteam RCLONE_CONFIG=/opt/lifteam/rclone.conf rclone config
+Environment=RCLONE_CONFIG=/opt/lifteam/rclone.conf
+
+# Настроить выгрузку наружу: раскомментировать и указать remote из rclone config
+# Environment=LIFTEAM_RCLONE_REMOTE=yandex:LiftTeam/backups
+
+ExecStart=/opt/lifteam/deploy/backup.sh
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

@@ -94,9 +94,9 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_DIRS = [
-    BASE_DIR / 'core' / 'static',
-]
+# core/static находит AppDirectoriesFinder, так как core — установленное
+# приложение. Дублировать каталог в STATICFILES_DIRS не нужно: collectstatic
+# тогда обнаруживает каждый файл дважды и предупреждает о конфликте.
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

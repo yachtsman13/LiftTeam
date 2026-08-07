@@ -1,0 +1,118 @@
+"""
+Настройки для развёртывания на Raspberry Pi (или любом Linux-сервере) с SQLite.
+
+Отличие от settings_production.py: там PostgreSQL + Redis в Docker, здесь
+SQLite и один процесс Daphne — для нескольких сотрудников этого достаточно,
+а на Pi экономит около 200 МБ ОЗУ и два обслуживаемых сервиса.
+
+Запуск:
+    DJANGO_SETTINGS_MODULE=lifteam.settings_pi daphne lifteam.asgi:application
+"""
+import os
+
+from .settings import *  # noqa: F401,F403
+from .settings import BASE_DIR
+
+# --- Обязательные параметры -------------------------------------------------
+
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    raise ValueError(
+        'SECRET_KEY обязателен. Сгенерировать: '
+        'python -c "from django.core.management.utils import get_random_secret_key; '
+        'print(get_random_secret_key())"'
+    )
+
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+
+# Сюда нужно вписать адреса, по которым открывают приложение: локальный IP
+# Raspberry Pi в офисной сети и имя устройства в Tailscale.
+ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
+]
+if not CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS = [
+        f'{scheme}://{host}'
+        for host in ALLOWED_HOSTS if host not in ('*', '')
+        for scheme in ('http', 'https')
+    ]
+
+# --- Статика ----------------------------------------------------------------
+
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'},
+}
+
+# --- Безопасность -----------------------------------------------------------
+
+# Включать вместе с TLS. При доступе через Tailscale трафик уже шифруется
+# на транспортном уровне, и обычно эти параметры остаются выключенными —
+# иначе SECURE_SSL_REDIRECT уводит в бесконечный редирект, а Secure-куки
+# не дают войти в систему по HTTP.
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() == 'true'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_HSTS_SECONDS = 31536000 if SECURE_SSL_REDIRECT else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_SSL_REDIRECT
+SECURE_HSTS_PRELOAD = SECURE_SSL_REDIRECT
+SESSION_COOKIE_SECURE = SECURE_SSL_REDIRECT
+CSRF_COOKIE_SECURE = SECURE_SSL_REDIRECT
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
+# --- Каналы -----------------------------------------------------------------
+
+# InMemoryChannelLayer работает только внутри одного процесса. Это допустимо
+# при запуске одного Daphne (см. deploy/lifteam.service). Если процессов станет
+# несколько, WebSocket-уведомления придут не всем — тогда понадобится Redis.
+REDIS_URL = os.getenv('REDIS_URL', '')
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {'hosts': [REDIS_URL]},
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},
+    }
+
+# --- Логирование ------------------------------------------------------------
+
+# Вывод в stdout подхватывается journald: journalctl -u lifteam -f
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{levelname} {asctime} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+    },
+}

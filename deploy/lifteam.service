@@ -1,0 +1,43 @@
+# Сервис приложения LiftTeam (ASGI через Daphne).
+#
+# Установка:
+#   sudo cp deploy/lifteam.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam
+#
+# Логи:      journalctl -u lifteam -f
+# Перезапуск: sudo systemctl restart lifteam
+
+[Unit]
+Description=LiftTeam — учёт ремонта лифтового оборудования
+Documentation=https://github.com/yachtsman13/Lifteam
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+
+# Переменные окружения читает сам python-dotenv из /opt/lifteam/.env
+# (WorkingDirectory задан выше), поэтому EnvironmentFile здесь не нужен —
+# заодно не приходится согласовывать формат .env с синтаксисом systemd.
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+Environment=PYTHONUNBUFFERED=1
+
+# Слушаем только localhost: наружу запросы отдаёт nginx
+ExecStart=/opt/lifteam/venv/bin/daphne -b 127.0.0.1 -p 8000 lifteam.asgi:application
+
+Restart=on-failure
+RestartSec=5
+
+# Ограничения прав: сервису нужен доступ на запись только к своим данным
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam
+
+[Install]
+WantedBy=multi-user.target
