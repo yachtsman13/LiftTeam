@@ -1,0 +1,18 @@
+# Зависимости для развёртывания на Raspberry Pi с SQLite (lifteam.settings_pi).
+#
+# Отличие от requirements.txt: убраны psycopg2-binary, django-redis и
+# channels-redis — они нужны только для варианта с PostgreSQL и Redis в Docker.
+# На ARM их установка занимает заметное время и может потребовать компиляции,
+# а при SQLite и одном процессе Daphne они не используются вовсе.
+
+Django>=5.1,<5.2
+djangorestframework>=3.15.0
+django-filter>=24.0
+channels>=4.0
+daphne>=4.0
+python-dotenv>=1.0
+Pillow>=10.0
+python-barcode>=0.15
+openpyxl>=3.1
+qrcode>=7.0
+asgiref>=3.7
