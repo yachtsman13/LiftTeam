@@ -1,12 +1,19 @@
 """
 Тесты для LiftTeam. Покрывают наиболее рискованную бизнес-логику:
 генерацию номера заказа, движение склада, ячейки с несколькими деталями,
-импорт/экспорт Excel, права доступа по ролям и маршрутизацию.
+импорт/экспорт Excel, права доступа по ролям, маршрутизацию,
+настройку SQLite и резервное копирование.
 """
 import io
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
+from django.conf import settings
+from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
 from django.test import Client as TestClient
 from django.urls import resolve
@@ -273,3 +280,155 @@ class UrlRoutingTests(TestCase):
         (path('admin/', admin.site.urls) match'ился раньше core.urls)."""
         match = resolve('/management/users/')
         self.assertEqual(match.func.__name__, 'admin_users')
+
+
+class SqliteConfigurationTests(TestCase):
+    def test_busy_timeout_applied_to_connection(self):
+        """Без увеличенного таймаута одновременная работа даёт 'database is locked'."""
+        with connection.cursor() as cursor:
+            timeout = cursor.execute('PRAGMA busy_timeout;').fetchone()[0]
+        self.assertEqual(timeout, 30000)
+
+    def test_handler_ignores_non_sqlite_backends(self):
+        """На PostgreSQL PRAGMA-команды недопустимы — обработчик обязан выйти сразу."""
+        from .signals import configure_sqlite
+
+        fake_connection = type('FakeConnection', (), {
+            'vendor': 'postgresql',
+            'cursor': lambda self: (_ for _ in ()).throw(
+                AssertionError('cursor() не должен вызываться для PostgreSQL')
+            ),
+        })()
+        configure_sqlite(sender=None, connection=fake_connection)
+
+
+class BackupRestoreTests(TestCase):
+    """Проверяют, что копии действительно восстановимы, а не просто создаются."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tmp_path = Path(self.tmp.name)
+        self.source_db = self.tmp_path / 'source.sqlite3'
+
+        con = sqlite3.connect(self.source_db)
+        con.execute('CREATE TABLE parts (id INTEGER PRIMARY KEY, name TEXT);')
+        con.executemany(
+            'INSERT INTO parts (name) VALUES (?);',
+            [('Резистор',), ('Конденсатор',), ('Диод',)],
+        )
+        con.commit()
+        con.close()
+
+    def _run_backup(self, **kwargs):
+        db_config = settings.DATABASES['default']
+        with patch.dict(db_config, {'NAME': str(self.source_db)}):
+            call_command('backup_db', output=str(self.tmp_path / 'backups'), verbosity=0, **kwargs)
+
+    def test_backup_is_created_and_restorable(self):
+        self._run_backup()
+
+        backups = list((self.tmp_path / 'backups').glob('db_*.sqlite3'))
+        self.assertEqual(len(backups), 1)
+
+        con = sqlite3.connect(backups[0])
+        try:
+            self.assertEqual(con.execute('PRAGMA integrity_check;').fetchone()[0], 'ok')
+            names = [row[0] for row in con.execute('SELECT name FROM parts ORDER BY id;')]
+        finally:
+            con.close()
+        self.assertEqual(names, ['Резистор', 'Конденсатор', 'Диод'])
+
+    def test_backup_reflects_data_written_after_previous_backup(self):
+        self._run_backup()
+
+        con = sqlite3.connect(self.source_db)
+        con.execute("INSERT INTO parts (name) VALUES ('Стабилитрон');")
+        con.commit()
+        con.close()
+
+        self._run_backup()
+
+        backups = sorted((self.tmp_path / 'backups').glob('db_*.sqlite3'))
+        # Вторая копия за ту же секунду не должна затирать первую
+        self.assertEqual(len(backups), 2)
+
+        counts = []
+        for path in backups:
+            con = sqlite3.connect(path)
+            try:
+                counts.append(con.execute('SELECT COUNT(*) FROM parts;').fetchone()[0])
+            finally:
+                con.close()
+        self.assertEqual(counts, [3, 4])
+
+    def test_gzip_backup_is_compressed_and_readable(self):
+        self._run_backup(gzip=True)
+
+        backups = list((self.tmp_path / 'backups').glob('db_*.sqlite3.gz'))
+        self.assertEqual(len(backups), 1)
+        self.assertFalse(list((self.tmp_path / 'backups').glob('db_*.sqlite3')))
+
+    def test_retention_keeps_only_requested_number(self):
+        from core.management.commands.backup_db import Command
+
+        backup_dir = self.tmp_path / 'retention'
+        backup_dir.mkdir()
+        for i in range(6):
+            (backup_dir / f'db_2026-01-0{i}_120000.sqlite3').write_bytes(b'x')
+
+        removed = Command()._prune(backup_dir, keep=2)
+
+        self.assertEqual(removed, 4)
+        remaining = sorted(p.name for p in backup_dir.glob('db_*.sqlite3'))
+        self.assertEqual(remaining, [
+            'db_2026-01-04_120000.sqlite3',
+            'db_2026-01-05_120000.sqlite3',
+        ])
+
+    def test_retention_ignores_sqlite_sidecar_files(self):
+        """Файлы -wal/-shm не должны занимать места в квоте хранения копий."""
+        from core.management.commands.backup_db import Command
+
+        backup_dir = self.tmp_path / 'sidecars'
+        backup_dir.mkdir()
+        for i in range(3):
+            base = backup_dir / f'db_2026-01-0{i}_120000.sqlite3'
+            base.write_bytes(b'x')
+            base.with_name(base.name + '-wal').write_bytes(b'x')
+            base.with_name(base.name + '-shm').write_bytes(b'x')
+
+        removed = Command()._prune(backup_dir, keep=2)
+
+        self.assertEqual(removed, 1)
+        remaining = sorted(
+            p.name for p in backup_dir.glob('db_*.sqlite3')
+            if not p.name.endswith(('-wal', '-shm'))
+        )
+        self.assertEqual(remaining, [
+            'db_2026-01-01_120000.sqlite3',
+            'db_2026-01-02_120000.sqlite3',
+        ])
+        # служебные файлы удалённой копии тоже убраны
+        self.assertFalse((backup_dir / 'db_2026-01-00_120000.sqlite3-wal').exists())
+
+    def test_retention_disabled_keeps_everything(self):
+        from core.management.commands.backup_db import Command
+
+        backup_dir = self.tmp_path / 'keep-all'
+        backup_dir.mkdir()
+        for i in range(3):
+            (backup_dir / f'db_2026-01-0{i}_120000.sqlite3').write_bytes(b'x')
+
+        self.assertEqual(Command()._prune(backup_dir, keep=0), 0)
+        self.assertEqual(len(list(backup_dir.glob('db_*.sqlite3'))), 3)
+
+    def test_restore_refuses_corrupted_backup(self):
+        """Повреждённая копия не должна затирать рабочую базу."""
+        from django.core.management.base import CommandError
+
+        corrupted = self.tmp_path / 'corrupted.sqlite3'
+        corrupted.write_bytes(b'this is not a database')
+
+        with self.assertRaises(CommandError):
+            call_command('restore_db', str(corrupted), yes=True, verbosity=0)

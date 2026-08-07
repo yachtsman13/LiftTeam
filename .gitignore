@@ -6,6 +6,12 @@
 # База данных (standalone)
 db.sqlite3
 db.sqlite3-journal
+db.sqlite3-wal
+db.sqlite3-shm
+db.sqlite3.replaced_*
+
+# Резервные копии — содержат реальные данные, в репозиторий не отправляются
+backups/
 
 # Django
 staticfiles/

@@ -64,6 +64,11 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': str(BASE_DIR / 'db.sqlite3'),
+        # Сколько ждать освобождения блокировки на уровне драйвера.
+        # Остальные параметры (WAL и др.) — в core/signals.py::configure_sqlite
+        'OPTIONS': {
+            'timeout': 30,
+        },
     }
 }
 

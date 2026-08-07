@@ -1,15 +1,40 @@
 """
 Django signals для LiftTeam v2.5.8.
 Сигналы используются только для:
+- настройки параметров подключения к SQLite
 - создания начальной записи истории статуса при создании заказа
 - отправки WebSocket-уведомлений
 """
+from django.db.backends.signals import connection_created
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .models import RepairOrder, OrderStatusHistory, SparePart
+
+
+@receiver(connection_created)
+def configure_sqlite(sender, connection, **kwargs):
+    """Настройка SQLite для многопользовательской работы.
+
+    journal_mode=WAL — читатели не блокируются пишущим соединением. Без него
+    страница у одного сотрудника падает с 'database is locked', пока другой
+    оформляет приход на склад.
+
+    synchronous=FULL — оставляем максимальную надёжность вместо скорости:
+    приложение рассчитано на Raspberry Pi, где отключение питания реально,
+    а объём записи мал и выигрыш от NORMAL всё равно незаметен.
+
+    busy_timeout — сколько ждать освобождения блокировки, прежде чем упасть
+    с ошибкой. Значение по умолчанию (5 с) мало при одновременной работе.
+    """
+    if connection.vendor != 'sqlite':
+        return
+    with connection.cursor() as cursor:
+        cursor.execute('PRAGMA journal_mode=WAL;')
+        cursor.execute('PRAGMA synchronous=FULL;')
+        cursor.execute('PRAGMA busy_timeout=30000;')
 
 
 @receiver(post_save, sender=RepairOrder)
