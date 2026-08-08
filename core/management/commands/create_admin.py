@@ -1,6 +1,6 @@
 """
 Management command: create_admin
-LiftTeam v2.6.1
+LiftTeam v2.6.2
 """
 from django.core.management.base import BaseCommand
 from core.models import Employee

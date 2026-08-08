@@ -67,7 +67,7 @@
 - Пользователь может запросить любой из форматов — ИИ предоставляет оба
 
 ## Текущая версия
-v2.6.1 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.6.2 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 
 ## Стек
 Python 3.12, Django 5.1, DRF 3.17, Bootstrap 5, vanilla JS
