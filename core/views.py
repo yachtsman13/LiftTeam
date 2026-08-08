@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.6.0.
+Views для LiftTeam v2.6.1.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -299,6 +299,10 @@ def repair_order_create(request):
             formset.save()
             messages.success(request, f'Заказ {order.order_number} создан')
             return redirect('repair_order_detail', pk=order.pk)
+        # Без этого сообщения неудачное сохранение выглядело как успешное:
+        # страница просто перезагружалась, а ошибки полей, которые шаблон
+        # не выводил, оставались невидимыми — заказ молча не создавался
+        messages.error(request, 'Заказ не сохранён: проверьте отмеченные поля')
     else:
         form = RepairOrderForm()
         formset = RepairOrderEquipmentFormSet(prefix='equipments')
@@ -350,6 +354,7 @@ def repair_order_edit(request, pk):
                 )
             messages.success(request, 'Заказ обновлён')
             return redirect('repair_order_detail', pk=order.pk)
+        messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
     else:
         form = RepairOrderForm(instance=order)
         formset = RepairOrderEquipmentFormSet(instance=order, prefix='equipments')

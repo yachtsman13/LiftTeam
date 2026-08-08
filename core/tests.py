@@ -111,6 +111,60 @@ class RepairOrderAddDetailTests(TestCase):
         self.assertTrue(self.order.status_history.filter(notes__icontains='Добавлена деталь').exists())
 
 
+class RepairOrderFormErrorTests(TestCase):
+    """Регрессия: форма молча не сохранялась. Ошибки полей «Стоимость ремонта»
+    и «Папка на Яндекс.Диске» не выводились нигде — страница перезагружалась
+    без единого сообщения, и пользователь считал заказ созданным."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='order_form', full_name='Тест', password='pass'
+        )
+        self.client_obj = ClientModel.objects.create(name='Заказчик формы')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+
+    def _post(self, **overrides):
+        data = {
+            'client': self.client_obj.pk,
+            'fault_description': '',
+            'invoice_number': '',
+            'invoice_date': '',
+            'payment_status': 'unpaid',
+            'equipments-TOTAL_FORMS': '1',
+            'equipments-INITIAL_FORMS': '0',
+            'equipments-MIN_NUM_FORMS': '0',
+            'equipments-MAX_NUM_FORMS': '1000',
+            'equipments-0-equipment': '',
+            'equipments-0-fault_description': '',
+            'equipments-0-seal_numbers': '',
+            'equipments-0-initial_condition': '',
+            'equipments-0-repair_cost': '',
+            'equipments-0-yandex_disk_folder': '',
+        }
+        data.update(overrides)
+        return self.client_http.post('/repair-orders/create/', data)
+
+    def test_valid_submission_creates_order(self):
+        response = self._post()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(RepairOrder.objects.count(), 1)
+
+    def test_invalid_repair_cost_reports_error_and_creates_nothing(self):
+        response = self._post(**{'equipments-0-repair_cost': '15 000 руб'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(RepairOrder.objects.count(), 0)
+        self.assertContains(response, 'Заказ не сохранён')
+
+    def test_invalid_yandex_link_reports_error_and_creates_nothing(self):
+        response = self._post(**{'equipments-0-yandex_disk_folder': 'папка на диске'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(RepairOrder.objects.count(), 0)
+        self.assertContains(response, 'Заказ не сохранён')
+
+
 class StorageCellMultiPartTests(TestCase):
     def setUp(self):
         self.admin = Employee.objects.create_superuser(username='admin_t', full_name='Админ', password='pass')

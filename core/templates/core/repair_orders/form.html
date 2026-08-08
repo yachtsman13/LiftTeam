@@ -1,12 +1,31 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.6.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.6.1{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-tools me-2"></i>{{ title }}</h2>
     <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
 </div>
+
+{% if form.errors or formset.errors or formset.non_form_errors %}
+<div class="alert alert-danger">
+    <h6 class="alert-heading"><i class="bi bi-exclamation-triangle me-2"></i>Заказ не сохранён — исправьте ошибки</h6>
+    <ul class="mb-0 small">
+        {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+        {% for field in form %}
+            {% for error in field.errors %}<li>{{ field.label }}: {{ error }}</li>{% endfor %}
+        {% endfor %}
+        {% for error in formset.non_form_errors %}<li>Оборудование: {{ error }}</li>{% endfor %}
+        {% for eq_form in formset %}
+            {% for error in eq_form.non_field_errors %}<li>Оборудование {{ forloop.parentloop.counter }}: {{ error }}</li>{% endfor %}
+            {% for field in eq_form %}
+                {% for error in field.errors %}<li>Оборудование {{ forloop.parentloop.parentloop.counter }}, «{{ field.label }}»: {{ error }}</li>{% endfor %}
+            {% endfor %}
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
 
 <div class="card">
     <div class="card-body">
@@ -63,6 +82,9 @@
                             <div class="col-md-2">
                                 <label class="form-label small">{{ eq_form.seal_numbers.label }}</label>
                                 {{ eq_form.seal_numbers }}
+                                {% if eq_form.seal_numbers.errors %}
+                                <div class="text-danger small">{{ eq_form.seal_numbers.errors.0 }}</div>
+                                {% endif %}
                             </div>
                             <div class="col-md-2 d-flex align-items-end">
                                 {% if eq_form.instance.pk %}
@@ -81,14 +103,23 @@
                             <div class="col-md-4">
                                 <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
                                 {{ eq_form.initial_condition }}
+                                {% if eq_form.initial_condition.errors %}
+                                <div class="text-danger small">{{ eq_form.initial_condition.errors.0 }}</div>
+                                {% endif %}
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label small">{{ eq_form.repair_cost.label }}</label>
                                 {{ eq_form.repair_cost }}
+                                {% if eq_form.repair_cost.errors %}
+                                <div class="text-danger small">{{ eq_form.repair_cost.errors.0 }}</div>
+                                {% endif %}
                             </div>
                             <div class="col-md-5">
                                 <label class="form-label small">{{ eq_form.yandex_disk_folder.label }}</label>
                                 {{ eq_form.yandex_disk_folder }}
+                                {% if eq_form.yandex_disk_folder.errors %}
+                                <div class="text-danger small">{{ eq_form.yandex_disk_folder.errors.0 }}</div>
+                                {% endif %}
                             </div>
                         </div>
                         {% for hidden in eq_form.hidden_fields %}{{ hidden }}{% endfor %}
