@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.6.2.
+Views для LiftTeam v2.6.3.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -627,6 +627,20 @@ def part_detail(request, pk):
     })
 
 
+def _measurement_pairs(form):
+    """Пары «значение — единица измерения» для вывода в одной строке формы."""
+    return [
+        (form[value], form[unit])
+        for value, unit in (
+            ('resistance', 'resistance_unit'),
+            ('power', 'power_unit'),
+            ('voltage', 'voltage_unit'),
+            ('current', 'current_unit'),
+            ('capacitance', 'capacitance_unit'),
+        )
+    ]
+
+
 @login_required
 def part_create(request):
     if request.method == 'POST':
@@ -635,9 +649,14 @@ def part_create(request):
             part = form.save()
             messages.success(request, f'Деталь {part.part_number} добавлена')
             return redirect('part_detail', pk=part.pk)
+        messages.error(request, 'Деталь не сохранена: проверьте отмеченные поля')
     else:
         form = SparePartForm()
-    return render(request, 'core/parts/form.html', {'form': form, 'title': 'Новая деталь'})
+    return render(request, 'core/parts/form.html', {
+        'form': form,
+        'title': 'Новая деталь',
+        'measurement_pairs': _measurement_pairs(form),
+    })
 
 
 @login_required
@@ -649,9 +668,15 @@ def part_edit(request, pk):
             form.save()
             messages.success(request, 'Деталь обновлена')
             return redirect('part_detail', pk=part.pk)
+        messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
     else:
         form = SparePartForm(instance=part)
-    return render(request, 'core/parts/form.html', {'form': form, 'title': 'Редактирование детали', 'part': part})
+    return render(request, 'core/parts/form.html', {
+        'form': form,
+        'title': 'Редактирование детали',
+        'part': part,
+        'measurement_pairs': _measurement_pairs(form),
+    })
 
 
 @role_required('warehouse')

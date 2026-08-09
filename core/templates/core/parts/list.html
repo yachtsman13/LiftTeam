@@ -1,6 +1,16 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.6.2{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.6.3{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Адрес ячейки и кнопки не должны переноситься на вторую строку:
+       из-за переноса строка таблицы вырастала вдвое. */
+    .col-cell { white-space: nowrap; }
+    .col-actions { white-space: nowrap; width: 1%; }
+    .col-actions .btn { padding: 0.2rem 0.45rem; }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -64,8 +74,8 @@
                         <th>Тип</th>
                         <th>Остаток</th>
                         <th>Мин.</th>
-                        <th>Ячейка</th>
-                        <th class="text-end">Действия</th>
+                        <th class="col-cell">Ячейка</th>
+                        <th class="text-end col-actions">Действия</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -76,8 +86,8 @@
                         <td>{{ part.component_type|default:"—" }}</td>
                         <td><span class="badge bg-{% if part.is_below_min_stock %}danger{% else %}success{% endif %}">{{ part.current_stock }}</span></td>
                         <td>{{ part.min_stock }}</td>
-                        <td>{{ part.current_cell.address|default:"—" }}</td>
-                        <td class="text-end">
+                        <td class="col-cell">{{ part.current_cell.address|default:"—" }}</td>
+                        <td class="text-end col-actions">
                             <a href="{% if part.current_cell %}{% url 'storage_cell_label' part.current_cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.current_cell %} disabled{% endif %}" title="{% if part.current_cell %}Этикетка{% else %}Нет ячейки{% endif %}" {% if part.current_cell %}target="_blank"{% endif %} onclick="{% if not part.current_cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-printer"></i></a>
                             <a href="{% url 'part_edit' part.pk %}" class="btn btn-sm btn-outline-primary" title="Редактировать" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>

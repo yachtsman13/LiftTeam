@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.6.2{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.6.3{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -12,15 +12,66 @@
     <div class="card-body">
         <form method="post">
             {% csrf_token %}
+            {% if form.non_field_errors %}
+            <div class="alert alert-danger">
+                {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+            {% endif %}
+
             <div class="row g-3">
-                {% for field in form %}
-                <div class="col-md-6">
-                    <label class="form-label">{{ field.label }}</label>
-                    {{ field }}
-                    {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-                    {% if field.errors %}<div class="text-danger small">{{ field.errors.0 }}</div>{% endif %}
+                <div class="col-md-4">
+                    <label class="form-label">{{ form.part_number.label }}</label>
+                    {{ form.part_number }}
+                    {% if form.part_number.errors %}<div class="text-danger small">{{ form.part_number.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">{{ form.name.label }}</label>
+                    {{ form.name }}
+                    {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.component_type.label }}</label>
+                    {{ form.component_type }}
+                    {% if form.component_type.errors %}<div class="text-danger small">{{ form.component_type.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
+
+            {# Значение и его единица измерения — всегда в одной строке #}
+            <div class="row g-3 mt-1">
+                {% for value_field, unit_field in measurement_pairs %}
+                <div class="col-md-4">
+                    <label class="form-label">{{ value_field.label }}</label>
+                    <div class="input-group">
+                        {{ value_field }}
+                        {{ unit_field }}
+                    </div>
+                    {% if value_field.errors %}<div class="text-danger small">{{ value_field.errors.0 }}</div>{% endif %}
+                    {% if unit_field.errors %}<div class="text-danger small">{{ unit_field.errors.0 }}</div>{% endif %}
                 </div>
                 {% endfor %}
+            </div>
+
+            <div class="row g-3 mt-1">
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.min_stock.label }}</label>
+                    {{ form.min_stock }}
+                    {% if form.min_stock.errors %}<div class="text-danger small">{{ form.min_stock.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.lead_time_days.label }}</label>
+                    {{ form.lead_time_days }}
+                    {% if form.lead_time_days.errors %}<div class="text-danger small">{{ form.lead_time_days.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.preferred_supplier.label }}</label>
+                    {{ form.preferred_supplier }}
+                    {% if form.preferred_supplier.errors %}<div class="text-danger small">{{ form.preferred_supplier.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">{{ form.description.label }}</label>
+                    {{ form.description }}
+                    {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors.0 }}</div>{% endif %}
+                </div>
             </div>
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>

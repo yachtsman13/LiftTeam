@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.6.2.
+Формы для LiftTeam v2.6.3.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -180,15 +180,15 @@ class SparePartForm(forms.ModelForm):
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'component_type': forms.TextInput(attrs={'class': 'form-control', 'list': 'component-types'}),
             'resistance': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
-            'resistance_unit': forms.TextInput(attrs={'class': 'form-control', 'list': 'resistance-units', 'placeholder': 'Ом'}),
+            'resistance_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'resistance-units', 'placeholder': 'Ом'}),
             'power': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
-            'power_unit': forms.TextInput(attrs={'class': 'form-control', 'list': 'power-units', 'placeholder': 'Вт'}),
+            'power_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'power-units', 'placeholder': 'Вт'}),
             'voltage': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
-            'voltage_unit': forms.TextInput(attrs={'class': 'form-control', 'list': 'voltage-units', 'placeholder': 'В'}),
+            'voltage_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'voltage-units', 'placeholder': 'В'}),
             'current': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
-            'current_unit': forms.TextInput(attrs={'class': 'form-control', 'list': 'current-units', 'placeholder': 'А'}),
+            'current_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'current-units', 'placeholder': 'А'}),
             'capacitance': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
-            'capacitance_unit': forms.TextInput(attrs={'class': 'form-control', 'list': 'capacitance-units', 'placeholder': 'Ф'}),
+            'capacitance_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'capacitance-units', 'placeholder': 'Ф'}),
             'min_stock': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
             'lead_time_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
             'preferred_supplier': forms.TextInput(attrs={'class': 'form-control'}),

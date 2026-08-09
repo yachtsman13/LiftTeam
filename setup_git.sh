@@ -33,7 +33,7 @@ git config user.email "yachtsman13@github.com"
 
 echo "  [3/3] Первый коммит и push..."
 git add -A
-git commit -m "LiftTeam v2.6.2 initial commit" 2>/dev/null || true
+git commit -m "LiftTeam v2.6.3 initial commit" 2>/dev/null || true
 git push -u origin main --force
 
 echo ""

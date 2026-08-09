@@ -1,15 +1,23 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.6.2{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.6.3{% endblock %}
 
 {% block extra_css %}
 <style>
-    /* Убираем отступы и ограничения, чтобы сетка занимала всё доступное пространство */
+    /* Сетка занимает доступное пространство, но не впритык к краям экрана:
+       рамка ячейки у самой границы окна читается как обрезанная. */
     .grid-page {
         display: flex;
         flex-direction: column;
-        height: calc(100vh - 60px); /* минус заголовок и padding */
+        /* 96px = отступы .main-content сверху и снизу (20+20), высота шапки
+           страницы (46) и её нижний отступ (8). Без этого появляется
+           вертикальная прокрутка, хотя сетка должна помещаться целиком. */
+        height: calc(100vh - 96px);
         overflow: hidden;
+        padding: 0 12px 8px;
+        max-width: 1400px;
+        margin: 0 auto;
+        width: 100%;
     }
     .grid-toolbar {
         flex-shrink: 0;
@@ -161,13 +169,50 @@
     .move-mode-banner .btn-close-white {
         filter: invert(1) grayscale(100%) brightness(200%);
     }
+
+    /* Телефоны. Восемь колонок в ширину экрана дают ячейку около 40 px —
+       это на грани попадания пальцем, поэтому уменьшаем подписи и отступы,
+       а не саму сетку. Панель фильтров переносим на отдельные строки. */
+    @media (max-width: 768px) {
+        .grid-page {
+            height: auto;
+            min-height: calc(100vh - 120px);
+            padding: 0 4px 8px;
+        }
+        .grid-toolbar-mobile { flex-direction: column; align-items: stretch !important; }
+        .grid-toolbar-mobile .form-select,
+        .grid-toolbar-mobile form { width: 100% !important; }
+        .grid-toolbar-mobile input[type="text"] { width: auto !important; flex: 1; }
+
+        .col-header-row { margin-left: 22px; }
+        .col-header-cell { font-size: 0.7rem; }
+        .row-label { width: 22px; font-size: 0.7rem; }
+
+        .grid-row-wrapper { min-height: 42px; }
+        .cell-item {
+            margin: 1px;
+            padding: 1px;
+            font-size: 0.6rem;
+            border-width: 1px;
+        }
+        .cell-item .cell-num { font-size: 0.55rem; }
+        .cell-item .cell-part { font-size: 0.52rem; }
+        .cell-item .cell-part-count { display: none; }
+        /* Увеличение при наведении на сенсорном экране только мешает */
+        .cell-item:hover { transform: none; box-shadow: none; }
+
+        .grid-legend { gap: 6px; flex-wrap: wrap; }
+        .grid-legend .badge { font-size: 0.75rem; padding: 3px 8px; }
+
+        .cell-part-row { flex-wrap: wrap; }
+    }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-2">
     <h2><i class="bi bi-grid-3x3 me-2"></i>Кассетница №{{ cabinet }}</h2>
-    <div class="d-flex gap-2">
+    <div class="d-flex gap-2 grid-toolbar-mobile">
         <form method="get" class="d-flex gap-2" action="{% url 'part_list' %}">
             <input type="text" name="q" class="form-control" placeholder="Поиск деталей..." style="width: 200px;">
             <button type="submit" class="btn btn-outline-primary"><i class="bi bi-search"></i></button>
