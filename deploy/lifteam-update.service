@@ -1,0 +1,25 @@
+# Выполняет обновление по заявке из веб-интерфейса.
+# Запускается не по расписанию, а по появлению файла — см. lifteam-update.path
+#
+# Установка описана в lifteam-update.path. Перед включением обязательно
+# установить сам скрипт:
+#   sudo cp deploy/lifteam-update-runner.sh /usr/local/sbin/lifteam-update
+#   sudo chown root:root /usr/local/sbin/lifteam-update
+#   sudo chmod 755 /usr/local/sbin/lifteam-update
+#
+# Права на скрипт принципиальны: он выполняется от root. Если оставить его
+# в /opt/lifteam, где владелец — пользователь приложения, то компрометация
+# приложения превращается в компрометацию всего устройства.
+
+[Unit]
+Description=Обновление LiftTeam по заявке из интерфейса
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lifteam-update
+
+# Служба перезапускает lifteam, поэтому не должна быть его частью:
+# иначе перезапуск оборвал бы её саму на середине
+KillMode=process
+TimeoutStartSec=900

@@ -1,6 +1,6 @@
 """
 WSGI config for lifteam project.
-v2.6.3
+v2.7.0
 """
 import os
 

@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.6.3.
+Модели данных для LiftTeam v2.7.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """

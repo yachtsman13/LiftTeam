@@ -5,6 +5,7 @@
 настройку SQLite и резервное копирование.
 """
 import io
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -326,6 +327,83 @@ class RolePermissionTests(TestCase):
         client.force_login(self.warehouse_user)
         resp = client.get('/management/users/', follow=True)
         self.assertRedirects(resp, '/')
+
+
+class UpdaterTests(TestCase):
+    """Обновление через интерфейс. Приложение не имеет прав root и лишь
+    оставляет заявку — проверяем, что в заявку нельзя подсунуть что угодно
+    и что попасть на страницу может только администратор."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='upd_admin', full_name='Админ', password='pass'
+        )
+        self.warehouse = Employee.objects.create_user(
+            username='upd_wh', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_page_requires_admin_role(self):
+        client = TestClient()
+        client.force_login(self.warehouse)
+        response = client.get('/management/update/', follow=True)
+        self.assertRedirects(response, '/')
+
+    def test_page_open_for_admin(self):
+        client = TestClient()
+        client.force_login(self.admin)
+        self.assertEqual(client.get('/management/update/').status_code, 200)
+
+    def test_status_endpoint_requires_admin(self):
+        client = TestClient()
+        client.force_login(self.warehouse)
+        response = client.get('/management/update/status/', follow=True)
+        self.assertRedirects(response, '/')
+
+    def test_request_update_rejects_command_injection(self):
+        from core import updater
+
+        for evil in ('; rm -rf /', '$(whoami)', '../../etc/passwd', 'main', 'HEAD', ''):
+            with self.subTest(target=evil):
+                with self.assertRaises(ValueError):
+                    updater.request_update(evil)
+
+    def test_request_update_accepts_valid_targets(self):
+        from core import updater
+
+        tmp_path = Path(self.tmp.name)
+        with patch.object(updater, 'REQUEST_FILE', tmp_path / '.update-request'), \
+             patch.object(updater, 'STATUS_FILE', tmp_path / '.update-status'):
+            updater.request_update('latest', requested_by='upd_admin')
+            written = json.loads((tmp_path / '.update-request').read_text(encoding='utf-8'))
+
+        self.assertEqual(written['target'], 'latest')
+        self.assertEqual(written['requested_by'], 'upd_admin')
+
+    def test_request_update_accepts_commit_hash(self):
+        from core import updater
+
+        tmp_path = Path(self.tmp.name)
+        with patch.object(updater, 'REQUEST_FILE', tmp_path / '.update-request'), \
+             patch.object(updater, 'STATUS_FILE', tmp_path / '.update-status'):
+            updater.request_update('a1b2c3d')
+            written = json.loads((tmp_path / '.update-request').read_text(encoding='utf-8'))
+
+        self.assertEqual(written['target'], 'a1b2c3d')
+
+    def test_no_request_file_written_for_invalid_target(self):
+        """Заявка не должна появляться, если значение отвергнуто."""
+        from core import updater
+
+        tmp_path = Path(self.tmp.name)
+        request_file = tmp_path / '.update-request'
+        with patch.object(updater, 'REQUEST_FILE', request_file), \
+             patch.object(updater, 'STATUS_FILE', tmp_path / '.update-status'):
+            with self.assertRaises(ValueError):
+                updater.request_update('; reboot')
+
+        self.assertFalse(request_file.exists())
 
 
 class UrlRoutingTests(TestCase):

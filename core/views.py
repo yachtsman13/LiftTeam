@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.6.3.
+Views для LiftTeam v2.7.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -31,6 +31,7 @@ from .forms import (
 )
 from .utils import generate_barcode_image, generate_qr_image
 from .decorators import role_required
+from . import updater
 
 
 def _send_stock_update(part):
@@ -1291,3 +1292,53 @@ def admin_user_edit(request, pk):
 
 
 
+
+
+# ==================== ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ ====================
+
+@role_required('admin')
+def admin_update(request):
+    """Страница обновления. Само обновление выполняет служба systemd от root —
+    приложение лишь оставляет заявку (подробности в core/updater.py)."""
+    if not updater.is_git_checkout():
+        return render(request, 'core/admin/update.html', {'not_a_repo': True})
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+
+        if action == 'check':
+            ok, output = updater.fetch_remote()
+            if ok:
+                count = len(updater.pending_updates())
+                messages.success(
+                    request,
+                    f'Доступно обновлений: {count}' if count else 'Установлена последняя версия'
+                )
+            else:
+                messages.error(request, f'Не удалось проверить обновления: {output}')
+
+        elif action in ('update', 'rollback'):
+            if updater.update_in_progress():
+                messages.warning(request, 'Обновление уже выполняется')
+            else:
+                target = 'latest' if action == 'update' else request.POST.get('target', '')
+                try:
+                    updater.request_update(target, requested_by=request.user.username)
+                except ValueError as exc:
+                    messages.error(request, str(exc))
+                else:
+                    messages.info(request, 'Обновление запущено, приложение перезапустится')
+        return redirect('admin_update')
+
+    return render(request, 'core/admin/update.html', {
+        'current': updater.current_version(),
+        'pending': updater.pending_updates(),
+        'history': updater.recent_history(),
+        'status': updater.read_status(),
+    })
+
+
+@role_required('admin')
+def admin_update_status(request):
+    """Ход обновления для опроса со страницы."""
+    return JsonResponse(updater.read_status() or {'state': 'idle', 'message': '', 'log': []})

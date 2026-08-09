@@ -1,0 +1,183 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Обновление — LiftTeam v2.7.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-arrow-repeat me-2"></i>Обновление программы</h2>
+    <a href="{% url 'admin_users' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+{% if not_a_repo %}
+<div class="alert alert-warning">
+    <h6 class="alert-heading">Обновление из интерфейса недоступно</h6>
+    Программа развёрнута не из репозитория, поэтому получать обновления автоматически
+    она не может. Так бывает, если проект распакован из архива. Обновляйте вручную
+    или разверните заново по инструкции <code>DEPLOY.md</code>.
+</div>
+{% else %}
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card mb-4">
+            <div class="card-header"><h5 class="mb-0">Установленная версия</h5></div>
+            <div class="card-body">
+                <div class="d-flex align-items-baseline gap-3 flex-wrap">
+                    <span class="badge bg-primary fs-5">{{ current.version }}</span>
+                    <code>{{ current.commit }}</code>
+                    <span class="text-muted">{{ current.date }}</span>
+                </div>
+                <form method="post" class="mt-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="check">
+                    <button type="submit" class="btn btn-outline-primary">
+                        <i class="bi bi-arrow-clockwise me-2"></i>Проверить обновления
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    {% if pending %}Доступно обновлений: {{ pending|length }}{% else %}Обновлений нет{% endif %}
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if pending %}
+                <ul class="list-group list-group-flush mb-3">
+                    {% for change in pending %}
+                    <li class="list-group-item px-0">
+                        <div>{{ change.subject }}</div>
+                        <small class="text-muted"><code>{{ change.commit }}</code> · {{ change.date }}</small>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <form method="post" onsubmit="return confirmUpdate()">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="update">
+                    <button type="submit" class="btn btn-primary" id="updateBtn">
+                        <i class="bi bi-download me-2"></i>Обновить до последней версии
+                    </button>
+                </form>
+                {% else %}
+                <p class="text-muted mb-0">
+                    Установлена последняя версия. Нажмите «Проверить обновления»,
+                    чтобы запросить сведения с GitHub.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card mb-4" id="statusCard" {% if not status %}style="display:none"{% endif %}>
+            <div class="card-header"><h5 class="mb-0">Ход обновления</h5></div>
+            <div class="card-body">
+                <div id="statusMessage" class="mb-2">{{ status.message|default:"" }}</div>
+                <div class="progress mb-3" id="statusProgress" style="height: 6px; display:none">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated w-100"></div>
+                </div>
+                <pre id="statusLog" class="small bg-light p-2 mb-0" style="max-height: 220px; overflow:auto">{% for line in status.log %}{{ line }}&#10;{% endfor %}</pre>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">История версий</h5></div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    {% for item in history %}
+                    <div class="list-group-item d-flex justify-content-between align-items-start gap-2">
+                        <div class="small">
+                            <div>{{ item.subject|truncatechars:60 }}</div>
+                            <span class="text-muted"><code>{{ item.commit }}</code> · {{ item.date }}</span>
+                        </div>
+                        {% if item.is_current %}
+                        <span class="badge bg-success align-self-center">текущая</span>
+                        {% else %}
+                        <form method="post" onsubmit="return confirmRollback('{{ item.commit }}')">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="rollback">
+                            <input type="hidden" name="target" value="{{ item.commit }}">
+                            <button type="submit" class="btn btn-sm btn-outline-warning text-nowrap">Откатить</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-secondary mt-4 small">
+    <strong>Что происходит при обновлении.</strong> Сначала снимается резервная копия базы,
+    затем загружаются изменения, применяются миграции и пересобирается статика.
+    В конце приложение перезапускается — страница на несколько секунд станет недоступна,
+    это нормально.
+    <br><br>
+    Если обновление прервётся, приложение останется на прежней версии, а копия базы
+    сохранится. Восстановление в этом случае выполняется по SSH — через интерфейс
+    неработающую программу починить нельзя.
+</div>
+
+<script>
+function confirmUpdate() {
+    return confirm('Обновить программу? Приложение перезапустится, работа прервётся на несколько секунд.');
+}
+function confirmRollback(commit) {
+    return confirm('Откатиться к версии ' + commit + '?\n\nОткат возвращает код, но не отменяет изменения в структуре базы. Если новая версия добавляла поля, они останутся.');
+}
+
+// Пока идёт обновление — опрашиваем состояние
+(function() {
+    const card = document.getElementById('statusCard');
+    const messageEl = document.getElementById('statusMessage');
+    const logEl = document.getElementById('statusLog');
+    const progress = document.getElementById('statusProgress');
+    let failures = 0;
+
+    function poll() {
+        fetch('{% url "admin_update_status" %}', {credentials: 'same-origin'})
+            .then(r => r.json())
+            .then(data => {
+                failures = 0;
+                if (data.state === 'idle') return;
+                card.style.display = '';
+                messageEl.textContent = data.message || '';
+                logEl.textContent = (data.log || []).join('\n');
+                progress.style.display = (data.state === 'running' || data.state === 'requested') ? '' : 'none';
+
+                if (data.state === 'running' || data.state === 'requested') {
+                    setTimeout(poll, 2000);
+                } else if (data.state === 'finished') {
+                    messageEl.innerHTML = '<span class="text-success">Обновление завершено. Перезагрузка страницы…</span>';
+                    setTimeout(() => location.reload(), 6000);
+                }
+            })
+            .catch(() => {
+                // Во время перезапуска приложение недоступно — это ожидаемо,
+                // поэтому не считаем первые неудачи ошибкой
+                failures++;
+                messageEl.textContent = 'Приложение перезапускается…';
+                if (failures < 30) {
+                    setTimeout(poll, 2000);
+                } else {
+                    messageEl.innerHTML = '<span class="text-danger">Приложение не отвечает. Проверьте состояние по SSH.</span>';
+                }
+            });
+    }
+
+    {% if status and status.state in 'requested running' %}poll();{% endif %}
+    document.querySelectorAll('form').forEach(f => {
+        f.addEventListener('submit', function() {
+            const action = f.querySelector('[name="action"]');
+            if (action && (action.value === 'update' || action.value === 'rollback')) {
+                setTimeout(poll, 1500);
+            }
+        });
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
