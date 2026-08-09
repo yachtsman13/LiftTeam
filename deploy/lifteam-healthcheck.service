@@ -1,0 +1,24 @@
+# Разовая проверка доступности приложения. Расписание — в одноимённом .timer
+#
+# Установка:
+#   sudo cp deploy/healthcheck.sh /usr/local/sbin/lifteam-healthcheck
+#   sudo chown root:root /usr/local/sbin/lifteam-healthcheck
+#   sudo chmod 755 /usr/local/sbin/lifteam-healthcheck
+#   sudo cp deploy/lifteam-healthcheck.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-healthcheck.timer
+#
+# Скрипт лежит вне /opt/lifteam по той же причине, что и обновление:
+# он выполняется от root, а каталог приложения принадлежит пользователю
+# приложения — иначе подмена скрипта дала бы выполнение команд от root.
+
+[Unit]
+Description=Проверка доступности LiftTeam
+After=lifteam.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lifteam-healthcheck
+
+# Перезапускает lifteam, поэтому не должен быть его частью
+KillMode=process

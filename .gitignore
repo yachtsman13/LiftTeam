@@ -20,6 +20,7 @@ rclone.conf
 staticfiles/
 media/
 *.log
+logs/
 
 # Python
 __pycache__/

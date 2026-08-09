@@ -88,7 +88,20 @@ else:
 
 # --- Логирование ------------------------------------------------------------
 
-# Вывод в stdout подхватывается journald: journalctl -u lifteam -f
+# Пишем в два места намеренно.
+#
+# Вывод в stdout подхватывает journald (journalctl -u lifteam -f), но по
+# умолчанию journald на Raspberry Pi OS хранит записи в оперативной памяти
+# и стирает их при перезагрузке. Однажды это уже стоило нам возможности
+# разобраться в ошибке 500: перезагрузка починила приложение и одновременно
+# уничтожила единственное свидетельство причины.
+#
+# Поэтому ошибки дублируются в файл с ограничением размера. Он переживает
+# перезагрузку независимо от настроек системы, и его проще найти, чем
+# вспоминать нужные ключи journalctl.
+LOG_DIR = BASE_DIR / 'logs'
+LOG_DIR.mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -103,14 +116,23 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'standard',
         },
+        'errorfile': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOG_DIR / 'errors.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'encoding': 'utf-8',
+            'level': 'WARNING',
+            'formatter': 'standard',
+        },
     },
     'root': {
-        'handlers': ['console'],
+        'handlers': ['console', 'errorfile'],
         'level': 'INFO',
     },
     'loggers': {
         'django.request': {
-            'handlers': ['console'],
+            'handlers': ['console', 'errorfile'],
             'level': 'ERROR',
             'propagate': False,
         },

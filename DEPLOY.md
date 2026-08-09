@@ -568,7 +568,87 @@ sudo systemctl start lifteam
 
 ---
 
-## 10. Если что-то не работает
+## 10. Надёжность работы
+
+### Сохранение журнала между перезагрузками
+
+**Сделайте это сразу.** По умолчанию Raspberry Pi OS хранит журнал systemd
+в оперативной памяти и стирает при каждой перезагрузке. Это уже приводило
+к тому, что причину ошибки 500 установить не удалось: перезагрузка починила
+приложение и одновременно уничтожила единственное свидетельство.
+
+```bash
+sudo mkdir -p /var/log/journal
+```
+
+```bash
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+```
+
+Ограничим размер, чтобы журнал не занял диск:
+
+```bash
+sudo sh -c 'printf "[Journal]\nStorage=persistent\nSystemMaxUse=500M\nMaxRetentionSec=1month\n" > /etc/systemd/journald.conf.d/lifteam.conf'
+```
+
+```bash
+sudo systemctl restart systemd-journald
+```
+
+Проверка — команда должна показать записи, а не сообщение об отсутствии
+постоянного журнала:
+
+```bash
+journalctl --disk-usage
+```
+
+### Автоматический перезапуск при зависании
+
+В службе задан перезапуск при сбое, но он срабатывает, только когда процесс
+завершился. Зависший процесс продолжает висеть в памяти, для systemd он
+исправен, и служба остаётся «работающей», пока сотрудники видят ошибку.
+Отдельная проверка раз в пять минут закрывает этот случай.
+
+```bash
+sudo cp /opt/lifteam/deploy/healthcheck.sh /usr/local/sbin/lifteam-healthcheck
+```
+
+```bash
+sudo chown root:root /usr/local/sbin/lifteam-healthcheck && sudo chmod 755 /usr/local/sbin/lifteam-healthcheck
+```
+
+```bash
+sudo cp /opt/lifteam/deploy/lifteam-healthcheck.service /opt/lifteam/deploy/lifteam-healthcheck.timer /etc/systemd/system/
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo systemctl enable --now lifteam-healthcheck.timer
+```
+
+Что делала проверка:
+
+```bash
+journalctl -u lifteam-healthcheck -n 30 --no-pager
+```
+
+Проверка реагирует только на полное молчание приложения. Если оно отвечает
+ошибкой 500, перезапуск не поможет — причину надо искать в логах, поэтому
+служба намеренно не трогает работающий процесс.
+
+---
+
+## 11. Если что-то не работает
+
+Ошибки приложения с трассировками — отдельный файл, он переживает
+перезагрузку независимо от настроек журнала:
+
+```bash
+tail -50 /opt/lifteam/logs/errors.log
+```
 
 Логи приложения:
 
