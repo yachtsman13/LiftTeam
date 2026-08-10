@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.7.1.
+Views для LiftTeam v2.7.2.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -9,11 +9,13 @@ import openpyxl
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import authenticate, login, logout
+from django.conf import settings
 from django.contrib import messages
 from django.db.models import Q, Sum, Count, F
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
 from django.core.paginator import Paginator
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 from django.db import transaction
 from asgiref.sync import async_to_sync
@@ -1037,7 +1039,9 @@ def storage_cell_label(request, pk):
     характеристик перечисляются списком. Иначе — построчно название + характеристика."""
     cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
     parts = list(cell.parts.all())
-    qr_img = generate_qr_image(cell.qr_data)
+    # Ссылка вместо простого адреса ячейки: сканирование сразу открывает
+    # содержимое, а не показывает строку, которую потом ищут вручную
+    qr_img = generate_qr_image(f"{label_base_url(request)}/c/{cell.pk}/")
 
     component_types = {p.component_type for p in parts if p.component_type}
     grouped = len(parts) > 1 and len(component_types) == 1
@@ -1342,3 +1346,49 @@ def admin_update(request):
 def admin_update_status(request):
     """Ход обновления для опроса со страницы."""
     return JsonResponse(updater.read_status() or {'state': 'idle', 'message': '', 'log': []})
+
+
+# ==================== КОРОТКИЕ АДРЕСА ДЛЯ QR-КОДОВ ====================
+
+# Длина ссылки определяет размер QR: каждый лишний десяток символов —
+# это следующая версия кода, больше модулей и мельче каждый из них.
+# При печати 12 мм разница между 25 и 29 модулями означает 3,8 против
+# 3,3 точек принтера на модуль, то есть уверенное чтение или пограничное.
+
+@login_required
+def short_part(request, pk):
+    """Короткий адрес детали для QR: /p/<id>/"""
+    get_object_or_404(SparePart, pk=pk)
+    return redirect('part_detail', pk=pk)
+
+
+@login_required
+def short_cell(request, pk):
+    """Короткий адрес ячейки для QR: /c/<id>/
+    Открывает сетку на нужной кассетнице и сразу показывает содержимое ячейки."""
+    cell = get_object_or_404(StorageCell, pk=pk)
+    return redirect(f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet_number}&open_cell={cell.pk}")
+
+
+def label_base_url(request):
+    """Основа для ссылок в QR-кодах.
+
+    По умолчанию берётся адрес, по которому открыта страница печати: этикетка,
+    напечатанная из офисной сети, получит локальный адрес. Если задать
+    LABEL_BASE_URL в .env, используется он — это нужно, когда печатают
+    через Tailscale, а сканировать будут в офисе.
+    """
+    configured = getattr(settings, 'LABEL_BASE_URL', '')
+    return configured.rstrip('/') if configured else request.build_absolute_uri('/').rstrip('/')
+
+
+@login_required
+def part_label(request, pk):
+    """Этикетка детали — для наклейки на пакет."""
+    part = get_object_or_404(SparePart, pk=pk)
+    qr_img = generate_qr_image(f"{label_base_url(request)}/p/{part.pk}/")
+    return render(request, 'core/parts/label.html', {
+        'part': part,
+        'cell': part.current_cell,
+        'qr_img': qr_img,
+    })

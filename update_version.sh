@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 if [ -z "$1" ]; then
     echo "  Использование: update_version.sh [ВЕРСИЯ]"
-    echo "  Пример: update_version.sh v2.7.1"
+    echo "  Пример: update_version.sh v2.7.2"
     exit 1
 fi
 
@@ -29,8 +29,9 @@ sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" start.sh
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" push_to_github.bat
 sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" push_to_github.sh
 
-# Обновляем версию во всех .py, .html, .css, .js в core/
-find core -type f \( -name '*.py' -o -name '*.html' -o -name '*.css' -o -name '*.js' \) -exec sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" {} +
+# Обновляем версию во всех .py, .html, .css, .js в core/ и lifteam/
+# (в lifteam/ версия стоит в заголовках файлов и без этого оставалась старой)
+find core lifteam -type f \( -name '*.py' -o -name '*.html' -o -name '*.css' -o -name '*.js' \) -exec sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+\(\.[0-9]\+\)*/$NEW_VERSION/g" {} +
 
 echo "  [OK] Версия обновлена до $NEW_VERSION."
 

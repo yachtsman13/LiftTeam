@@ -1,11 +1,12 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.7.1{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.7.2{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-cpu me-2"></i>{{ part.part_number }} — {{ part.name }}</h2>
     <div>
+        <a href="{% url 'part_label' part.pk %}" class="btn btn-outline-dark me-2" target="_blank"><i class="bi bi-tag me-2"></i>Этикетка детали</a>
         <a href="{% url 'part_edit' part.pk %}" class="btn btn-outline-primary me-2"><i class="bi bi-pencil me-2"></i>Редактировать</a>
         <a href="{% url 'part_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
     </div>
@@ -36,7 +37,7 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="bi bi-geo-alt me-2"></i>Ячейка хранения</h5>
                 {% if part.current_cell %}
-                <a href="{% url 'storage_cell_label' part.current_cell.pk %}" class="btn btn-sm btn-outline-dark" target="_blank"><i class="bi bi-printer me-1"></i>Этикетка</a>
+                <a href="{% url 'storage_cell_label' part.current_cell.pk %}" class="btn btn-sm btn-outline-dark" target="_blank"><i class="bi bi-grid-3x3 me-1"></i>Этикетка ячейки</a>
                 {% endif %}
             </div>
             <div class="card-body">

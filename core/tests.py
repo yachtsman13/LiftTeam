@@ -329,6 +329,69 @@ class RolePermissionTests(TestCase):
         self.assertRedirects(resp, '/')
 
 
+class LabelTests(TestCase):
+    """Две разные этикетки: на пакет с деталью и на саму ячейку.
+    Раньше кнопка в списке деталей печатала этикетку ячейки, что для
+    наклейки на пакет неверно — на ней не было самой детали."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='label_user', full_name='Тест', password='pass'
+        )
+        self.part = SparePart.objects.create(
+            part_number='LBL-1', name='Деталь для этикетки',
+            component_type='Резисторы', current_stock=5,
+        )
+        self.other = SparePart.objects.create(part_number='LBL-2', name='Соседняя деталь')
+        self.cell = StorageCell.objects.create(cabinet_number=2, row_number=3, cell_row=4)
+        self.cell.parts.add(self.part, self.other)
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+
+    def test_part_label_shows_only_that_part(self):
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'LBL-1')
+        # Соседняя деталь из той же ячейки на этикетке пакета быть не должна
+        self.assertNotContains(response, 'LBL-2')
+
+    def test_part_label_shows_cell_address(self):
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+        self.assertContains(response, self.cell.address)
+
+    def test_cell_label_lists_all_parts(self):
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.cell.address)
+
+    def test_short_urls_redirect_to_pages(self):
+        part_response = self.client_http.get(f'/p/{self.part.pk}/')
+        self.assertRedirects(part_response, f'/parts/{self.part.pk}/')
+
+        cell_response = self.client_http.get(f'/c/{self.cell.pk}/')
+        self.assertRedirects(
+            cell_response,
+            f'/storage-cells/?cabinet={self.cell.cabinet_number}&open_cell={self.cell.pk}',
+        )
+
+    def test_short_urls_require_login(self):
+        anonymous = TestClient()
+        response = anonymous.get(f'/p/{self.part.pk}/')
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response['Location'])
+
+    def test_label_base_url_setting_overrides_request_host(self):
+        """Печать через Tailscale не должна класть в QR адрес,
+        недоступный сканирующему телефону в офисе."""
+        from core.views import label_base_url
+
+        request = TestClient().get('/').wsgi_request
+        with self.settings(LABEL_BASE_URL='http://192.168.31.169/'):
+            self.assertEqual(label_base_url(request), 'http://192.168.31.169')
+
+
 class UpdaterTests(TestCase):
     """Обновление через интерфейс. Приложение не имеет прав root и лишь
     оставляет заявку — проверяем, что в заявку нельзя подсунуть что угодно
