@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.7.2.
+Views для LiftTeam v2.8.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -175,7 +175,14 @@ def equipment_list(request):
     search = request.GET.get('q', '')
     equipment = Equipment.objects.select_related('model', 'current_client')
     if search:
-        equipment = equipment.filter(Q(serial_number__icontains=search) | Q(model__name__icontains=search))
+        # Ищем и по нормализованному номеру: запрос «буад 1234» должен найти
+        # «БУАД-1234», иначе сотрудник не увидит уже заведённую единицу
+        # и заведёт её второй раз под другим написанием.
+        normalized = Equipment.normalize_serial(search)
+        condition = Q(serial_number__icontains=search) | Q(model__name__icontains=search)
+        if normalized:
+            condition |= Q(serial_normalized__contains=normalized)
+        equipment = equipment.filter(condition)
     paginator = Paginator(equipment.order_by('serial_number'), 25)
     page = request.GET.get('page')
     return render(request, 'core/equipment/list.html', {
@@ -209,6 +216,44 @@ def equipment_edit(request, pk):
     else:
         form = EquipmentForm(instance=eq)
     return render(request, 'core/equipment/form.html', {'form': form, 'title': 'Редактирование оборудования', 'equipment': eq})
+
+
+@login_required
+def equipment_history(request, pk):
+    """История ремонтов одной физической единицы оборудования.
+
+    Оборудование уже выделено в отдельную сущность с уникальным серийным
+    номером, поэтому история собирается обычной связью, без поиска по строке.
+    """
+    equipment = get_object_or_404(
+        Equipment.objects.select_related('model', 'current_client'), pk=pk
+    )
+    visits = list(equipment.repair_history())
+
+    # Детали в проекте списываются на заказ целиком, а не на конкретную
+    # единицу оборудования в нём. Когда в заказе одна единица — список
+    # деталей относится именно к ней; когда несколько, точнее сказать
+    # нельзя, и это помечается в шаблоне, а не выдаётся за точные данные.
+    visit_rows = []
+    for visit in visits:
+        order = visit.repair_order
+        units_in_order = order.order_equipments.count()
+        visit_rows.append({
+            'roe': visit,
+            'order': order,
+            'parts': order.details.select_related('part'),
+            'parts_are_exact': units_in_order == 1,
+            'units_in_order': units_in_order,
+        })
+
+    similar = Equipment.find_similar(equipment.serial_number, exclude_pk=equipment.pk)
+
+    return render(request, 'core/equipment/history.html', {
+        'equipment': equipment,
+        'visit_rows': visit_rows,
+        'visits_count': len(visit_rows),
+        'similar': similar,
+    })
 
 
 @role_required('repair_manager', 'warehouse')
@@ -1217,6 +1262,27 @@ def ajax_equipment_create(request):
     if Equipment.objects.filter(serial_number=serial_number).exists():
         return JsonResponse({'success': False, 'error': 'Оборудование с таким серийным номером уже существует'})
 
+    # Похожий серийник — не ошибка, а повод переспросить: «БУАД-1234» и
+    # «буад 1234» это, скорее всего, одна и та же единица, набранная разными
+    # людьми по-разному. Решает человек: если создать вторую запись молча,
+    # история ремонтов разъедется на две и найти её будет нечем.
+    if request.POST.get('confirmed') != '1':
+        similar = Equipment.find_similar(serial_number)
+        if similar.exists():
+            return JsonResponse({
+                'success': False,
+                'similar': [
+                    {
+                        'id': eq.id,
+                        'name': str(eq),
+                        'serial_number': eq.serial_number,
+                        'orders_count': eq.repair_orders.count(),
+                        'history_url': reverse('equipment_history', args=[eq.id]),
+                    }
+                    for eq in similar[:5]
+                ],
+            })
+
     equipment = Equipment.objects.create(model=model, serial_number=serial_number)
 
     return JsonResponse({
@@ -1224,6 +1290,26 @@ def ajax_equipment_create(request):
         'id': equipment.id,
         'name': str(equipment),
         'message': f'Оборудование "{equipment}" создано'
+    })
+
+
+@login_required
+def ajax_equipment_history_summary(request, pk):
+    """Краткая сводка прошлых ремонтов — для подсказки в форме заказа."""
+    equipment = get_object_or_404(Equipment.objects.select_related('model'), pk=pk)
+    visits = equipment.repair_history()
+    count = visits.count()
+    last = visits.first()
+
+    return JsonResponse({
+        'equipment': str(equipment),
+        'orders_count': count,
+        'last_order_number': last.repair_order.order_number if last else '',
+        'last_date': (
+            timezone.localtime(last.repair_order.date_received).strftime('%d.%m.%Y')
+            if last else ''
+        ),
+        'history_url': reverse('equipment_history', args=[equipment.pk]),
     })
 
 

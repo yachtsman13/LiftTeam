@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.7.2{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.8.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -71,6 +71,12 @@
                                 {% if eq_form.equipment.errors %}
                                 <div class="text-danger small">{{ eq_form.equipment.errors.0 }}</div>
                                 {% endif %}
+                                {% comment %}
+                                Подсказка о прошлых ремонтах этой единицы. Самый нужный
+                                момент для неё — приём заказа: потом сотрудник уже не
+                                вспомнит, что оборудование здесь уже было.
+                                {% endcomment %}
+                                <div class="equipment-history-hint alert alert-info py-2 px-3 mt-2 mb-0 small d-none"></div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label small">{{ eq_form.fault_description.label }}</label>
@@ -165,15 +171,58 @@ function updateEquipmentOptions() {
     });
 }
 
+// Подсказка «это оборудование уже обслуживалось» под выбранным select.
+// Адрес собирается подстановкой id в шаблонный путь — так маршрут остаётся
+// одним источником истины и не дублируется строкой в JS.
+const HISTORY_SUMMARY_URL = '{% url "ajax_equipment_history_summary" 0 %}';
+
+function showEquipmentHistory(select) {
+    const row = select.closest('.equipment-row');
+    if (!row) return;
+    const hint = row.querySelector('.equipment-history-hint');
+    if (!hint) return;
+
+    if (!select.value) {
+        hint.classList.add('d-none');
+        hint.innerHTML = '';
+        return;
+    }
+
+    fetch(HISTORY_SUMMARY_URL.replace('/0/', '/' + select.value + '/'))
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(data => {
+            if (!data.orders_count) {
+                hint.classList.add('d-none');
+                hint.innerHTML = '';
+                return;
+            }
+            const times = data.orders_count === 1 ? 'раз' :
+                          (data.orders_count < 5 ? 'раза' : 'раз');
+            hint.innerHTML =
+                '<i class="bi bi-info-circle me-1"></i>Уже обслуживалось: <strong>' +
+                data.orders_count + '</strong> ' + times +
+                ', последний — ' + data.last_date +
+                ' <a href="' + data.history_url + '" target="_blank" class="alert-link">смотреть историю</a>';
+            hint.classList.remove('d-none');
+        })
+        .catch(() => {
+            // Молча прячем: подсказка полезна, но её отсутствие не должно
+            // мешать оформлению заказа.
+            hint.classList.add('d-none');
+        });
+}
+
 // Инициализируем отслеживание
 document.addEventListener('change', function(e) {
     if (e.target.name && e.target.name.includes('-equipment')) {
         updateEquipmentOptions();
+        showEquipmentHistory(e.target);
     }
 });
 
 // Первоначальная фильтрация
 updateEquipmentOptions();
+document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
 
 function addEquipmentRow() {
     const container = document.getElementById('equipmentFormset');
@@ -234,6 +283,11 @@ let currentEquipmentSelect = null;
 
 function openCreateEquipmentModal(btn) {
     currentEquipmentSelect = btn.closest('.input-group').querySelector('select');
+    // Предупреждение от прошлого открытия иначе осталось бы висеть
+    // над другим серийным номером.
+    const warning = document.getElementById('ceSimilarWarning');
+    warning.classList.add('d-none');
+    warning.innerHTML = '';
     const modal = new bootstrap.Modal(document.getElementById('createEquipmentModal'));
     modal.show();
     // Загружаем список моделей
@@ -313,12 +367,35 @@ function createEquipmentModel() {
     .catch(err => alert('Ошибка: ' + err));
 }
 
-function createEquipment() {
+function selectExistingEquipment(id, name) {
+    const exists = currentEquipmentSelect &&
+        Array.from(currentEquipmentSelect.options).some(o => o.value === String(id));
+    if (!exists) {
+        document.querySelectorAll('select[name*="equipment"]').forEach(function(sel) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = name;
+            sel.appendChild(opt);
+        });
+    }
+    if (currentEquipmentSelect) {
+        currentEquipmentSelect.value = id;
+        currentEquipmentSelect.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+    document.getElementById('ceSerialNumber').value = '';
+    bootstrap.Modal.getInstance(document.getElementById('createEquipmentModal')).hide();
+}
+
+function createEquipment(confirmed) {
     const modelId = document.getElementById('ceModelSelect').value;
     const serial = document.getElementById('ceSerialNumber').value.trim();
 
     if (!modelId) { alert('Выберите модель'); return; }
     if (!serial) { alert('Введите серийный номер'); return; }
+
+    let body = 'model_id=' + encodeURIComponent(modelId) +
+               '&serial_number=' + encodeURIComponent(serial);
+    if (confirmed) body += '&confirmed=1';
 
     fetch('{% url "ajax_equipment_create" %}', {
         method: 'POST',
@@ -326,7 +403,7 @@ function createEquipment() {
             'X-CSRFToken': '{{ csrf_token }}',
             'Content-Type': 'application/x-www-form-urlencoded'
         },
-        body: 'model_id=' + encodeURIComponent(modelId) + '&serial_number=' + encodeURIComponent(serial)
+        body: body
     })
     .then(r => r.json())
     .then(data => {
@@ -341,15 +418,41 @@ function createEquipment() {
             // Выбираем созданное оборудование в текущем select
             if (currentEquipmentSelect) {
                 currentEquipmentSelect.value = data.id;
+                currentEquipmentSelect.dispatchEvent(new Event('change', {bubbles: true}));
             }
             document.getElementById('ceSerialNumber').value = '';
             bootstrap.Modal.getInstance(document.getElementById('createEquipmentModal')).hide();
             alert(data.message);
+        } else if (data.similar) {
+            showSimilarEquipment(data.similar);
         } else {
             alert(data.error);
         }
     })
     .catch(err => alert('Ошибка: ' + err));
+}
+
+// Тот же серийник в другом написании почти всегда означает ту же физическую
+// единицу. Выбрать её вместо создания второй записи — единственный способ
+// не разорвать историю ремонтов надвое, поэтому эта кнопка идёт первой.
+function showSimilarEquipment(similar) {
+    const box = document.getElementById('ceSimilarWarning');
+    let html = '<i class="bi bi-exclamation-triangle me-1"></i>' +
+               'Похоже на уже заведённое оборудование:<ul class="mb-2 mt-2">';
+    similar.forEach(function(eq) {
+        const orders = eq.orders_count
+            ? ' — заказов: ' + eq.orders_count +
+              ' (<a href="' + eq.history_url + '" target="_blank" class="alert-link">история</a>)'
+            : ' — ещё не было в ремонте';
+        html += '<li><strong>' + eq.serial_number + '</strong> ' + eq.name + orders +
+                ' <button type="button" class="btn btn-sm btn-success ms-2" ' +
+                'onclick="selectExistingEquipment(' + eq.id + ', \'' +
+                eq.name.replace(/'/g, "\\'") + '\')">Это оно</button></li>';
+    });
+    html += '</ul><button type="button" class="btn btn-sm btn-outline-secondary" ' +
+            'onclick="createEquipment(true)">Нет, это другое — создать новое</button>';
+    box.innerHTML = html;
+    box.classList.remove('d-none');
 }
 
 // ===== Создание заказчика =====
@@ -498,10 +601,11 @@ function createClient() {
                     <label class="form-label">Серийный номер <span class="text-danger">*</span></label>
                     <input type="text" id="ceSerialNumber" class="form-control" placeholder="Введите заводской номер">
                 </div>
+                <div id="ceSimilarWarning" class="alert alert-warning small d-none"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <button type="button" class="btn btn-primary" onclick="createEquipment()">Создать</button>
+                <button type="button" class="btn btn-primary" onclick="createEquipment(false)">Создать</button>
             </div>
         </div>
     </div>

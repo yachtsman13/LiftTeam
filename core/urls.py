@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.7.2
+v2.8.0
 """
 from django.urls import path
 from . import views
@@ -23,6 +23,7 @@ urlpatterns = [
     path('equipment/', views.equipment_list, name='equipment_list'),
     path('equipment/create/', views.equipment_create, name='equipment_create'),
     path('equipment/<int:pk>/edit/', views.equipment_edit, name='equipment_edit'),
+    path('equipment/<int:pk>/history/', views.equipment_history, name='equipment_history'),
     path('equipment/<int:pk>/delete/', views.equipment_delete, name='equipment_delete'),
     path('equipment/models/', views.equipment_model_list, name='equipment_model_list'),
     path('equipment/models/create/', views.equipment_model_create, name='equipment_model_create'),
@@ -77,6 +78,7 @@ urlpatterns = [
     path('ajax/equipment-model/create/', views.ajax_equipment_model_create, name='ajax_equipment_model_create'),
     path('ajax/equipment-model/list/', views.ajax_equipment_model_list, name='ajax_equipment_model_list'),
     path('ajax/equipment/create/', views.ajax_equipment_create, name='ajax_equipment_create'),
+    path('ajax/equipment/<int:pk>/history-summary/', views.ajax_equipment_history_summary, name='ajax_equipment_history_summary'),
     path('ajax/client/create/', views.ajax_client_create, name='ajax_client_create'),
 
     # Администрирование

@@ -1,0 +1,124 @@
+{% extends 'core/base.html' %}
+
+{% block title %}История {{ equipment.serial_number }} — LiftTeam v2.8.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-clock-history me-2"></i>История ремонтов</h2>
+    <div>
+        <a href="{% url 'equipment_edit' equipment.pk %}" class="btn btn-outline-primary"><i class="bi bi-pencil me-2"></i>Карточка</a>
+        <a href="{% url 'equipment_list' %}" class="btn btn-outline-secondary">Назад</a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-4">
+                <div class="text-muted small">Модель</div>
+                <div class="fw-bold">{{ equipment.model.name }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Серийный номер</div>
+                <div class="fw-bold">{{ equipment.serial_number }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Текущий заказчик</div>
+                <div class="fw-bold">{{ equipment.current_client.name|default:"—" }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if similar %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    Есть другие записи с таким же серийным номером в другом написании — возможно,
+    это та же единица, заведённая дважды, и тогда история разделена между ними:
+    <ul class="mb-0 mt-2">
+        {% for eq in similar %}
+        <li><a href="{% url 'equipment_history' eq.pk %}">{{ eq.serial_number }}</a> ({{ eq.model.name }})</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if visits_count %}
+<p class="text-muted">Обращений: <strong>{{ visits_count }}</strong></p>
+{% endif %}
+
+{% for row in visit_rows %}
+<div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <a href="{% url 'repair_order_detail' row.order.pk %}" class="fw-bold text-decoration-none">{{ row.order.order_number }}</a>
+            <span class="text-muted ms-2">{{ row.order.date_received|date:"d.m.Y" }}</span>
+        </div>
+        <div>
+            <span class="badge bg-secondary">{{ row.order.get_status_display }}</span>
+            <span class="badge bg-light text-dark">{{ row.order.get_payment_status_display }}</span>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="row g-3 mb-2">
+            <div class="col-md-6">
+                <div class="text-muted small">Заказчик</div>
+                <div>{{ row.order.client.name }}</div>
+            </div>
+            <div class="col-md-3">
+                <div class="text-muted small">Завершён</div>
+                <div>{{ row.order.date_completed|date:"d.m.Y"|default:"—" }}</div>
+            </div>
+            <div class="col-md-3">
+                <div class="text-muted small">Стоимость ремонта</div>
+                <div>{% if row.roe.repair_cost %}{{ row.roe.repair_cost }} ₽{% else %}—{% endif %}</div>
+            </div>
+        </div>
+
+        {% if row.roe.fault_description %}
+        <div class="mb-2">
+            <div class="text-muted small">Неисправность</div>
+            <div>{{ row.roe.fault_description }}</div>
+        </div>
+        {% elif row.order.fault_description %}
+        <div class="mb-2">
+            <div class="text-muted small">Неисправность (общая по заказу)</div>
+            <div>{{ row.order.fault_description }}</div>
+        </div>
+        {% endif %}
+
+        {% if row.roe.initial_condition %}
+        <div class="mb-2">
+            <div class="text-muted small">Начальное состояние</div>
+            <div>{{ row.roe.initial_condition }}</div>
+        </div>
+        {% endif %}
+
+        <div class="text-muted small mt-3">
+            Установленные детали
+            {% if not row.parts_are_exact %}
+            <span class="badge bg-warning text-dark ms-1" title="Детали в программе списываются на заказ целиком">
+                по всему заказу ({{ row.units_in_order }} ед. оборудования)
+            </span>
+            {% endif %}
+        </div>
+        {% if row.parts %}
+        <ul class="mb-0">
+            {% for detail in row.parts %}
+            <li>{{ detail.part.part_number }} — {{ detail.part.name }} &times;{{ detail.quantity_used }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-muted">—</div>
+        {% endif %}
+    </div>
+</div>
+{% empty %}
+<div class="card">
+    <div class="card-body text-center text-muted py-5">
+        <i class="bi bi-inbox display-6 d-block mb-3"></i>
+        Это оборудование ещё не было в ремонте
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

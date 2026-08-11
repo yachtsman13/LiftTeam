@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 if [ -z "$1" ]; then
     echo "  Использование: update_version.sh [ВЕРСИЯ]"
-    echo "  Пример: update_version.sh v2.7.2"
+    echo "  Пример: update_version.sh v2.8.0"
     exit 1
 fi
 

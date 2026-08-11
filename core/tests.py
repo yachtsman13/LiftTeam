@@ -20,7 +20,8 @@ from django.test import Client as TestClient
 from django.urls import resolve
 
 from .models import (
-    Client as ClientModel, Employee, RepairOrder, SparePart, StorageCell,
+    Client as ClientModel, Employee, Equipment, EquipmentModel, RepairOrder,
+    RepairOrderEquipment, SparePart, StorageCell,
 )
 
 
@@ -327,6 +328,175 @@ class RolePermissionTests(TestCase):
         client.force_login(self.warehouse_user)
         resp = client.get('/management/users/', follow=True)
         self.assertRedirects(resp, '/')
+
+
+class EquipmentHistoryTests(TestCase):
+    """История ремонтов одной физической единицы по серийному номеру.
+
+    Оборудование уже было выделено в отдельную сущность с уникальным
+    серийником, поэтому история собирается связью, а не поиском по строке.
+    Открытым оставался разъезд истории из-за разного написания одного
+    и того же номера разными сотрудниками."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='hist_user', full_name='Тест', password='pass'
+        )
+        self.model = EquipmentModel.objects.create(name='Экодрайв')
+        self.client_obj = ClientModel.objects.create(name='ООО Лифт')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='БУАД-1234')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+
+    def _make_order(self, equipment=None):
+        order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=equipment or self.equipment
+        )
+        return order
+
+    def test_normalization_ignores_case_and_separators(self):
+        for written in ['буад 1234', 'БУАД_1234', ' БУАД-1234 ', 'бУаД1234']:
+            self.assertEqual(
+                Equipment.normalize_serial(written),
+                self.equipment.serial_normalized,
+                f'не сошлось на варианте {written!r}',
+            )
+
+    def test_normalized_is_filled_on_save(self):
+        equipment = Equipment.objects.create(model=self.model, serial_number='ec-99 x')
+        self.assertEqual(equipment.serial_normalized, 'EC99X')
+
+    def test_saved_serial_keeps_original_spelling(self):
+        """Нормализация нужна для поиска, но печатать надо то, что набрали."""
+        equipment = Equipment.objects.create(model=self.model, serial_number='ЭД-77/2')
+        equipment.refresh_from_db()
+        self.assertEqual(equipment.serial_number, 'ЭД-77/2')
+
+    def test_find_similar_matches_other_spelling(self):
+        other = Equipment.objects.create(model=self.model, serial_number='буад 1234!')
+        found = Equipment.find_similar('БУАД-1234')
+        self.assertIn(other, found)
+        self.assertIn(self.equipment, found)
+
+    def test_find_similar_can_exclude_itself(self):
+        found = Equipment.find_similar(self.equipment.serial_number, exclude_pk=self.equipment.pk)
+        self.assertNotIn(self.equipment, found)
+
+    def test_find_similar_ignores_empty_serial(self):
+        self.assertEqual(list(Equipment.find_similar('   ')), [])
+
+    def test_history_page_lists_all_visits(self):
+        first = self._make_order()
+        second = self._make_order()
+
+        response = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, first.order_number)
+        self.assertContains(response, second.order_number)
+        self.assertEqual(response.context['visits_count'], 2)
+
+    def test_history_excludes_other_equipment_orders(self):
+        other = Equipment.objects.create(model=self.model, serial_number='ДРУГОЙ-1')
+        foreign_order = self._make_order(equipment=other)
+        self._make_order()
+
+        response = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+
+        self.assertNotContains(response, foreign_order.order_number)
+
+    def test_history_marks_parts_as_order_wide_for_multi_unit_orders(self):
+        """Детали списываются на заказ целиком. Когда единиц в заказе
+        несколько, нельзя утверждать, что деталь ставили именно в эту."""
+        order = self._make_order()
+        second_unit = Equipment.objects.create(model=self.model, serial_number='ВТОРОЙ-1')
+        RepairOrderEquipment.objects.create(repair_order=order, equipment=second_unit)
+
+        response = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+
+        self.assertFalse(response.context['visit_rows'][0]['parts_are_exact'])
+
+    def test_history_marks_parts_exact_for_single_unit_order(self):
+        self._make_order()
+        response = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertTrue(response.context['visit_rows'][0]['parts_are_exact'])
+
+    def test_empty_history_is_not_an_error(self):
+        response = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['visits_count'], 0)
+
+    def test_search_finds_equipment_by_different_spelling(self):
+        response = self.client_http.get('/equipment/', {'q': 'буад 1234'})
+        self.assertContains(response, 'БУАД-1234')
+
+    def test_history_summary_reports_previous_visits(self):
+        self._make_order()
+        response = self.client_http.get(
+            f'/ajax/equipment/{self.equipment.pk}/history-summary/'
+        )
+
+        data = response.json()
+        self.assertEqual(data['orders_count'], 1)
+        self.assertTrue(data['history_url'].endswith(f'/equipment/{self.equipment.pk}/history/'))
+
+    def test_history_summary_is_zero_for_new_equipment(self):
+        response = self.client_http.get(
+            f'/ajax/equipment/{self.equipment.pk}/history-summary/'
+        )
+        self.assertEqual(response.json()['orders_count'], 0)
+
+    def test_creating_similar_serial_warns_instead_of_duplicating(self):
+        response = self.client_http.post('/ajax/equipment/create/', {
+            'model_id': self.model.pk,
+            'serial_number': 'буад 1234',
+        })
+
+        data = response.json()
+        self.assertFalse(data['success'])
+        self.assertEqual(len(data['similar']), 1)
+        self.assertEqual(data['similar'][0]['serial_number'], 'БУАД-1234')
+        # Запись не создана: сотрудник ещё не решил, та же это единица или нет
+        self.assertEqual(Equipment.objects.count(), 1)
+
+    def test_confirmed_creation_proceeds_despite_similarity(self):
+        response = self.client_http.post('/ajax/equipment/create/', {
+            'model_id': self.model.pk,
+            'serial_number': 'буад 1234',
+            'confirmed': '1',
+        })
+
+        self.assertTrue(response.json()['success'])
+        self.assertEqual(Equipment.objects.count(), 2)
+
+    def test_exact_duplicate_is_still_rejected_outright(self):
+        """Полное совпадение — не повод переспрашивать, это просто дубль."""
+        response = self.client_http.post('/ajax/equipment/create/', {
+            'model_id': self.model.pk,
+            'serial_number': 'БУАД-1234',
+            'confirmed': '1',
+        })
+
+        data = response.json()
+        self.assertFalse(data['success'])
+        self.assertNotIn('similar', data)
+        self.assertEqual(Equipment.objects.count(), 1)
+
+    def test_unrelated_serial_creates_without_warning(self):
+        response = self.client_http.post('/ajax/equipment/create/', {
+            'model_id': self.model.pk,
+            'serial_number': 'СОВСЕМ-ДРУГОЙ',
+        })
+
+        self.assertTrue(response.json()['success'])
+        self.assertEqual(Equipment.objects.count(), 2)
+
+    def test_history_requires_login(self):
+        anonymous = TestClient()
+        response = anonymous.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response['Location'])
 
 
 class LabelTests(TestCase):

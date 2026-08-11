@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.7.2.
+Модели данных для LiftTeam v2.8.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -99,6 +99,13 @@ class Equipment(models.Model):
     """Единица оборудования."""
     model = models.ForeignKey(EquipmentModel, on_delete=models.CASCADE, verbose_name='Модель')
     serial_number = models.CharField('Серийный номер', max_length=100, unique=True)
+    # Серийник без регистра, пробелов и разделителей — чтобы найти «буад 1234»,
+    # когда в базе лежит «БУАД-1234». Не unique: одинаковая нормализованная
+    # форма — повод предупредить сотрудника, а не запретить сохранение;
+    # решение, та же это единица или другая, остаётся за человеком.
+    serial_normalized = models.CharField(
+        'Серийный номер (для поиска)', max_length=100, blank=True, db_index=True, editable=False
+    )
     current_client = models.ForeignKey(
         Client, on_delete=models.SET_NULL, null=True, blank=True,
         verbose_name='Текущий заказчик'
@@ -111,6 +118,44 @@ class Equipment(models.Model):
 
     def __str__(self):
         return f"{self.model.name} — {self.serial_number}"
+
+    @staticmethod
+    def normalize_serial(value):
+        """Приводит серийный номер к виду, пригодному для сравнения.
+
+        Убирает всё, кроме букв и цифр, и поднимает регистр. Серийники
+        вводят вручную разные люди в разное время, поэтому «БУАД-1234»,
+        «буад 1234» и «BUAD_1234» встречаются как записи одной и той же
+        физической единицы. Само введённое значение при этом не меняется —
+        оно печатается на этикетке и должно выглядеть так, как его набрали.
+        """
+        return ''.join(ch for ch in (value or '') if ch.isalnum()).upper()
+
+    @classmethod
+    def find_similar(cls, serial_number, exclude_pk=None):
+        """Единицы с таким же серийником по нормализованному сравнению."""
+        normalized = cls.normalize_serial(serial_number)
+        if not normalized:
+            return cls.objects.none()
+        found = cls.objects.filter(serial_normalized=normalized)
+        if exclude_pk is not None:
+            found = found.exclude(pk=exclude_pk)
+        return found.select_related('model')
+
+    def save(self, *args, **kwargs):
+        self.serial_normalized = self.normalize_serial(self.serial_number)
+        if 'update_fields' in kwargs and kwargs['update_fields'] is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'serial_normalized'}
+        super().save(*args, **kwargs)
+
+    def repair_history(self):
+        """Заказы, в которых участвовала эта единица, от новых к старым."""
+        return (
+            RepairOrderEquipment.objects
+            .filter(equipment=self)
+            .select_related('repair_order', 'repair_order__client')
+            .order_by('-repair_order__date_received')
+        )
 
 
 class RepairOrder(models.Model):

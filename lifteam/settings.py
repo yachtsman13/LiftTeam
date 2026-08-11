@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.7.2 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.8.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path

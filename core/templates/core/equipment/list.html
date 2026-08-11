@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оборудование — LiftTeam v2.7.2{% endblock %}
+{% block title %}Оборудование — LiftTeam v2.8.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -40,6 +40,7 @@
                         <td class="fw-bold">{{ eq.serial_number }}</td>
                         <td>{{ eq.current_client.name|default:"—" }}</td>
                         <td class="text-end">
+                            <a href="{% url 'equipment_history' eq.pk %}" class="btn btn-sm btn-outline-primary" title="История ремонтов" onclick="event.stopPropagation();"><i class="bi bi-clock-history"></i></a>
                             <a href="{% url 'equipment_label' eq.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка" target="_blank" onclick="event.stopPropagation();"><i class="bi bi-printer"></i></a>
                             <a href="{% url 'equipment_delete' eq.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
                         </td>

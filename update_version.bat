@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 if "%~1"=="" (
     echo   Использование: update_version.bat [ВЕРСИЯ]
-    echo   Пример: update_version.bat v2.7.2
+    echo   Пример: update_version.bat v2.8.0
     pause
     exit /b 1
 )
