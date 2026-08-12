@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ equipment.model.name }} — {{ equipment.serial_number }} — LiftTeam v2.11.0{% endblock %}
+{% block title %}Этикетка {{ equipment.model.name }} — {{ equipment.serial_number }} — LiftTeam v2.12.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
@@ -10,7 +10,12 @@
             <span class="label-id">#{{ equipment.id }}</span>
         </div>
         <div class="label-serial">{{ equipment.serial_number }}</div>
-        <div class="label-codes">
+        {% comment %}
+        Штрихкода может не быть: Code 128 кодирует только латиницу, а
+        серийники здесь чаще кириллические («БУАД-1234»). Тогда QR остаётся
+        один и центрируется, иначе он висел бы у левого края с пустотой справа.
+        {% endcomment %}
+        <div class="label-codes{% if not barcode_img %} label-codes-single{% endif %}">
             {% if barcode_img %}
             <img src="{{ barcode_img }}" alt="{{ equipment.serial_number }}" class="label-barcode">
             {% endif %}
@@ -90,16 +95,23 @@
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
-        height: 10mm;
+        gap: 1mm;
+        height: 13mm;
+    }
+    .label-codes-single {
+        justify-content: center;
     }
     .label-barcode {
         height: 9mm;
         width: auto;
-        max-width: 22mm;
+        max-width: 24mm;
     }
+    /* 13 мм, как на этикетках деталей и ячеек: ссылке нужно 29 модулей,
+       и при 9 мм на модуль пришлось бы 2,5 точки термопринтера — мало
+       для уверенного считывания. При 13 мм получается 3,6 точки. */
     .label-qr {
-        height: 9mm;
-        width: 9mm;
+        height: 13mm;
+        width: 13mm;
     }
 </style>
 {% endblock %}

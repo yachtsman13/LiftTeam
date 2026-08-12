@@ -1,6 +1,6 @@
 """
 Management command: init_cells
-LiftTeam v2.11.0
+LiftTeam v2.12.0
 """
 from django.core.management.base import BaseCommand
 from core.models import StorageCell

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.11.0.
+Views для LiftTeam v2.12.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1197,17 +1197,16 @@ def equipment_label(request, pk):
     """Печать этикетки единицы оборудования (43x25 мм)."""
     equipment = get_object_or_404(Equipment.objects.select_related('model'), pk=pk)
 
-    # Данные для QR-кода
-    qr_data_dict = {
-        'id': equipment.id,
-        'model': equipment.model.name,
-        'serial': equipment.serial_number,
-    }
-    import json
-    qr_data = json.dumps(qr_data_dict, ensure_ascii=False)
+    # Ссылка вместо JSON. Раньше в код клали {"id":…,"model":"БУАД",…}:
+    # сканирование давало строку с фигурными скобками, которую человек всё
+    # равно шёл искать руками, а кириллица внутри — худший случай по плотности
+    # кода (QR переключается в побайтовый режим и распухает). Короткая ссылка
+    # укладывается в 29 модулей и сразу открывает историю этой единицы.
+    qr_img = generate_qr_image(f"{label_base_url(request)}/e/{equipment.pk}/")
 
+    # Штрихкод оставлен: он кодирует сам серийный номер и читается сканером
+    # с клавиатурным вводом, которым QR не заменить
     barcode_img = generate_barcode_image(equipment.serial_number)
-    qr_img = generate_qr_image(qr_data)
 
     return render(request, 'core/equipment/label.html', {
         'equipment': equipment,
@@ -1680,6 +1679,18 @@ def short_cell(request, pk):
     Открывает сетку на нужной кассетнице и сразу показывает содержимое ячейки."""
     cell = get_object_or_404(StorageCell, pk=pk)
     return redirect(f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet_number}&open_cell={cell.pk}")
+
+
+@login_required
+def short_equipment(request, pk):
+    """Короткий адрес единицы оборудования для QR: /e/<id>/
+
+    Ведёт в историю ремонтов, а не в карточку редактирования: этикетку
+    сканируют, когда железка в руках и нужно вспомнить, что с ней уже
+    делали и на гарантии ли она. Редактировать её в этот момент незачем.
+    """
+    get_object_or_404(Equipment, pk=pk)
+    return redirect('equipment_history', pk=pk)
 
 
 def label_base_url(request):

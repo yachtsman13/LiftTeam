@@ -1401,3 +1401,66 @@ class CyrillicSearchTests(TestCase):
 
         self.assertFalse(_unicode_like('%текст%', None))
         self.assertFalse(_unicode_like(None, 'текст'))
+
+
+class EquipmentLabelLinkTests(TestCase):
+    """Этикетка оборудования: в QR ссылка вместо JSON.
+
+    Раньше в код клали {"id":…,"model":"БУАД","serial":…} — сканирование
+    давало строку с кириллицей, которую всё равно искали руками, а сам код
+    из-за кириллицы распухал.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_lbl', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        model = EquipmentModel.objects.create(name='БУАД')
+        self.equipment = Equipment.objects.create(model=model, serial_number='БУАД-1234')
+
+    def test_short_url_opens_repair_history(self):
+        resp = self.client_http.get(f'/e/{self.equipment.pk}/')
+        self.assertRedirects(resp, f'/equipment/{self.equipment.pk}/history/')
+
+    def test_short_url_requires_login(self):
+        resp = TestClient().get(f'/e/{self.equipment.pk}/')
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_short_url_404_for_missing_equipment(self):
+        resp = self.client_http.get('/e/999999/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_label_encodes_short_link(self):
+        with patch('core.views.generate_qr_image') as qr:
+            qr.return_value = 'data:image/png;base64,x'
+            self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
+
+        encoded = qr.call_args[0][0]
+        self.assertTrue(encoded.endswith(f'/e/{self.equipment.pk}/'), encoded)
+        self.assertNotIn('{', encoded)
+        self.assertNotIn('БУАД', encoded)
+
+    @override_settings(LABEL_BASE_URL='http://192.168.1.50')
+    def test_label_uses_configured_base_url(self):
+        """Печать через Tailscale, сканирование в офисе: адрес берётся
+        из настройки, а не из того, как открыта страница печати."""
+        with patch('core.views.generate_qr_image') as qr:
+            qr.return_value = 'data:image/png;base64,x'
+            self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
+
+        self.assertEqual(
+            qr.call_args[0][0], f'http://192.168.1.50/e/{self.equipment.pk}/'
+        )
+
+    def test_label_still_shows_barcode_of_serial(self):
+        """Штрихкод серийника остаётся — его читает сканер с клавиатурным вводом."""
+        with patch('core.views.generate_barcode_image') as barcode:
+            barcode.return_value = 'data:image/png;base64,x'
+            resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
+
+        self.assertEqual(resp.status_code, 200)
+        barcode.assert_called_once_with('БУАД-1234')
