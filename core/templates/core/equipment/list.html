@@ -1,11 +1,12 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оборудование — LiftTeam v2.14.0{% endblock %}
+{% block title %}Оборудование — LiftTeam v2.15.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-hdd-rack me-2"></i>Оборудование</h2>
     <div>
+        <a href="{% url 'equipment_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success me-2"><i class="bi bi-file-earmark-excel me-2"></i>В Excel</a>
         <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-primary me-2"><i class="bi bi-list me-2"></i>Модели</a>
         <a href="{% url 'equipment_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новое оборудование</a>
     </div>
@@ -13,15 +14,31 @@
 
 <div class="card">
     <div class="card-body">
-        <form method="get" class="row g-3 mb-3">
+        <form method="get" class="row g-2 mb-3">
             <div class="col-md-6">
                 <div class="input-group">
                     <span class="input-group-text"><i class="bi bi-search"></i></span>
-                    <input type="text" name="q" class="form-control" placeholder="Поиск по серийному номеру или модели..." value="{{ search }}">
-                    <button type="submit" class="btn btn-outline-primary">Найти</button>
+                    <input type="text" name="q" class="form-control" placeholder="Серийный номер, модель или заказчик..." value="{{ search }}">
                 </div>
             </div>
+            <div class="col-md-3">
+                <select name="warranty" class="form-select">
+                    <option value="">Гарантия: любая</option>
+                    <option value="active" {% if warranty_filter == 'active' %}selected{% endif %}>На гарантии</option>
+                    <option value="expired" {% if warranty_filter == 'expired' %}selected{% endif %}>Без гарантии</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-outline-primary w-100"><i class="bi bi-search me-1"></i>Найти</button>
+            </div>
         </form>
+
+        {% if filters_active %}
+        <div class="d-flex align-items-center gap-2 mb-3 text-muted small">
+            <span>Найдено единиц: <strong>{{ found_count }}</strong></span>
+            <a href="{% url 'equipment_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Сбросить</a>
+        </div>
+        {% endif %}
 
         <div class="table-responsive">
             <table class="table table-hover">

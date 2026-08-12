@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.14.0.
+Модели данных для LiftTeam v2.15.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -16,6 +16,19 @@ from django.utils import timezone
 def warranty_months():
     """Срок гарантии в месяцах. 0 — гарантия не ведётся."""
     return getattr(settings, 'WARRANTY_MONTHS', 12)
+
+
+def warranty_cutoff():
+    """Дата, раньше которой завершённый ремонт уже не на гарантии.
+
+    Условие «гарантия действует» удобнее проверять не по каждой единице,
+    а одним сравнением в базе: заказ завершён не раньше этой даты.
+    None — гарантия отключена (`WARRANTY_MONTHS = 0`).
+    """
+    months = warranty_months()
+    if not months:
+        return None
+    return add_months(timezone.now(), -months)
 
 
 def add_months(moment, months):
@@ -199,12 +212,11 @@ class Equipment(models.Model):
         разворачивается в «заказ завершён не раньше, чем N месяцев назад»,
         и такой отбор целиком делает база.
         """
-        months = warranty_months()
+        cutoff = warranty_cutoff()
         ids = [eq.pk if hasattr(eq, 'pk') else eq for eq in equipments]
-        if not months or not ids:
+        if cutoff is None or not ids:
             return {}
 
-        cutoff = add_months(timezone.now(), -months)
         visits = (
             RepairOrderEquipment.objects
             .filter(

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.14.0.
+Views для LiftTeam v2.15.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -24,7 +24,8 @@ from channels.layers import get_channel_layer
 
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
-    SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee
+    SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
+    warranty_cutoff,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
@@ -136,6 +137,48 @@ def client_list(request):
 
 
 @login_required
+def client_export(request):
+    """Список заказчиков в Excel — с числом заказов и суммой долга."""
+    search = request.GET.get('q', '').strip()
+    clients = Client.objects.all()
+    if search:
+        clients = clients.filter(Q(name__icontains=search) | Q(inn__icontains=search))
+    clients = clients.order_by('name')
+
+    orders = dict(
+        RepairOrder.objects
+        .filter(client__in=clients)
+        .values_list('client_id')
+        .annotate(count=Count('id'))
+    )
+    debts = dict(
+        RepairOrderEquipment.objects
+        .filter(
+            repair_order__client__in=clients,
+            repair_order__payment_status__in=['unpaid', 'partially_paid'],
+        )
+        .values_list('repair_order__client_id')
+        .annotate(total=Sum('repair_cost'))
+    )
+
+    headers = [
+        'Название', 'ИНН', 'КПП', 'Контактное лицо', 'Телефон', 'Email',
+        'Заказов', 'Долг, ₽',
+    ]
+    rows = [
+        [
+            client.name, client.inn, client.kpp, client.contact_person,
+            client.phone, client.email,
+            orders.get(client.pk, 0), debts.get(client.pk) or 0,
+        ]
+        for client in clients
+    ]
+
+    wb = build_workbook('Заказчики', headers, rows)
+    return xlsx_response(wb, f'Заказчики {timezone.localdate():%Y-%m-%d}.xlsx')
+
+
+@login_required
 def client_create(request):
     if request.method == 'POST':
         form = ClientForm(request.POST)
@@ -174,22 +217,49 @@ def client_delete(request, pk):
 
 # ==================== ОБОРУДОВАНИЕ ====================
 
-@login_required
-def equipment_list(request):
-    search = request.GET.get('q', '')
+def _filter_equipment(request):
+    """Отбор оборудования по параметрам GET-запроса."""
+    search = request.GET.get('q', '').strip()
+    warranty_filter = request.GET.get('warranty', '')
+
     equipment = Equipment.objects.select_related('model', 'current_client')
+
     if search:
         # Ищем и по нормализованному номеру: запрос «буад 1234» должен найти
         # «БУАД-1234», иначе сотрудник не увидит уже заведённую единицу
         # и заведёт её второй раз под другим написанием.
         normalized = Equipment.normalize_serial(search)
-        condition = Q(serial_number__icontains=search) | Q(model__name__icontains=search)
+        condition = (
+            Q(serial_number__icontains=search) |
+            Q(model__name__icontains=search) |
+            Q(current_client__name__icontains=search)
+        )
         if normalized:
             condition |= Q(serial_normalized__contains=normalized)
         equipment = equipment.filter(condition)
-    paginator = Paginator(equipment.order_by('serial_number'), 25)
-    page = request.GET.get('page')
-    page_obj = paginator.get_page(page)
+
+    # Гарантия не хранится, поэтому отбираем по её признаку: заказ с этой
+    # единицей завершён не раньше, чем срок гарантии назад
+    cutoff = warranty_cutoff()
+    if cutoff is not None and warranty_filter in ('active', 'expired'):
+        covered = Q(repairorderequipment__repair_order__date_completed__gte=cutoff)
+        if warranty_filter == 'active':
+            equipment = equipment.filter(covered)
+        else:
+            equipment = equipment.exclude(covered)
+
+    return equipment.distinct().order_by('serial_number'), {
+        'search': search,
+        'warranty_filter': warranty_filter,
+    }
+
+
+@login_required
+def equipment_list(request):
+    equipment, filter_context = _filter_equipment(request)
+
+    paginator = Paginator(equipment, 25)
+    page_obj = paginator.get_page(request.GET.get('page'))
 
     # Гарантия считается сразу по всей странице: поштучная проверка
     # означала бы запрос на каждую строку списка
@@ -199,8 +269,47 @@ def equipment_list(request):
 
     return render(request, 'core/equipment/list.html', {
         'equipment': page_obj,
-        'search': search,
+        'found_count': paginator.count,
+        'filters_active': any(filter_context.values()),
+        **filter_context,
     })
+
+
+@login_required
+def equipment_export(request):
+    """Список оборудования в Excel — с учётом поиска и фильтра гарантии."""
+    equipment, _ = _filter_equipment(request)
+    equipment = list(equipment)
+    warranty_map = Equipment.warranty_map(equipment)
+
+    headers = [
+        'Модель', 'Серийный номер', 'Текущий заказчик',
+        'Гарантия до', 'Заказ по гарантии', 'Всего ремонтов',
+    ]
+    # Число ремонтов по всем единицам одним запросом: свойство на каждую
+    # строку означало бы запрос на строку
+    repairs = dict(
+        RepairOrderEquipment.objects
+        .filter(equipment__in=equipment)
+        .values_list('equipment_id')
+        .annotate(count=Count('id'))
+    )
+
+    rows = []
+    for item in equipment:
+        warranty = warranty_map.get(item.pk)
+        rows.append([
+            item.model.name,
+            item.serial_number,
+            item.current_client.name if item.current_client else '',
+            # Только дата: час окончания гарантии никому не нужен
+            excel_datetime(warranty.warranty_until).date() if warranty else '',
+            warranty.repair_order.order_number if warranty else '',
+            repairs.get(item.pk, 0),
+        ])
+
+    wb = build_workbook('Оборудование', headers, rows)
+    return xlsx_response(wb, f'Оборудование {timezone.localdate():%Y-%m-%d}.xlsx')
 
 
 @login_required

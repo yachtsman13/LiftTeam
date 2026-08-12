@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.14.0
+v2.15.0
 """
 from django.urls import path
 from . import views
@@ -15,12 +15,14 @@ urlpatterns = [
 
     # Клиенты
     path('clients/', views.client_list, name='client_list'),
+    path('clients/export/', views.client_export, name='client_export'),
     path('clients/create/', views.client_create, name='client_create'),
     path('clients/<int:pk>/edit/', views.client_edit, name='client_edit'),
     path('clients/<int:pk>/delete/', views.client_delete, name='client_delete'),
 
     # Оборудование
     path('equipment/', views.equipment_list, name='equipment_list'),
+    path('equipment/export/', views.equipment_export, name='equipment_export'),
     path('equipment/create/', views.equipment_create, name='equipment_create'),
     path('equipment/<int:pk>/edit/', views.equipment_edit, name='equipment_edit'),
     path('equipment/<int:pk>/history/', views.equipment_history, name='equipment_history'),

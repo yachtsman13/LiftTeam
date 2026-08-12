@@ -1613,3 +1613,131 @@ class OrderExportTests(TestCase):
     def test_order_list_page_offers_export(self):
         resp = self.client_http.get('/repair-orders/')
         self.assertContains(resp, '/repair-orders/export/')
+
+
+class EquipmentListFilterTests(TestCase):
+    """Поиск по заказчику, фильтр по гарантии и выгрузка списка оборудования."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_eqf', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.alpha = ClientModel.objects.create(name='ООО Альфа')
+        model = EquipmentModel.objects.create(name='БУАД')
+
+        self.covered = Equipment.objects.create(
+            model=model, serial_number='SN-COVERED', current_client=self.alpha
+        )
+        self.expired = Equipment.objects.create(model=model, serial_number='SN-EXPIRED')
+        self.never = Equipment.objects.create(model=model, serial_number='SN-NEVER')
+
+        self._repair(self.covered, days_ago=10)
+        self._repair(self.expired, days_ago=500)
+
+    def _repair(self, equipment, days_ago):
+        order = RepairOrder.objects.create(
+            client=self.alpha, status='shipped'
+        )
+        RepairOrder.objects.filter(pk=order.pk).update(
+            date_completed=timezone.now() - datetime.timedelta(days=days_ago)
+        )
+        return RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=equipment, repair_cost=100
+        )
+
+    def _serials(self, query=''):
+        resp = self.client_http.get(f'/equipment/{query}')
+        self.assertEqual(resp.status_code, 200)
+        return {eq.serial_number for eq in resp.context['equipment']}
+
+    def test_search_by_current_client(self):
+        self.assertEqual(self._serials('?q=Альфа'), {'SN-COVERED'})
+
+    def test_filter_shows_only_covered_equipment(self):
+        self.assertEqual(self._serials('?warranty=active'), {'SN-COVERED'})
+
+    def test_filter_shows_equipment_without_warranty(self):
+        self.assertEqual(self._serials('?warranty=expired'), {'SN-EXPIRED', 'SN-NEVER'})
+
+    def test_no_filter_shows_everything(self):
+        self.assertEqual(len(self._serials()), 3)
+
+    def test_unknown_filter_value_is_ignored(self):
+        self.assertEqual(len(self._serials('?warranty=что-то')), 3)
+
+    @override_settings(WARRANTY_MONTHS=0)
+    def test_filter_does_nothing_when_warranty_is_off(self):
+        self.assertEqual(len(self._serials('?warranty=active')), 3)
+
+    def test_equipment_repaired_twice_is_listed_once(self):
+        self._repair(self.covered, days_ago=20)
+        self.assertEqual(len(self._serials('?warranty=active')), 1)
+
+    def test_export_includes_warranty_and_repair_count(self):
+        self._repair(self.covered, days_ago=20)
+
+        resp = self.client_http.get('/equipment/export/?warranty=active')
+        self.assertEqual(resp.status_code, 200)
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        headers = [c.value for c in ws[1]]
+        row = dict(zip(headers, [c.value for c in ws[2]]))
+
+        self.assertEqual(row['Серийный номер'], 'SN-COVERED')
+        self.assertEqual(row['Текущий заказчик'], 'ООО Альфа')
+        self.assertEqual(row['Всего ремонтов'], 2)
+        # openpyxl читает ячейку с датой обратно как datetime, сравниваем по дате
+        self.assertEqual(
+            row['Гарантия до'].date(),
+            timezone.localtime(self.covered.active_warranty().warranty_until).date(),
+        )
+        self.assertEqual(ws.max_row, 2)  # шапка и одна единица
+
+    def test_export_requires_login(self):
+        self.assertEqual(TestClient().get('/equipment/export/').status_code, 302)
+
+
+class ClientExportTests(TestCase):
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_cexp', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.alpha = ClientModel.objects.create(name='ООО Альфа', inn='7700000001')
+        ClientModel.objects.create(name='ООО Бета', inn='7700000002')
+
+        model = EquipmentModel.objects.create(name='БУАД')
+        for cost, payment in ((1000, 'unpaid'), (2000, 'paid')):
+            order = RepairOrder.objects.create(client=self.alpha, payment_status=payment)
+            RepairOrderEquipment.objects.create(
+                repair_order=order,
+                equipment=Equipment.objects.create(model=model, serial_number=f'SN-{cost}'),
+                repair_cost=cost,
+            )
+
+    def _rows(self, query=''):
+        resp = self.client_http.get(f'/clients/export/{query}')
+        self.assertEqual(resp.status_code, 200)
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        headers = [c.value for c in ws[1]]
+        return [dict(zip(headers, [c.value for c in row])) for row in ws.iter_rows(min_row=2)]
+
+    def test_export_counts_orders_and_debt(self):
+        rows = {r['Название']: r for r in self._rows()}
+
+        self.assertEqual(rows['ООО Альфа']['Заказов'], 2)
+        # В долг попадает только неоплаченный заказ
+        self.assertEqual(float(rows['ООО Альфа']['Долг, ₽']), 1000.0)
+        self.assertEqual(rows['ООО Бета']['Заказов'], 0)
+        self.assertEqual(float(rows['ООО Бета']['Долг, ₽']), 0.0)
+
+    def test_export_respects_search(self):
+        rows = self._rows('?q=Бета')
+        self.assertEqual([r['Название'] for r in rows], ['ООО Бета'])
+
+    def test_export_requires_login(self):
+        self.assertEqual(TestClient().get('/clients/export/').status_code, 302)
