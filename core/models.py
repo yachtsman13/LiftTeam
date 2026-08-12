@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.22.0.
+Модели данных для LiftTeam v2.23.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -75,6 +75,10 @@ class Employee(AbstractBaseUser, PermissionsMixin):
     username = models.CharField('Логин', max_length=150, unique=True)
     full_name = models.CharField('ФИО', max_length=255)
     email = models.EmailField('Email', blank=True)
+    # Числовой идентификатор в MAX. Не логин и не телефон: бот видит человека
+    # только по этому номеру и только после того, как тот сам ему написал.
+    # Узнать его помогает команда `manage.py max_updates`.
+    max_user_id = models.CharField('ID в MAX', max_length=32, blank=True)
     role = models.CharField('Роль', max_length=20, choices=ROLE_CHOICES, default='repair_manager')
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)
@@ -558,9 +562,21 @@ class Notification(models.Model):
         ('failed', 'Не удалось'),
         ('skipped', 'Пропущено'),
     ]
+    CHANNEL_EMAIL = 'email'
+    CHANNEL_MAX = 'max'
+    CHANNEL_CHOICES = [
+        (CHANNEL_EMAIL, 'Почта'),
+        (CHANNEL_MAX, 'MAX'),
+    ]
 
     event = models.CharField('Событие', max_length=30, choices=EVENT_CHOICES)
-    recipient = models.EmailField('Получатель')
+    # Канал определяет и способ отправки, и то, как читать `recipient`:
+    # для почты это адрес, для MAX — «user:12345» или «chat:-98765»
+    channel = models.CharField('Канал', max_length=10, choices=CHANNEL_CHOICES,
+                               default=CHANNEL_EMAIL, db_index=True)
+    # Раньше здесь был EmailField. Получатель в MAX — не адрес, а число,
+    # так что проверка формата переехала в код, который ставит в очередь
+    recipient = models.CharField('Получатель', max_length=254)
     subject = models.CharField('Тема', max_length=255)
     body = models.TextField('Текст')
 
@@ -590,6 +606,24 @@ class Notification(models.Model):
 
     def __str__(self):
         return f'{self.get_event_display()} → {self.recipient} ({self.get_status_display()})'
+
+    @property
+    def recipient_display(self):
+        """Получатель в читаемом виде.
+
+        Адрес почты понятен сам по себе, а «user:842910» в списке ни о чём
+        не говорит: подставляем имя сотрудника, если такой в базе найдётся.
+        """
+        if self.channel != self.CHANNEL_MAX:
+            return self.recipient
+
+        kind, _, value = self.recipient.partition(':')
+        if kind == 'user':
+            employee = Employee.objects.filter(max_user_id=value).first()
+            if employee:
+                return f'{employee.full_name} (MAX)'
+            return f'MAX, пользователь {value}'
+        return f'MAX, чат {value}'
 
 
 class StockMovement(models.Model):

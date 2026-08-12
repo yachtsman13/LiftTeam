@@ -21,6 +21,7 @@ from django.test import Client as TestClient
 from django.urls import resolve
 from django.utils import timezone
 
+from . import messengers
 from .models import (
     Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, RepairOrder,
     RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement, StorageCell,
@@ -2510,6 +2511,254 @@ class SendNotificationsCommandTests(TestCase):
         self.assertIn('Старше', self.note.last_error)
 
 
+class MaxTransportTests(TestCase):
+    """Отправка в MAX: что именно уходит в сеть и как разбирается ответ."""
+
+    def _fake_urlopen(self, body='{"message": {}}', calls=None):
+        """Подменяет сеть, запоминая запрос."""
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+            def read(self_inner):
+                return body.encode('utf-8')
+
+        def _open(req, timeout=None):
+            if calls is not None:
+                calls.append(req)
+            return _Response()
+
+        return _open
+
+    @override_settings(MAX_BOT_TOKEN='secret-token',
+                       MAX_API_URL='https://platform-api2.max.ru')
+    def test_personal_message_goes_to_user_id(self):
+        calls = []
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(calls=calls)):
+            messengers.send_max_message('user:842910', 'Дефицит')
+
+        request_sent = calls[0]
+        self.assertEqual(
+            request_sent.full_url,
+            'https://platform-api2.max.ru/messages?user_id=842910',
+        )
+        self.assertEqual(json.loads(request_sent.data.decode()), {'text': 'Дефицит'})
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_token_goes_in_the_header_without_bearer(self):
+        """MAX ждёт голый токен: с префиксом Bearer запрос отвергается."""
+        calls = []
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(calls=calls)):
+            messengers.send_max_message('user:1', 'текст')
+
+        self.assertEqual(calls[0].get_header('Authorization'), 'secret-token')
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_group_chat_goes_to_chat_id(self):
+        calls = []
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(calls=calls)):
+            messengers.send_max_message('chat:-98765', 'текст')
+
+        self.assertIn('chat_id=-98765', calls[0].full_url)
+
+    @override_settings(MAX_BOT_TOKEN='')
+    def test_without_token_it_refuses(self):
+        with self.assertRaises(messengers.MaxError):
+            messengers.send_max_message('user:1', 'текст')
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_unknown_recipient_format_is_rejected(self):
+        with self.assertRaises(messengers.MaxError):
+            messengers.send_max_message('wh@example.com', 'текст')
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_error_inside_a_200_response_is_noticed(self):
+        """MAX умеет отвечать «200 OK» с ошибкой в теле."""
+        body = '{"code": "not.found", "message": "chat not found"}'
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(body=body)):
+            with self.assertRaises(messengers.MaxError) as caught:
+                messengers.send_max_message('user:1', 'текст')
+
+        self.assertIn('chat not found', str(caught.exception))
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_http_error_becomes_a_readable_reason(self):
+        import urllib.error
+
+        failure = urllib.error.HTTPError(
+            'https://platform-api2.max.ru/messages', 401, 'Unauthorized',
+            {}, io.BytesIO(b'{"message": "invalid access_token"}')
+        )
+        with patch('core.messengers.request.urlopen', side_effect=failure):
+            with self.assertRaises(messengers.MaxError) as caught:
+                messengers.send_max_message('user:1', 'текст')
+
+        self.assertIn('401', str(caught.exception))
+        self.assertIn('invalid access_token', str(caught.exception))
+
+
+class MaxQueueTests(TestCase):
+    """Кому ставится оповещение в MAX при дефиците детали."""
+
+    def setUp(self):
+        Employee.objects.create_user(
+            username='wh_max', full_name='Кладовщик', password='pass',
+            role='warehouse', email='wh@example.com', max_user_id='842910',
+        )
+        Employee.objects.create_user(
+            username='wh_nomax', full_name='Без MAX', password='pass',
+            role='warehouse', email='wh2@example.com',
+        )
+        Employee.objects.create_user(
+            username='acc_max', full_name='Бухгалтер', password='pass',
+            role='accountant', email='acc@example.com', max_user_id='111',
+        )
+        self.part = SparePart.objects.create(
+            part_number='MAX-1', name='Резистор', current_stock=10, min_stock=5
+        )
+
+    def _spend(self):
+        self.part.current_stock -= 6
+        self.part.save(update_fields=['current_stock'])
+
+    def _max_recipients(self):
+        return set(
+            Notification.objects.filter(channel='max').values_list('recipient', flat=True)
+        )
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='')
+    def test_shortage_reaches_those_who_gave_their_id(self):
+        self._spend()
+
+        self.assertEqual(self._max_recipients(), {'user:842910'})
+        # Почта при этом никуда не делась
+        self.assertEqual(
+            set(Notification.objects.filter(channel='email').values_list('recipient', flat=True)),
+            {'wh@example.com', 'wh2@example.com'},
+        )
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='-98765')
+    def test_group_chat_replaces_personal_messages(self):
+        """Три одинаковых сообщения подряд — это не оповещение, а шум."""
+        self._spend()
+
+        self.assertEqual(self._max_recipients(), {'chat:-98765'})
+
+    @override_settings(NOTIFY_MAX=False, MAX_BOT_TOKEN='t')
+    def test_disabled_channel_queues_nothing(self):
+        self._spend()
+        self.assertEqual(Notification.objects.filter(channel='max').count(), 0)
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='')
+    def test_without_a_token_the_channel_is_silent(self):
+        self._spend()
+        self.assertEqual(Notification.objects.filter(channel='max').count(), 0)
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='')
+    def test_message_carries_the_subject_inside_the_text(self):
+        """У сообщения в мессенджере нет отдельного поля темы."""
+        self._spend()
+        note = Notification.objects.get(channel='max')
+
+        self.assertTrue(note.body.startswith(note.subject))
+        self.assertIn('MAX-1', note.body)
+
+
+class MaxDeliveryTests(TestCase):
+    """Команда отправки: оповещение MAX не должно уходить почтой и наоборот."""
+
+    def setUp(self):
+        self.letter = Notification.objects.create(
+            event='low_stock', recipient='wh@example.com',
+            subject='Дефицит', body='Текст',
+        )
+        self.message = Notification.objects.create(
+            event='low_stock', channel='max', recipient='user:842910',
+            subject='Дефицит', body='Дефицит\n\nТекст',
+        )
+
+    def _run(self):
+        call_command('send_notifications', stdout=io.StringIO(), stderr=io.StringIO())
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, MAX_BOT_TOKEN='t',
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_each_channel_uses_its_own_transport(self):
+        from django.core import mail
+
+        with patch('core.messengers.send_max_message') as send_max:
+            self._run()
+
+        self.letter.refresh_from_db()
+        self.message.refresh_from_db()
+
+        send_max.assert_called_once_with('user:842910', 'Дефицит\n\nТекст')
+        self.assertEqual([m.to for m in mail.outbox], [['wh@example.com']])
+        self.assertEqual(self.letter.status, 'sent')
+        self.assertEqual(self.message.status, 'sent')
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, MAX_BOT_TOKEN='t',
+                       NOTIFICATIONS_MAX_ATTEMPTS=2,
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_a_broken_messenger_does_not_stop_the_post(self):
+        from django.core import mail
+
+        with patch('core.messengers.send_max_message',
+                   side_effect=messengers.MaxError('MAX недоступен')):
+            self._run()
+
+        self.letter.refresh_from_db()
+        self.message.refresh_from_db()
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(self.letter.status, 'sent')
+        self.assertEqual(self.message.status, 'pending')
+        self.assertIn('MAX недоступен', self.message.last_error)
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, MAX_BOT_TOKEN='t')
+    def test_a_max_only_batch_does_not_open_smtp(self):
+        """Иначе очередь из одних сообщений упиралась бы в почтовый сервер."""
+        self.letter.delete()
+
+        with patch('core.messengers.send_max_message'), \
+             patch('core.management.commands.send_notifications.get_connection') as connect:
+            self._run()
+
+        connect.assert_not_called()
+
+
+class MaxRecipientDisplayTests(TestCase):
+    """«user:842910» в списке оповещений ни о чём не говорит."""
+
+    def test_known_employee_is_shown_by_name(self):
+        Employee.objects.create_user(
+            username='wh_disp', full_name='Иванов И.И.', password='pass',
+            role='warehouse', max_user_id='842910',
+        )
+        note = Notification.objects.create(
+            event='low_stock', channel='max', recipient='user:842910',
+            subject='Дефицит', body='Текст',
+        )
+
+        self.assertEqual(note.recipient_display, 'Иванов И.И. (MAX)')
+
+    def test_unknown_id_is_still_readable(self):
+        note = Notification.objects.create(
+            event='low_stock', channel='max', recipient='user:1',
+            subject='Дефицит', body='Текст',
+        )
+        self.assertIn('1', note.recipient_display)
+
+    def test_email_is_shown_as_is(self):
+        note = Notification.objects.create(
+            event='low_stock', recipient='wh@example.com',
+            subject='Дефицит', body='Текст',
+        )
+        self.assertEqual(note.recipient_display, 'wh@example.com')
+
+
 class NotificationAdminPageTests(TestCase):
     def setUp(self):
         self.admin = Employee.objects.create_superuser(
@@ -2532,6 +2781,20 @@ class NotificationAdminPageTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'wh@example.com')
         self.assertContains(resp, 'SMTP молчит')
+
+    def test_max_row_shows_the_channel_and_the_person(self):
+        Employee.objects.create_user(
+            username='wh_max_page', full_name='Петров П.П.', password='pass',
+            role='warehouse', max_user_id='842910',
+        )
+        Notification.objects.create(
+            event='low_stock', channel='max', recipient='user:842910',
+            subject='Дефицит', body='Текст',
+        )
+        resp = self.client_http.get('/management/notifications/')
+
+        self.assertContains(resp, 'MAX')
+        self.assertContains(resp, 'Петров П.П.')
 
     def test_status_filter(self):
         Notification.objects.create(

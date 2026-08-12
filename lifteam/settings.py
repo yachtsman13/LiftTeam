@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.22.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.23.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -210,6 +210,27 @@ NOTIFICATIONS_MAX_ATTEMPTS = int(os.getenv('NOTIFICATIONS_MAX_ATTEMPTS', '5'))
 # Оповещения старше этого срока не отправляются: иначе после включения
 # отправки заказчику придёт месячная пачка новостей о давно закрытых заказах
 NOTIFICATIONS_MAX_AGE_HOURS = int(os.getenv('NOTIFICATIONS_MAX_AGE_HOURS', '24'))
+
+# --- Мессенджер MAX -----------------------------------------------------
+# Второй канал складских оповещений. Почта на телефоне часто молчит до
+# следующего открытия ящика, а сообщение в мессенджере видно сразу.
+#
+# Токен выдаёт @MasterBot в самом MAX по команде /create. Пустой токен
+# означает «канал не настроен»: очередь пополняется только письмами.
+MAX_BOT_TOKEN = os.getenv('MAX_BOT_TOKEN', '')
+
+# Адрес API вынесен в настройки потому, что уже менялся: старый
+# platform-api.max.ru отключили в июле 2026. Следующая смена должна
+# чиниться правкой .env, а не обновлением программы.
+MAX_API_URL = os.getenv('MAX_API_URL', 'https://platform-api2.max.ru')
+
+# Слать ли сотрудникам оповещения в MAX. Выключено по умолчанию: пока
+# идентификаторы не прописаны, слать всё равно некому.
+NOTIFY_MAX = os.getenv('NOTIFY_MAX', 'False').lower() == 'true'
+
+# Общий чат для складских оповещений. Если задан, сообщение уходит один раз
+# в чат, а не каждому кладовщику отдельно.
+MAX_GROUP_CHAT_ID = os.getenv('MAX_GROUP_CHAT_ID', '')
 
 # Срок гарантии на ремонт, месяцев. Отсчитывается от даты завершения заказа.
 # 0 отключает гарантию: отметки о ней просто не показываются.

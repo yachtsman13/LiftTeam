@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.22.0.
+Формы для LiftTeam v2.23.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -274,11 +274,13 @@ class EmployeeForm(forms.ModelForm):
 
     class Meta:
         model = Employee
-        fields = ['username', 'full_name', 'email', 'role', 'is_active']
+        fields = ['username', 'full_name', 'email', 'max_user_id', 'role', 'is_active']
         widgets = {
             'username': forms.TextInput(attrs={'class': 'form-control'}),
             'full_name': forms.TextInput(attrs={'class': 'form-control'}),
             'email': forms.EmailInput(attrs={'class': 'form-control'}),
+            'max_user_id': forms.TextInput(attrs={'class': 'form-control',
+                                                  'inputmode': 'numeric'}),
             'role': forms.Select(attrs={'class': 'form-select'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
@@ -286,8 +288,13 @@ class EmployeeForm(forms.ModelForm):
             'username': 'Логин',
             'full_name': 'ФИО',
             'email': 'Email',
+            'max_user_id': 'ID в MAX',
             'role': 'Роль',
             'is_active': 'Активен',
+        }
+        help_texts = {
+            'max_user_id': 'Число. Узнаётся командой max_updates после того, '
+                           'как сотрудник напишет боту (см. DEPLOY.md)',
         }
 
     def clean(self):

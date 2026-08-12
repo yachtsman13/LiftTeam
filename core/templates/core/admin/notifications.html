@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оповещения — LiftTeam v2.22.0{% endblock %}
+{% block title %}Оповещения — LiftTeam v2.23.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -33,6 +33,12 @@
                 {% if low_stock_enabled %}включён{% else %}выключен{% endif %}
             </strong>
         </span>
+        <span>
+            MAX:
+            <strong class="{% if max_enabled %}text-success{% else %}text-muted{% endif %}">
+                {% if max_enabled %}включён{% elif max_configured %}выключен{% else %}не настроен{% endif %}
+            </strong>
+        </span>
         <span class="text-muted">Всего в списке: {{ found_count }}</span>
     </div>
 </div>
@@ -57,6 +63,7 @@
                     <tr>
                         <th>Создано</th>
                         <th>Событие</th>
+                        <th>Канал</th>
                         <th>Получатель</th>
                         <th>Тема</th>
                         <th>Состояние</th>
@@ -68,7 +75,14 @@
                     <tr>
                         <td class="text-nowrap">{{ item.created_at|date:"d.m.Y H:i" }}</td>
                         <td>{{ item.get_event_display }}</td>
-                        <td>{{ item.recipient }}</td>
+                        <td class="text-nowrap">
+                            {% if item.channel == 'max' %}
+                            <span class="badge bg-info text-dark"><i class="bi bi-chat-dots me-1"></i>MAX</span>
+                            {% else %}
+                            <span class="badge bg-light text-dark"><i class="bi bi-envelope me-1"></i>Почта</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ item.recipient_display }}</td>
                         <td>
                             {{ item.subject }}
                             {% if item.last_error %}
@@ -100,7 +114,7 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="6" class="text-center text-muted py-4">Очередь пуста</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted py-4">Очередь пуста</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

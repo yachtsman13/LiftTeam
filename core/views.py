@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.22.0.
+Views для LiftTeam v2.23.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -38,7 +38,7 @@ from .utils import (
     build_workbook, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import notifications, updater
+from . import messengers, notifications, updater
 
 
 def _send_stock_update(part):
@@ -1877,6 +1877,8 @@ def admin_notifications(request):
         'sending_enabled': getattr(settings, 'NOTIFICATIONS_ENABLED', False),
         'clients_enabled': getattr(settings, 'NOTIFY_CLIENTS', False),
         'low_stock_enabled': getattr(settings, 'NOTIFY_LOW_STOCK', True),
+        'max_enabled': getattr(settings, 'NOTIFY_MAX', False) and messengers.is_configured(),
+        'max_configured': messengers.is_configured(),
     })
 
 

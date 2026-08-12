@@ -10,6 +10,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from . import messengers
 from .models import Employee, Notification
 
 
@@ -17,26 +18,47 @@ def _setting(name, default):
     return getattr(settings, name, default)
 
 
+def _staff():
+    """Кладовщики и администраторы: заказывать детали — их дело."""
+    return Employee.objects.filter(is_active=True, role__in=['warehouse', 'admin'])
+
+
 def staff_recipients():
-    """Кому из сотрудников слать складские оповещения.
+    """Почтовые адреса сотрудников для складских оповещений.
 
-    Кладовщики и администраторы: заказывать детали — их дело. У кого
-    не заполнена почта, тот и не получит, — это нормально и не ошибка.
+    У кого не заполнена почта, тот и не получит, — это нормально и не ошибка.
     """
-    return list(
-        Employee.objects
-        .filter(is_active=True, role__in=['warehouse', 'admin'])
-        .exclude(email='')
-        .values_list('email', flat=True)
-    )
+    return list(_staff().exclude(email='').values_list('email', flat=True))
 
 
-def queue(event, recipient, subject, body, repair_order=None, part=None):
+def staff_max_recipients():
+    """Получатели складских оповещений в MAX.
+
+    Если задан общий чат, пишем один раз в него: в маленькой конторе всем
+    и так интересно, что кончилось, а три одинаковых сообщения подряд —
+    это не оповещение, а шум. Иначе — каждому, кто указал свой идентификатор.
+    """
+    if not _setting('NOTIFY_MAX', False) or not messengers.is_configured():
+        return []
+
+    group_chat = str(_setting('MAX_GROUP_CHAT_ID', '') or '').strip()
+    if group_chat:
+        return [messengers.format_recipient('chat', group_chat)]
+
+    return [
+        messengers.format_recipient('user', max_user_id)
+        for max_user_id in _staff().exclude(max_user_id='').values_list('max_user_id', flat=True)
+    ]
+
+
+def queue(event, recipient, subject, body, repair_order=None, part=None,
+          channel=Notification.CHANNEL_EMAIL):
     """Кладёт оповещение в очередь. Без адреса ничего не создаёт."""
     if not recipient:
         return None
     return Notification.objects.create(
         event=event,
+        channel=channel,
         recipient=recipient,
         subject=subject,
         body=body,
@@ -101,6 +123,7 @@ def notify_low_stock(part):
         return []
 
     cell = part.current_cell
+    subject = f'Дефицит: {part.part_number} ({part.current_stock} из {part.min_stock})'
     body = '\n'.join([
         f'Деталь {part.part_number} — {part.name}.',
         f'Остаток: {part.current_stock} при минимуме {part.min_stock}.',
@@ -111,9 +134,15 @@ def notify_low_stock(part):
         'Деталь попала в план закупок.',
     ])
 
-    return [
-        queue('low_stock', email,
-              f'Дефицит: {part.part_number} ({part.current_stock} из {part.min_stock})',
-              body, part=part)
+    queued = [
+        queue('low_stock', email, subject, body, part=part)
         for email in staff_recipients()
     ]
+    # В MAX уходит то же самое, но темой первой строкой: у сообщения в
+    # мессенджере нет отдельного поля темы
+    queued += [
+        queue('low_stock', recipient, subject, f'{subject}\n\n{body}', part=part,
+              channel=Notification.CHANNEL_MAX)
+        for recipient in staff_max_recipients()
+    ]
+    return [item for item in queued if item is not None]

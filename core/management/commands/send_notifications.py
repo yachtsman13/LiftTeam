@@ -13,6 +13,7 @@ from django.core.mail import get_connection, EmailMessage
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core import messengers
 from core.models import Notification
 
 
@@ -58,18 +59,29 @@ class Command(BaseCommand):
 
         if options['dry_run']:
             for item in queued:
-                self.stdout.write(f'[проверка] {item.recipient}: {item.subject}')
+                self.stdout.write(
+                    f'[проверка] {item.get_channel_display()} → {item.recipient}: {item.subject}'
+                )
             self.stdout.write(f'В очереди: {len(queued)}, просрочено: {stale_count}')
             return
 
         sent = failed = 0
         connection = None
         try:
-            # Одно соединение на всю пачку: открывать SMTP-сессию на каждое
-            # письмо — это лишние секунды на каждое
-            connection = get_connection()
+            # Соединение с почтой открываем лениво и одно на всю пачку:
+            # открывать SMTP-сессию на каждое письмо — лишние секунды каждый
+            # раз, а если писем в пачке нет вовсе, она и не понадобится
             for item in queued:
-                if self._deliver(item, connection, max_attempts):
+                if item.channel == Notification.CHANNEL_MAX:
+                    ok = self._deliver(item, max_attempts, self._send_max)
+                else:
+                    if connection is None:
+                        connection = get_connection()
+                    ok = self._deliver(
+                        item, max_attempts,
+                        lambda entry: self._send_email(entry, connection),
+                    )
+                if ok:
                     sent += 1
                 else:
                     failed += 1
@@ -84,15 +96,21 @@ class Command(BaseCommand):
             f'Отправлено: {sent}, не удалось: {failed}, просрочено: {stale_count}'
         )
 
-    def _deliver(self, item, connection, max_attempts):
+    def _send_email(self, item, connection):
+        EmailMessage(
+            subject=item.subject,
+            body=item.body,
+            to=[item.recipient],
+            connection=connection,
+        ).send(fail_silently=False)
+
+    def _send_max(self, item):
+        messengers.send_max_message(item.recipient, item.body)
+
+    def _deliver(self, item, max_attempts, send):
         item.attempts += 1
         try:
-            EmailMessage(
-                subject=item.subject,
-                body=item.body,
-                to=[item.recipient],
-                connection=connection,
-            ).send(fail_silently=False)
+            send(item)
         except Exception as error:
             # Текст ошибки обрезаем: в него попадает ответ сервера целиком,
             # а в списке нужна причина, а не простыня
