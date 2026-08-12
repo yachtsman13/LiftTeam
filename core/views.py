@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.24.0.
+Views для LiftTeam v2.25.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1411,7 +1411,7 @@ def _cell_label(cell, base_url):
         'cell_parts': parts,
         # Ссылка вместо простого адреса: сканирование сразу открывает
         # содержимое, а не показывает строку, которую потом ищут вручную
-        'qr_img': generate_qr_image(f'{base_url}/c/{cell.pk}/'),
+        'qr_img': generate_qr_image(qr_url(base_url, 'c', cell.pk)),
         'grouped': grouped,
         'group_type': parts[0].component_type if grouped else None,
         'group_values': (
@@ -1438,8 +1438,8 @@ def equipment_label(request, pk):
     # сканирование давало строку с фигурными скобками, которую человек всё
     # равно шёл искать руками, а кириллица внутри — худший случай по плотности
     # кода (QR переключается в побайтовый режим и распухает). Короткая ссылка
-    # укладывается в 29 модулей и сразу открывает историю этой единицы.
-    qr_img = generate_qr_image(f"{label_base_url(request)}/e/{equipment.pk}/")
+    # укладывается в 25–29 модулей и сразу открывает историю этой единицы.
+    qr_img = generate_qr_image(qr_url(label_base_url(request), 'e', equipment.pk))
 
     # Штрихкод оставлен: он кодирует сам серийный номер и читается сканером
     # с клавиатурным вводом, которым QR не заменить
@@ -1468,7 +1468,7 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
     # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому под него
     # освобождено место: у логотипа убран внутренний круг, а сам он увеличен.
-    qr_img = generate_qr_image(f'{label_base_url(request)}/o/{order.pk}/')
+    qr_img = generate_qr_image(qr_url(label_base_url(request), 'o', order.pk))
 
     return render(request, 'core/repair_orders/equipment_label.html', {
         'order': order,
@@ -2012,13 +2012,27 @@ def short_equipment(request, pk):
 def label_base_url(request):
     """Основа для ссылок в QR-кодах.
 
-    По умолчанию берётся адрес, по которому открыта страница печати: этикетка,
-    напечатанная из офисной сети, получит локальный адрес. Если задать
-    LABEL_BASE_URL в .env, используется он — это нужно, когда печатают
-    через Tailscale, а сканировать будут в офисе.
+    Берётся из LABEL_BASE_URL; на Raspberry Pi там прошит адрес в Tailscale.
+    Смысл настройки в том, чтобы код не зависел от того, откуда открыли
+    страницу печати: иначе две одинаковые с виду наклейки вели бы в разные
+    места — напечатанная из офиса на локальный адрес, напечатанная снаружи
+    на адрес Tailscale.
+
+    Пустое значение возвращает прежнее поведение: адрес берётся из запроса.
     """
     configured = getattr(settings, 'LABEL_BASE_URL', '')
     return configured.rstrip('/') if configured else request.build_absolute_uri('/').rstrip('/')
+
+
+def qr_url(base_url, prefix, pk):
+    """Ссылка, которая уходит в QR-код.
+
+    Без косой черты на конце — это ровно один символ, но на этикетке заказа
+    он решает: QR там 9,6 мм, и 27-й символ переводит код с 25 модулей
+    на 29, то есть с 2,8 точки принтера на модуль до 2,5, а 2,5 на практике
+    уже не считывалось. Маршруты без черты заведены в urls.py.
+    """
+    return f'{base_url}/{prefix}/{pk}'
 
 
 def _part_label(part, base_url):
@@ -2026,7 +2040,7 @@ def _part_label(part, base_url):
     return {
         'part': part,
         'cell': part.current_cell,
-        'qr_img': generate_qr_image(f'{base_url}/p/{part.pk}/'),
+        'qr_img': generate_qr_image(qr_url(base_url, 'p', part.pk)),
     }
 
 

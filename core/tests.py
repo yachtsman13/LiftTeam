@@ -556,13 +556,106 @@ class LabelTests(TestCase):
         self.assertIn('/login/', response['Location'])
 
     def test_label_base_url_setting_overrides_request_host(self):
-        """Печать через Tailscale не должна класть в QR адрес,
-        недоступный сканирующему телефону в офисе."""
+        """Адрес в коде не должен зависеть от того, откуда печатали."""
         from core.views import label_base_url
 
         request = TestClient().get('/').wsgi_request
-        with self.settings(LABEL_BASE_URL='http://192.168.31.169/'):
-            self.assertEqual(label_base_url(request), 'http://192.168.31.169')
+        with self.settings(LABEL_BASE_URL='http://100.108.92.92/'):
+            self.assertEqual(label_base_url(request), 'http://100.108.92.92')
+
+    def test_short_urls_work_without_the_trailing_slash(self):
+        """Именно эта форма попадает в QR — она на символ короче."""
+        part_response = self.client_http.get(f'/p/{self.part.pk}')
+        self.assertRedirects(part_response, f'/parts/{self.part.pk}/')
+
+        cell_response = self.client_http.get(f'/c/{self.cell.pk}')
+        self.assertRedirects(
+            cell_response,
+            f'/storage-cells/?cabinet={self.cell.cabinet_number}&open_cell={self.cell.pk}',
+        )
+
+    def test_qr_links_carry_no_trailing_slash(self):
+        """Косая черта стоит ровно тот символ, который на этикетке заказа
+        переводит код с 25 модулей на 29."""
+        from core.views import qr_url
+
+        self.assertEqual(qr_url('http://100.108.92.92', 'o', 123),
+                         'http://100.108.92.92/o/123')
+
+    @override_settings(LABEL_BASE_URL='http://100.108.92.92')
+    def test_every_label_type_points_at_the_configured_address(self):
+        """Все четыре этикетки, а не только те, о которых вспомнили."""
+        equipment_model = EquipmentModel.objects.create(name='БУАД-QR')
+        equipment = Equipment.objects.create(model=equipment_model, serial_number='QR-1')
+        client = ClientModel.objects.create(name='Заказчик QR')
+        order = RepairOrder.objects.create(
+            order_number='LT-QR-1', client=client, date_received=datetime.date.today()
+        )
+        roe = RepairOrderEquipment.objects.create(repair_order=order, equipment=equipment)
+
+        pages = {
+            f'/parts/{self.part.pk}/label/': f'http://100.108.92.92/p/{self.part.pk}',
+            f'/storage-cells/{self.cell.pk}/label/': f'http://100.108.92.92/c/{self.cell.pk}',
+            f'/equipment/{equipment.pk}/label/': f'http://100.108.92.92/e/{equipment.pk}',
+            f'/repair-orders/{order.pk}/equipment/{roe.pk}/label/':
+                f'http://100.108.92.92/o/{order.pk}',
+        }
+        for page, expected in pages.items():
+            with self.subTest(page=page):
+                with patch('core.views.generate_qr_image') as qr:
+                    qr.return_value = 'data:image/png;base64,x'
+                    self.client_http.get(page)
+                self.assertEqual(qr.call_args[0][0], expected)
+
+
+class PiSettingsLabelTests(TestCase):
+    """Настройки Raspberry Pi: адрес этикеток и то, что по нему пускают."""
+
+    def _load(self, **env):
+        """Загружает settings_pi с заданным окружением.
+
+        Модуль настроек читает переменные при импорте, поэтому его
+        приходится перезагружать, а не подменять значения после.
+        """
+        import importlib
+        from unittest.mock import patch as patch_env
+
+        environment = {'SECRET_KEY': 'test-key-for-settings'}
+        environment.update(env)
+        with patch_env.dict('os.environ', environment, clear=False):
+            module = importlib.import_module('lifteam.settings_pi')
+            return importlib.reload(module)
+
+    def test_labels_point_at_tailscale_by_default(self):
+        """Адрес Tailscale работает и в офисе, и из дома — в отличие
+        от локального IP, который живёт только внутри офисной сети."""
+        settings_pi = self._load(ALLOWED_HOSTS='192.168.1.50,localhost')
+
+        self.assertEqual(settings_pi.LABEL_BASE_URL, 'http://100.108.92.92')
+
+    def test_the_scanned_address_is_allowed(self):
+        """Иначе отсканированный код приводит на «400 Bad Request»."""
+        settings_pi = self._load(ALLOWED_HOSTS='192.168.1.50,localhost')
+
+        self.assertIn('100.108.92.92', settings_pi.ALLOWED_HOSTS)
+        self.assertIn('http://100.108.92.92', settings_pi.CSRF_TRUSTED_ORIGINS)
+
+    def test_a_custom_address_is_allowed_too(self):
+        """Адрес можно переопределить в .env — например, дописав порт,
+        если nginx не ставили."""
+        settings_pi = self._load(LABEL_BASE_URL='http://100.64.0.7:8000')
+
+        self.assertEqual(settings_pi.LABEL_BASE_URL, 'http://100.64.0.7:8000')
+        # В ALLOWED_HOSTS порт не указывается, в доверенных источниках — да
+        self.assertIn('100.64.0.7', settings_pi.ALLOWED_HOSTS)
+        self.assertIn('http://100.64.0.7:8000', settings_pi.CSRF_TRUSTED_ORIGINS)
+
+    def test_an_empty_address_falls_back_to_the_print_page(self):
+        """Пустая настройка — прежнее поведение: адрес берётся из запроса."""
+        settings_pi = self._load(LABEL_BASE_URL='')
+
+        self.assertEqual(settings_pi.LABEL_BASE_URL, '')
+        self.assertNotIn('100.108.92.92', settings_pi.ALLOWED_HOSTS)
 
 
 class UpdaterTests(TestCase):
@@ -1441,7 +1534,7 @@ class EquipmentLabelLinkTests(TestCase):
             self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
 
         encoded = qr.call_args[0][0]
-        self.assertTrue(encoded.endswith(f'/e/{self.equipment.pk}/'), encoded)
+        self.assertTrue(encoded.endswith(f'/e/{self.equipment.pk}'), encoded)
         self.assertNotIn('{', encoded)
         self.assertNotIn('БУАД', encoded)
 
@@ -1454,7 +1547,7 @@ class EquipmentLabelLinkTests(TestCase):
             self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
 
         self.assertEqual(
-            qr.call_args[0][0], f'http://192.168.1.50/e/{self.equipment.pk}/'
+            qr.call_args[0][0], f'http://192.168.1.50/e/{self.equipment.pk}'
         )
 
     def test_label_still_shows_barcode_of_serial(self):
@@ -1506,7 +1599,7 @@ class OrderLabelLinkTests(TestCase):
             self.client_http.get(self._label_url())
 
         encoded = qr.call_args[0][0]
-        self.assertTrue(encoded.endswith(f'/o/{self.order.pk}/'), encoded)
+        self.assertTrue(encoded.endswith(f'/o/{self.order.pk}'), encoded)
         # Прежнее содержимое кода — «LT-2026-08-001/1» — больше не годится:
         # сканирование им ничего не открывало
         self.assertNotIn(self.order.order_number, encoded)
@@ -1517,7 +1610,7 @@ class OrderLabelLinkTests(TestCase):
             qr.return_value = 'data:image/png;base64,x'
             self.client_http.get(self._label_url())
 
-        self.assertEqual(qr.call_args[0][0], f'http://192.168.1.50/o/{self.order.pk}/')
+        self.assertEqual(qr.call_args[0][0], f'http://192.168.1.50/o/{self.order.pk}')
 
     def test_position_still_printed_on_the_label(self):
         """Позиция в ссылку не входит, поэтому она обязана остаться на бумаге —

@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.24.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.25.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -246,6 +246,11 @@ NOTIFY_TELEGRAM = os.getenv('NOTIFY_TELEGRAM', 'False').lower() == 'true'
 # Общая группа для складских оповещений. Если задана, сообщение уходит один
 # раз в неё, а не каждому кладовщику отдельно.
 TELEGRAM_GROUP_CHAT_ID = os.getenv('TELEGRAM_GROUP_CHAT_ID', '')
+
+# Основа ссылок в QR-кодах этикеток. Пусто — берётся адрес, по которому
+# открыта страница печати. На Raspberry Pi значение по умолчанию другое:
+# там прошит адрес в Tailscale, см. settings_pi.py.
+LABEL_BASE_URL = os.getenv('LABEL_BASE_URL', '')
 
 # Срок гарантии на ремонт, месяцев. Отсчитывается от даты завершения заказа.
 # 0 отключает гарантию: отметки о ней просто не показываются.

@@ -9,6 +9,7 @@ SQLite и один процесс Daphne — для нескольких сот�
     DJANGO_SETTINGS_MODULE=lifteam.settings_pi daphne lifteam.asgi:application
 """
 import os
+from urllib.parse import urlsplit
 
 from .settings import *  # noqa: F401,F403
 from .settings import BASE_DIR
@@ -70,12 +71,34 @@ X_FRAME_OPTIONS = 'DENY'
 
 # --- Этикетки ---------------------------------------------------------------
 
-# Основа ссылок в QR-кодах на этикетках. Если не задана, берётся адрес,
-# по которому открыта страница печати: напечатанное из офисной сети получит
-# локальный адрес. Задавать стоит, когда печатают через Tailscale, а сканируют
-# в офисе — иначе в код попадёт адрес, недоступный без VPN.
-# Пример: LABEL_BASE_URL=http://192.168.31.169
-LABEL_BASE_URL = os.getenv('LABEL_BASE_URL', '')
+# Основа ссылок в QR-кодах на этикетках.
+#
+# По умолчанию — адрес Pi в Tailscale. Он один и тот же в офисе, дома и с
+# телефона в дороге, поэтому этикетка читается одинаково независимо от того,
+# кто и откуда её печатал. Локальный IP так не умеет: напечатанная через
+# Tailscale этикетка получала бы адрес, недоступный из офиса, и наоборот.
+#
+# Плата за это — сканирующее устройство обязано быть в Tailscale. Телефон
+# без него получит «страница недоступна», даже стоя рядом с Pi.
+#
+# Порт не указан: снаружи отвечает nginx на 80 (deploy/nginx-lifteam.conf),
+# а Daphne слушает 127.0.0.1:8000 за ним. Если nginx не ставили, здесь нужен
+# LABEL_BASE_URL=http://100.108.92.92:8000
+LABEL_BASE_URL = os.getenv('LABEL_BASE_URL', 'http://100.108.92.92')
+
+# Адрес из ссылки обязан быть среди разрешённых, иначе отсканированный код
+# приведёт на «400 Bad Request»: Django отвергает незнакомый заголовок Host.
+# Дописываем сами, а не полагаемся на .env — забыть об этом слишком легко,
+# а проявится оно у того, кто стоит со сканером у стеллажа.
+_label_parts = urlsplit(LABEL_BASE_URL) if LABEL_BASE_URL else None
+if _label_parts and _label_parts.hostname:
+    if '*' not in ALLOWED_HOSTS and _label_parts.hostname not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_label_parts.hostname)
+    # В доверенных источниках порт учитывается, в отличие от ALLOWED_HOSTS,
+    # поэтому берём адрес целиком
+    _label_origin = f'{_label_parts.scheme}://{_label_parts.netloc}'
+    if _label_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_label_origin)
 
 # --- Каналы -----------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.24.0
+v2.25.0
 """
 from django.urls import path
 from . import views
@@ -64,6 +64,19 @@ urlpatterns = [
     path('c/<int:pk>/', views.short_cell, name='short_cell'),
     path('e/<int:pk>/', views.short_equipment, name='short_equipment'),
     path('o/<int:pk>/', views.short_order, name='short_order'),
+
+    # Те же адреса без косой черты на конце — именно они попадают в QR-коды.
+    # Экономия ровно в один символ, но на этикетке заказа она решает: там
+    # QR всего 9,6 мм, и 27-й символ переводит код с 25 модулей на 29,
+    # то есть с 2,8 точки принтера на модуль до 2,5 — а 2,5 на практике
+    # уже не считывалось. Без этих маршрутов сработал бы APPEND_SLASH,
+    # но это лишний переход туда-обратно у человека со сканером в руках.
+    # Имён нет намеренно: reverse() должен и дальше давать канонический
+    # адрес с чертой, эти — только точка входа для сканера.
+    path('p/<int:pk>', views.short_part),
+    path('c/<int:pk>', views.short_cell),
+    path('e/<int:pk>', views.short_equipment),
+    path('o/<int:pk>', views.short_order),
 
     # Ячейки хранения
     path('storage-cells/', views.storage_cell_grid, name='storage_cell_grid'),
