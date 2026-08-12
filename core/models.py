@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.21.0.
+Модели данных для LiftTeam v2.22.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -533,6 +533,63 @@ class RepairOrderDetail(models.Model):
 
     def __str__(self):
         return f"{self.part.name} x{self.quantity_used} в {self.repair_order.order_number}"
+
+
+class Notification(models.Model):
+    """Оповещение в очереди на отправку.
+
+    Письма не отправляются прямо из обработчика страницы. SMTP через домашний
+    канал отвечает секундами, а иногда не отвечает вовсе: сохранение заказа
+    не должно ни ждать почтовый сервер, ни падать из-за него. Событие
+    записывается в очередь, а отправкой занимается отдельная команда
+    по расписанию — она же умеет повторять неудачные попытки.
+
+    Очередь наполняется всегда, даже когда отправка выключена: по ней видно,
+    что программа *собиралась* отправить, и можно посмотреть на это до того,
+    как включать письма заказчикам.
+    """
+    EVENT_CHOICES = [
+        ('order_status', 'Смена статуса заказа'),
+        ('low_stock', 'Деталь ушла в дефицит'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'В очереди'),
+        ('sent', 'Отправлено'),
+        ('failed', 'Не удалось'),
+        ('skipped', 'Пропущено'),
+    ]
+
+    event = models.CharField('Событие', max_length=30, choices=EVENT_CHOICES)
+    recipient = models.EmailField('Получатель')
+    subject = models.CharField('Тема', max_length=255)
+    body = models.TextField('Текст')
+
+    status = models.CharField('Состояние', max_length=10, choices=STATUS_CHOICES,
+                              default='pending', db_index=True)
+    attempts = models.IntegerField('Попыток отправки', default=0)
+    last_error = models.TextField('Последняя ошибка', blank=True)
+
+    created_at = models.DateTimeField('Создано', auto_now_add=True)
+    sent_at = models.DateTimeField('Отправлено', null=True, blank=True)
+
+    # Ссылки на то, из-за чего оповещение появилось: по ним в списке видно,
+    # к какому заказу или детали относится письмо
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='notifications', verbose_name='Заказ'
+    )
+    part = models.ForeignKey(
+        'SparePart', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='notifications', verbose_name='Деталь'
+    )
+
+    class Meta:
+        verbose_name = 'Оповещение'
+        verbose_name_plural = 'Оповещения'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.get_event_display()} → {self.recipient} ({self.get_status_display()})'
 
 
 class StockMovement(models.Model):

@@ -1,5 +1,5 @@
 """
-Django signals для LiftTeam v2.21.0.
+Django signals для LiftTeam v2.22.0.
 Сигналы используются только для:
 - настройки параметров подключения к SQLite
 - создания начальной записи истории статуса при создании заказа
@@ -109,6 +109,12 @@ def notify_stock_update(sender, instance, created, **kwargs):
     update_fields = kwargs.get('update_fields') or []
     if not created and 'current_stock' not in update_fields:
         return
+
+    # Ушла в дефицит — ставим письмо кладовщикам в очередь. Импорт внутри
+    # функции: core.notifications обращается к моделям, а сигналы грузятся
+    # раньше, чем приложение готово.
+    from . import notifications
+    notifications.notify_low_stock(instance)
     channel_layer = get_channel_layer()
     async_to_sync(channel_layer.group_send)(
         "stock_updates",

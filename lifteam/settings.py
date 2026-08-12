@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.21.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.22.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -183,6 +183,33 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ],
 }
+
+# --- Оповещения ---------------------------------------------------------
+# Очередь наполняется всегда; эти параметры управляют только отправкой.
+#
+# NOTIFICATIONS_ENABLED — главный выключатель. По умолчанию выключено:
+# пока не настроена почта и не проверено, что и кому уходит, письма
+# копятся в очереди и никуда не идут.
+NOTIFICATIONS_ENABLED = os.getenv('NOTIFICATIONS_ENABLED', 'False').lower() == 'true'
+
+# Письма заказчикам — отдельный выключатель, тоже выключенный. Это переписка
+# от лица фирмы с внешними людьми: включать её должен человек осознанно,
+# а не «оно само заработало после обновления».
+NOTIFY_CLIENTS = os.getenv('NOTIFY_CLIENTS', 'False').lower() == 'true'
+
+# Оповещения сотрудникам о дефиците деталей
+NOTIFY_LOW_STOCK = os.getenv('NOTIFY_LOW_STOCK', 'True').lower() == 'true'
+
+# Не повторять письмо об одной и той же детали чаще, чем раз в столько часов:
+# при разборе заказа списывают по несколько деталей подряд
+NOTIFY_LOW_STOCK_COOLDOWN_HOURS = int(os.getenv('NOTIFY_LOW_STOCK_COOLDOWN_HOURS', '24'))
+
+# Сколько раз пробовать отправить, прежде чем признать неудачу
+NOTIFICATIONS_MAX_ATTEMPTS = int(os.getenv('NOTIFICATIONS_MAX_ATTEMPTS', '5'))
+
+# Оповещения старше этого срока не отправляются: иначе после включения
+# отправки заказчику придёт месячная пачка новостей о давно закрытых заказах
+NOTIFICATIONS_MAX_AGE_HOURS = int(os.getenv('NOTIFICATIONS_MAX_AGE_HOURS', '24'))
 
 # Срок гарантии на ремонт, месяцев. Отсчитывается от даты завершения заказа.
 # 0 отключает гарантию: отметки о ней просто не показываются.

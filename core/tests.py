@@ -22,7 +22,7 @@ from django.urls import resolve
 from django.utils import timezone
 
 from .models import (
-    Client as ClientModel, Employee, Equipment, EquipmentModel, RepairOrder,
+    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, RepairOrder,
     RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement, StorageCell,
 )
 
@@ -2285,3 +2285,279 @@ class GridLiveUpdateMarkupTests(TestCase):
     def test_cells_carry_their_id(self):
         content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
         self.assertIn('data-cell-id=', content)
+
+
+@override_settings(NOTIFY_CLIENTS=True)
+class OrderNotificationTests(TestCase):
+    """Оповещения заказчику о смене статуса заказа."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='admin_notify', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+
+        self.client_obj = ClientModel.objects.create(
+            name='ООО Альфа', email='client@example.com'
+        )
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        model = EquipmentModel.objects.create(name='БУАД')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-1'),
+        )
+
+    def _change_status(self, status):
+        return self.client_http.post(
+            f'/repair-orders/{self.order.pk}/change-status/',
+            {'new_status': status, 'notes': ''},
+        )
+
+    def test_ready_for_shipment_queues_a_letter(self):
+        self._change_status('ready_for_shipment')
+
+        note = Notification.objects.get(event='order_status')
+        self.assertEqual(note.recipient, 'client@example.com')
+        self.assertEqual(note.status, 'pending')
+        self.assertIn(self.order.order_number, note.subject)
+        self.assertIn('SN-1', note.body)
+        self.assertEqual(note.repair_order, self.order)
+
+    def test_internal_statuses_do_not_bother_the_client(self):
+        """«Диагностика» и «ремонт» заказчику ничего не говорят."""
+        self._change_status('diagnostic')
+        self._change_status('repair')
+
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_shipped_letter_carries_the_tracking_number(self):
+        self.order.tracking_number = 'TRK-77'
+        self.order.save(update_fields=['tracking_number'])
+        self._change_status('shipped')
+
+        self.assertIn('TRK-77', Notification.objects.get().body)
+
+    def test_client_without_email_gets_nothing(self):
+        self.client_obj.email = ''
+        self.client_obj.save(update_fields=['email'])
+        self._change_status('ready_for_shipment')
+
+        self.assertEqual(Notification.objects.count(), 0)
+
+    @override_settings(NOTIFY_CLIENTS=False)
+    def test_disabled_client_letters_are_not_queued(self):
+        """Переписка с внешними людьми не должна включиться сама собой."""
+        self._change_status('ready_for_shipment')
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_status_change_still_works_and_is_logged(self):
+        """Оповещение не должно мешать основному делу."""
+        self._change_status('ready_for_shipment')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, 'ready_for_shipment')
+        self.assertTrue(self.order.status_history.exists())
+
+
+class LowStockNotificationTests(TestCase):
+    """Оповещения сотрудникам о дефиците."""
+
+    def setUp(self):
+        self.warehouse = Employee.objects.create_user(
+            username='wh', full_name='Кладовщик', password='pass',
+            role='warehouse', email='wh@example.com',
+        )
+        Employee.objects.create_user(
+            username='acc', full_name='Бухгалтер', password='pass',
+            role='accountant', email='acc@example.com',
+        )
+        Employee.objects.create_user(
+            username='wh_noemail', full_name='Без почты', password='pass',
+            role='warehouse',
+        )
+        self.part = SparePart.objects.create(
+            part_number='LOW-1', name='Резистор', current_stock=10, min_stock=5
+        )
+
+    def _spend(self, quantity):
+        self.part.current_stock -= quantity
+        self.part.save(update_fields=['current_stock'])
+
+    def test_shortage_notifies_warehouse_only(self):
+        self._spend(6)
+
+        recipients = set(Notification.objects.values_list('recipient', flat=True))
+        self.assertEqual(recipients, {'wh@example.com'})
+
+    def test_letter_contains_what_is_needed_to_order(self):
+        self.part.preferred_supplier = 'Чип и Дип'
+        self.part.lead_time_days = 14
+        self.part.save()
+        self._spend(6)
+
+        body = Notification.objects.first().body
+        self.assertIn('LOW-1', body)
+        self.assertIn('Чип и Дип', body)
+        self.assertIn('14', body)
+
+    def test_stock_above_minimum_notifies_nobody(self):
+        self._spend(1)
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_repeated_write_offs_do_not_spam(self):
+        """При разборе заказа списывают по несколько деталей подряд."""
+        self._spend(6)
+        self._spend(1)
+        self._spend(1)
+
+        self.assertEqual(Notification.objects.count(), 1)
+
+    @override_settings(NOTIFY_LOW_STOCK_COOLDOWN_HOURS=0)
+    def test_cooldown_can_be_switched_off(self):
+        self._spend(6)
+        self._spend(1)
+
+        self.assertEqual(Notification.objects.count(), 2)
+
+    @override_settings(NOTIFY_LOW_STOCK=False)
+    def test_can_be_disabled(self):
+        self._spend(6)
+        self.assertEqual(Notification.objects.count(), 0)
+
+
+class SendNotificationsCommandTests(TestCase):
+    """Команда отправки: выключатель, повторы, просроченные."""
+
+    def setUp(self):
+        self.note = Notification.objects.create(
+            event='low_stock', recipient='wh@example.com',
+            subject='Дефицит', body='Текст',
+        )
+
+    def _run(self, **options):
+        from io import StringIO
+        out = StringIO()
+        call_command('send_notifications', stdout=out, stderr=StringIO(), **options)
+        return out.getvalue()
+
+    @override_settings(NOTIFICATIONS_ENABLED=False)
+    def test_nothing_is_sent_while_disabled(self):
+        from django.core import mail
+
+        output = self._run()
+        self.note.refresh_from_db()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.note.status, 'pending')
+        self.assertIn('выключена', output)
+
+    @override_settings(NOTIFICATIONS_ENABLED=True,
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_sends_and_marks_as_sent(self):
+        from django.core import mail
+
+        self._run()
+        self.note.refresh_from_db()
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['wh@example.com'])
+        self.assertEqual(self.note.status, 'sent')
+        self.assertIsNotNone(self.note.sent_at)
+
+    @override_settings(NOTIFICATIONS_ENABLED=True,
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_dry_run_sends_nothing(self):
+        from django.core import mail
+
+        output = self._run(dry_run=True)
+        self.note.refresh_from_db()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.note.status, 'pending')
+        self.assertIn('проверка', output)
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, NOTIFICATIONS_MAX_ATTEMPTS=2)
+    def test_failure_is_retried_then_given_up(self):
+        with patch('core.management.commands.send_notifications.EmailMessage.send',
+                   side_effect=OSError('SMTP молчит')):
+            self._run()
+            self.note.refresh_from_db()
+            self.assertEqual(self.note.status, 'pending')
+            self.assertEqual(self.note.attempts, 1)
+            self.assertIn('SMTP молчит', self.note.last_error)
+
+            self._run()
+            self.note.refresh_from_db()
+
+        self.assertEqual(self.note.status, 'failed')
+        self.assertEqual(self.note.attempts, 2)
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, NOTIFICATIONS_MAX_AGE_HOURS=24,
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_stale_notifications_are_skipped(self):
+        """Иначе после включения отправки уедет месячная пачка новостей."""
+        from django.core import mail
+
+        Notification.objects.filter(pk=self.note.pk).update(
+            created_at=timezone.now() - datetime.timedelta(days=3)
+        )
+        self._run()
+        self.note.refresh_from_db()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.note.status, 'skipped')
+        self.assertIn('Старше', self.note.last_error)
+
+
+class NotificationAdminPageTests(TestCase):
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_np', full_name='Админ', password='pass'
+        )
+        self.staff = Employee.objects.create_user(
+            username='wh_np', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.failed = Notification.objects.create(
+            event='low_stock', recipient='wh@example.com', subject='Дефицит',
+            body='Текст', status='failed', attempts=5, last_error='SMTP молчит',
+        )
+
+    def test_page_lists_the_queue(self):
+        resp = self.client_http.get('/management/notifications/')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'wh@example.com')
+        self.assertContains(resp, 'SMTP молчит')
+
+    def test_status_filter(self):
+        Notification.objects.create(
+            event='low_stock', recipient='other@example.com',
+            subject='В очереди', body='Текст',
+        )
+        resp = self.client_http.get('/management/notifications/?status=failed')
+
+        self.assertEqual([n.pk for n in resp.context['notifications']], [self.failed.pk])
+
+    def test_retry_returns_it_to_the_queue(self):
+        self.client_http.post(f'/management/notifications/{self.failed.pk}/retry/')
+        self.failed.refresh_from_db()
+
+        self.assertEqual(self.failed.status, 'pending')
+        self.assertEqual(self.failed.attempts, 0)
+        self.assertEqual(self.failed.last_error, '')
+
+    def test_only_admin_gets_in(self):
+        staff_client = TestClient()
+        staff_client.force_login(self.staff)
+
+        resp = staff_client.get('/management/notifications/')
+        self.assertEqual(resp.status_code, 302)
+
+    def test_page_warns_when_sending_is_off(self):
+        with override_settings(NOTIFICATIONS_ENABLED=False):
+            resp = self.client_http.get('/management/notifications/')
+        self.assertContains(resp, 'Отправка выключена')

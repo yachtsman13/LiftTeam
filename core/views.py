@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.21.0.
+Views для LiftTeam v2.22.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -25,7 +25,7 @@ from channels.layers import get_channel_layer
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
-    warranty_cutoff,
+    Notification, warranty_cutoff,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
@@ -38,7 +38,7 @@ from .utils import (
     build_workbook, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import updater
+from . import notifications, updater
 
 
 def _send_stock_update(part):
@@ -799,6 +799,10 @@ def repair_order_change_status(request, pk):
             changed_by=request.user,
             notes=notes or f'Статус изменён с "{dict(RepairOrder.STATUS_CHOICES).get(old_status)}"'
         )
+
+        # Оповещение заказчику — в очередь, не отправкой на месте: SMTP через
+        # домашний канал может думать секундами, а страница ждать не должна
+        notifications.notify_order_status(order, changed_by=request.user)
 
         messages.success(request, f'Статус изменён на «{order.get_status_display()}»')
     return redirect('repair_order_detail', pk=pk)
@@ -1839,6 +1843,60 @@ def admin_user_edit(request, pk):
 
 
 
+
+
+@role_required('admin')
+def admin_notifications(request):
+    """Очередь оповещений: что ушло, что не ушло и почему.
+
+    Без этой страницы на вопрос «почему заказчик не получил письмо» отвечать
+    нечем: очередь живёт в базе, а журнал отправки — в логах systemd.
+    """
+    status = request.GET.get('status', '')
+    queue = Notification.objects.select_related('repair_order', 'part')
+    if status in dict(Notification.STATUS_CHOICES):
+        queue = queue.filter(status=status)
+
+    paginator = Paginator(queue.order_by('-created_at'), 50)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    counts = {
+        item['status']: item['count']
+        for item in Notification.objects.values('status').annotate(count=Count('id'))
+    }
+    status_tabs = [
+        {'code': code, 'label': label, 'count': counts.get(code, 0)}
+        for code, label in Notification.STATUS_CHOICES
+    ]
+
+    return render(request, 'core/admin/notifications.html', {
+        'notifications': page_obj,
+        'status_filter': status,
+        'status_tabs': status_tabs,
+        'found_count': paginator.count,
+        'sending_enabled': getattr(settings, 'NOTIFICATIONS_ENABLED', False),
+        'clients_enabled': getattr(settings, 'NOTIFY_CLIENTS', False),
+        'low_stock_enabled': getattr(settings, 'NOTIFY_LOW_STOCK', True),
+    })
+
+
+@role_required('admin')
+@require_POST
+def admin_notification_retry(request, pk):
+    """Вернуть неудачное оповещение в очередь.
+
+    Счётчик попыток обнуляется: обычно причина неудачи — не письмо, а почта
+    (пароль приложения, отвалившийся канал), и после починки прошлые попытки
+    ни о чём не говорят.
+    """
+    notification = get_object_or_404(Notification, pk=pk)
+    notification.status = 'pending'
+    notification.attempts = 0
+    notification.last_error = ''
+    notification.save(update_fields=['status', 'attempts', 'last_error'])
+
+    messages.success(request, f'Оповещение для {notification.recipient} возвращено в очередь')
+    return redirect('admin_notifications')
 
 
 # ==================== ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ ====================

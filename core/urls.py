@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.21.0
+v2.22.0
 """
 from django.urls import path
 from . import views
@@ -99,6 +99,8 @@ urlpatterns = [
     path('management/users/', views.admin_users, name='admin_users'),
     path('management/users/create/', views.admin_user_create, name='admin_user_create'),
     path('management/users/<int:pk>/edit/', views.admin_user_edit, name='admin_user_edit'),
+    path('management/notifications/', views.admin_notifications, name='admin_notifications'),
+    path('management/notifications/<int:pk>/retry/', views.admin_notification_retry, name='admin_notification_retry'),
     path('management/update/', views.admin_update, name='admin_update'),
     path('management/update/status/', views.admin_update_status, name='admin_update_status'),
 ]

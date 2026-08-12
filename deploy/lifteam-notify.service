@@ -1,0 +1,33 @@
+# Разовая отправка накопившихся оповещений. Расписание задаёт
+# lifteam-notify.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-notify.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-notify.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-notify
+# Посмотреть логи:    journalctl -u lifteam-notify
+# Когда следующий запуск: systemctl list-timers lifteam-notify.timer
+#
+# Пока NOTIFICATIONS_ENABLED=False команда ничего не отправляет и молча
+# завершается — таймер можно включить заранее.
+
+[Unit]
+Description=Отправка оповещений LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+
+ExecStart=/opt/lifteam/venv/bin/python manage.py send_notifications
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

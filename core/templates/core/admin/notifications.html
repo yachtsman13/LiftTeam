@@ -1,0 +1,124 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Оповещения — LiftTeam v2.22.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-envelope me-2"></i>Оповещения</h2>
+    <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+{% if not sending_enabled %}
+<div class="alert alert-warning">
+    <i class="bi bi-pause-circle me-2"></i>
+    <strong>Отправка выключена.</strong> События записываются в очередь, но письма
+    не уходят. Так и задумано до первой настройки: сначала посмотрите здесь,
+    что программа собирается отправлять, потом включайте.
+    Включается параметром <code>NOTIFICATIONS_ENABLED=True</code> в файле настроек
+    на Raspberry Pi (порядок — в DEPLOY.md).
+</div>
+{% endif %}
+
+<div class="card mb-3">
+    <div class="card-body py-2 d-flex flex-wrap gap-3 align-items-center small">
+        <span>
+            Письма заказчикам:
+            <strong class="{% if clients_enabled %}text-success{% else %}text-muted{% endif %}">
+                {% if clients_enabled %}включены{% else %}выключены{% endif %}
+            </strong>
+        </span>
+        <span>
+            Дефицит деталей сотрудникам:
+            <strong class="{% if low_stock_enabled %}text-success{% else %}text-muted{% endif %}">
+                {% if low_stock_enabled %}включён{% else %}выключен{% endif %}
+            </strong>
+        </span>
+        <span class="text-muted">Всего в списке: {{ found_count }}</span>
+    </div>
+</div>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+    <a href="{% url 'admin_notifications' %}"
+       class="btn btn-sm {% if not status_filter %}btn-primary{% else %}btn-outline-primary{% endif %}">Все</a>
+    {% for tab in status_tabs %}
+    <a href="?status={{ tab.code }}"
+       class="btn btn-sm {% if status_filter == tab.code %}btn-primary{% else %}btn-outline-primary{% endif %}">
+        {{ tab.label }}
+        <span class="badge bg-secondary ms-1">{{ tab.count }}</span>
+    </a>
+    {% endfor %}
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Создано</th>
+                        <th>Событие</th>
+                        <th>Получатель</th>
+                        <th>Тема</th>
+                        <th>Состояние</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in notifications %}
+                    <tr>
+                        <td class="text-nowrap">{{ item.created_at|date:"d.m.Y H:i" }}</td>
+                        <td>{{ item.get_event_display }}</td>
+                        <td>{{ item.recipient }}</td>
+                        <td>
+                            {{ item.subject }}
+                            {% if item.last_error %}
+                            <div class="small text-danger">{{ item.last_error }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap">
+                            <span class="badge bg-{% if item.status == 'sent' %}success{% elif item.status == 'failed' %}danger{% elif item.status == 'skipped' %}secondary{% else %}warning text-dark{% endif %}">
+                                {{ item.get_status_display }}
+                            </span>
+                            {% if item.attempts %}
+                            <small class="text-muted d-block">попыток: {{ item.attempts }}</small>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if item.status == 'failed' or item.status == 'skipped' %}
+                            <form method="post" action="{% url 'admin_notification_retry' item.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-arrow-repeat me-1"></i>Ещё раз
+                                </button>
+                            </form>
+                            {% endif %}
+                            {% if item.repair_order %}
+                            <a href="{% url 'repair_order_detail' item.repair_order.pk %}" class="btn btn-sm btn-outline-secondary">Заказ</a>
+                            {% elif item.part %}
+                            <a href="{% url 'part_detail' item.part.pk %}" class="btn btn-sm btn-outline-secondary">Деталь</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-4">Очередь пуста</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if notifications.has_other_pages %}
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if notifications.has_previous %}
+                <li class="page-item"><a class="page-link" href="{% querystring page=notifications.previous_page_number %}">←</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ notifications.number }} / {{ notifications.paginator.num_pages }}</span></li>
+                {% if notifications.has_next %}
+                <li class="page-item"><a class="page-link" href="{% querystring page=notifications.next_page_number %}">→</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
