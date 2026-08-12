@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.19.0{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.20.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -25,7 +25,7 @@
                     <div class="col-6"><strong>Напряжение:</strong> {% if part.voltage %}{{ part.voltage|floatformat:"-6" }} {{ part.voltage_unit|default:"В" }}{% else %}—{% endif %}</div>
                     <div class="col-6"><strong>Ток:</strong> {% if part.current %}{{ part.current|floatformat:"-6" }} {{ part.current_unit|default:"А" }}{% else %}—{% endif %}</div>
                     <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|floatformat:"-6" }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Остаток:</strong> <span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}">{{ part.current_stock }}</span>{% if part.stock_state == 'at_minimum' %} <small class="text-muted">ровно на минимуме</small>{% endif %}</div>
+                    <div class="col-6"><strong>Остаток:</strong> <span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span>{% if part.stock_state == 'at_minimum' %} <small class="text-muted">ровно на минимуме</small>{% endif %}</div>
                     <div class="col-6"><strong>Мин. остаток:</strong> {{ part.min_stock }}</div>
                     <div class="col-12"><strong>Поставщик:</strong> {{ part.preferred_supplier|default:"—" }}</div>
                     <div class="col-12"><strong>Описание:</strong><br>{{ part.description|default:"—"|linebreaks }}</div>

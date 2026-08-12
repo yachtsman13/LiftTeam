@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.19.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.20.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -149,7 +149,7 @@
                         <td class="fw-bold">{{ part.part_number }}</td>
                         <td>{{ part.name }}</td>
                         <td>{{ part.component_type|default:"—" }}</td>
-                        <td><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}">{{ part.current_stock }}</span></td>
+                        <td><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span></td>
                         <td>{{ part.min_stock }}</td>
                         <td class="col-cell">{{ part.current_cell.address|default:"—" }}</td>
                         <td class="text-end col-actions">

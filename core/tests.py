@@ -2109,3 +2109,108 @@ class BatchLabelTests(TestCase):
 
         self.assertContains(parts_page, '/parts/labels/')
         self.assertContains(grid_page, '/storage-cells/labels/')
+
+
+class StockSocketTests(TestCase):
+    """Канал живых обновлений остатка: доступ и рассылка.
+
+    Серверная часть существовала с самого начала, но к ней никто
+    не подключался — сообщения уходили в пустоту, а сам сокет пускал любого.
+    """
+
+    def setUp(self):
+        self.user = Employee.objects.create_user(
+            username='ws_user', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.part = SparePart.objects.create(
+            part_number='WS-1', name='Деталь', current_stock=10, min_stock=3
+        )
+
+    def _communicator(self, user=None):
+        from channels.testing import WebsocketCommunicator
+        from lifteam.asgi import websocket_urlpatterns
+        from channels.routing import URLRouter
+
+        communicator = WebsocketCommunicator(URLRouter(websocket_urlpatterns), '/ws/stock/')
+        # AuthMiddlewareStack в тестах подменяем прямой подстановкой:
+        # проверяем поведение потребителя, а не саму сессионную прослойку
+        communicator.scope['user'] = user
+        return communicator
+
+    async def _connect(self, user):
+        communicator = self._communicator(user)
+        connected, _ = await communicator.connect()
+        return communicator, connected
+
+    def test_anonymous_connection_is_refused(self):
+        from asgiref.sync import async_to_sync
+        from django.contrib.auth.models import AnonymousUser
+
+        async def run():
+            communicator, connected = await self._connect(AnonymousUser())
+            await communicator.disconnect()
+            return connected
+
+        self.assertFalse(async_to_sync(run)())
+
+    def test_connection_without_user_is_refused(self):
+        from asgiref.sync import async_to_sync
+
+        async def run():
+            communicator, connected = await self._connect(None)
+            await communicator.disconnect()
+            return connected
+
+        self.assertFalse(async_to_sync(run)())
+
+    def test_authenticated_user_gets_updates(self):
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        async def run():
+            communicator, connected = await self._connect(self.user)
+            greeting = await communicator.receive_json_from()
+
+            layer = get_channel_layer()
+            await layer.group_send('stock_updates', {
+                'type': 'stock_update',
+                'data': {'part_id': self.part.pk, 'part_number': 'WS-1',
+                         'current_stock': 2, 'min_stock': 3},
+            })
+            update = await communicator.receive_json_from()
+            await communicator.disconnect()
+            return connected, greeting, update
+
+        connected, greeting, update = async_to_sync(run)()
+
+        self.assertTrue(connected)
+        self.assertEqual(greeting['type'], 'connection_established')
+        self.assertEqual(update['type'], 'stock_update')
+        self.assertEqual(update['data']['current_stock'], 2)
+
+
+class StockWatchMarkupTests(TestCase):
+    """Разметка, по которой скрипт находит цифры остатка на странице."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_ws', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.part = SparePart.objects.create(
+            part_number='WS-2', name='Деталь', current_stock=7, min_stock=3
+        )
+
+    def test_part_list_marks_stock(self):
+        resp = self.client_http.get('/parts/')
+        self.assertContains(resp, f'data-stock-part="{self.part.pk}"')
+
+    def test_part_detail_marks_stock(self):
+        resp = self.client_http.get(f'/parts/{self.part.pk}/')
+        self.assertContains(resp, f'data-stock-part="{self.part.pk}"')
+
+    def test_script_and_toast_holder_are_on_the_page(self):
+        content = self.client_http.get('/parts/').content.decode()
+        self.assertIn('js/stock-updates.js', content)
+        self.assertIn('id="stockToasts"', content)
