@@ -1741,3 +1741,105 @@ class ClientExportTests(TestCase):
 
     def test_export_requires_login(self):
         self.assertEqual(TestClient().get('/clients/export/').status_code, 302)
+
+
+class StockStateTests(TestCase):
+    """Три состояния остатка вместо двух несогласованных определений.
+
+    Раньше «мало на складе» считалось по-разному: сетка кассетниц красила
+    ячейку по «остаток <= минимума», а дашборд, план закупок и список деталей
+    отбирали строго ниже минимума. Деталь ровно на минимуме выглядела
+    дефицитной, но в план закупок не попадала.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_stock', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.below = SparePart.objects.create(
+            part_number='ST-BELOW', name='Дефицит', current_stock=2, min_stock=5
+        )
+        self.at_min = SparePart.objects.create(
+            part_number='ST-AT', name='На минимуме', current_stock=5, min_stock=5
+        )
+        self.ok = SparePart.objects.create(
+            part_number='ST-OK', name='В норме', current_stock=9, min_stock=5
+        )
+        self.no_min = SparePart.objects.create(
+            part_number='ST-NOMIN', name='Без минимума', current_stock=0, min_stock=0
+        )
+
+    # --- состояние детали ---
+
+    def test_states(self):
+        self.assertEqual(self.below.stock_state, 'below')
+        self.assertEqual(self.at_min.stock_state, 'at_minimum')
+        self.assertEqual(self.ok.stock_state, 'ok')
+
+    def test_zero_minimum_is_not_a_shortage(self):
+        """Минимум не задан — деталь не считается ни дефицитной, ни на минимуме."""
+        self.assertEqual(self.no_min.stock_state, 'ok')
+
+    def test_is_below_min_stock_matches_the_state(self):
+        self.assertTrue(self.below.is_below_min_stock())
+        self.assertFalse(self.at_min.is_below_min_stock())
+
+    # --- отбор ---
+
+    def test_queryset_below_minimum(self):
+        found = SparePart.objects.below_minimum().values_list('part_number', flat=True)
+        self.assertEqual(set(found), {'ST-BELOW'})
+
+    def test_queryset_at_minimum(self):
+        found = SparePart.objects.at_minimum().values_list('part_number', flat=True)
+        self.assertEqual(set(found), {'ST-AT'})
+
+    def test_purchase_plan_covers_only_shortage(self):
+        resp = self.client_http.get('/reports/purchase-plan/')
+        listed = {p.part_number for p in resp.context['parts']}
+        self.assertEqual(listed, {'ST-BELOW'})
+
+    # --- дашборд ---
+
+    def test_dashboard_separates_shortage_from_at_minimum(self):
+        resp = self.client_http.get('/')
+
+        self.assertEqual(resp.context['low_stock_count'], 1)
+        self.assertEqual(resp.context['at_minimum_count'], 1)
+        self.assertEqual(
+            {p.part_number for p in resp.context['low_stock_parts']}, {'ST-BELOW'}
+        )
+        self.assertEqual(
+            {p.part_number for p in resp.context['at_minimum_parts']}, {'ST-AT'}
+        )
+
+    def test_dashboard_shows_both_groups(self):
+        content = self.client_http.get('/').content.decode()
+        self.assertIn('ST-BELOW', content)
+        self.assertIn('ST-AT', content)
+        self.assertIn('на минимуме', content)
+
+    # --- ячейки ---
+
+    def _cell_with(self, *parts):
+        cell = StorageCell.objects.create(
+            cabinet_number=1, row_number=1, cell_row=StorageCell.objects.count() + 1
+        )
+        cell.parts.add(*parts)
+        return cell
+
+    def test_cell_with_shortage_is_red(self):
+        self.assertEqual(self._cell_with(self.below).get_status(), 'low_stock')
+
+    def test_cell_at_minimum_is_its_own_status(self):
+        self.assertEqual(self._cell_with(self.at_min).get_status(), 'at_minimum')
+
+    def test_cell_shows_the_worst_state_of_its_parts(self):
+        self.assertEqual(self._cell_with(self.at_min, self.below).get_status(), 'low_stock')
+
+    def test_normal_and_empty_cells(self):
+        self.assertEqual(self._cell_with(self.ok).get_status(), 'normal')
+        self.assertEqual(self._cell_with().get_status(), 'free')

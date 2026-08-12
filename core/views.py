@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.15.0.
+Views для LiftTeam v2.16.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -92,8 +92,13 @@ def dashboard(request):
     """Главная страница — статистика и алерты."""
     total_orders = RepairOrder.objects.count()
     active_orders = RepairOrder.objects.exclude(status='shipped').count()
-    low_stock_parts = SparePart.objects.filter(current_stock__lt=F('min_stock'))
+
+    # Дефицит и «ровно на минимуме» — разные вещи: первое уже в плане закупок,
+    # второе означает, что следующее списание уведёт деталь в минус
+    low_stock_parts = SparePart.objects.below_minimum().order_by('part_number')
     low_stock_count = low_stock_parts.count()
+    at_minimum_parts = SparePart.objects.at_minimum().order_by('part_number')
+    at_minimum_count = at_minimum_parts.count()
     recent_orders = RepairOrder.objects.select_related('client').prefetch_related('order_equipments__equipment__model').order_by('-date_received')[:10]
 
     # Статистика по статусам
@@ -111,6 +116,8 @@ def dashboard(request):
         'active_orders': active_orders,
         'low_stock_count': low_stock_count,
         'low_stock_parts': low_stock_parts[:20],
+        'at_minimum_count': at_minimum_count,
+        'at_minimum_parts': at_minimum_parts[:10],
         'recent_orders': recent_orders,
         'status_stats': status_stats_dict,
         'debtors': debtors[:10],
@@ -840,7 +847,7 @@ def _filter_parts(request):
     if stock_to:
         parts = parts.filter(current_stock__lte=int(stock_to))
     if below_min:
-        parts = parts.filter(current_stock__lt=F('min_stock'))
+        parts = parts.below_minimum()
 
     return parts, {
         'search': search,
@@ -1408,7 +1415,7 @@ def _purchase_plan_parts():
     """Детали ниже минимального остатка — общее для отчёта и его выгрузки."""
     return (
         SparePart.objects
-        .filter(current_stock__lt=F('min_stock'))
+        .below_minimum()
         .prefetch_related('storage_cells')
         .order_by('part_number')
     )

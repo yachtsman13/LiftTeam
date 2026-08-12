@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.15.0.
+Модели данных для LiftTeam v2.16.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -7,7 +7,7 @@ import calendar
 
 from django.conf import settings
 from django.db import models, transaction
-from django.db.models import Sum
+from django.db.models import F, Sum
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from django.utils import timezone
@@ -380,6 +380,21 @@ class OrderStatusHistory(models.Model):
         return f"{self.order.order_number} → {self.get_status_display()}"
 
 
+class SparePartQuerySet(models.QuerySet):
+    """Отбор по остатку. Единственное место, где записаны эти условия:
+    раньше «мало на складе» считалось в разных местах по-разному — где-то
+    строго ниже минимума, где-то с учётом равенства."""
+
+    def below_minimum(self):
+        """Остаток меньше минимального — деталь попадает в план закупок."""
+        return self.filter(current_stock__lt=F('min_stock'))
+
+    def at_minimum(self):
+        """Остаток ровно на минимуме: заказывать ещё не обязательно,
+        но следующее списание уводит деталь в дефицит."""
+        return self.filter(min_stock__gt=0, current_stock=F('min_stock'))
+
+
 class SparePart(models.Model):
     """Радиодеталь / запчасть."""
     part_number = models.CharField('Артикул', max_length=100, unique=True)
@@ -415,8 +430,24 @@ class SparePart(models.Model):
     def __str__(self):
         return f"{self.part_number} — {self.name}"
 
+    objects = SparePartQuerySet.as_manager()
+
+    STOCK_BELOW = 'below'
+    STOCK_AT_MINIMUM = 'at_minimum'
+    STOCK_OK = 'ok'
+
+    @property
+    def stock_state(self):
+        """Состояние остатка одним значением — чтобы везде показывать одно
+        и то же: `below` (дефицит), `at_minimum` (ровно на минимуме), `ok`."""
+        if self.current_stock < self.min_stock:
+            return self.STOCK_BELOW
+        if self.min_stock > 0 and self.current_stock == self.min_stock:
+            return self.STOCK_AT_MINIMUM
+        return self.STOCK_OK
+
     def is_below_min_stock(self):
-        return self.current_stock < self.min_stock
+        return self.stock_state == self.STOCK_BELOW
 
     @property
     def stock_deficit(self):
@@ -473,12 +504,20 @@ class StorageCell(models.Model):
         return f"К{self.cabinet_number}-Р{self.row_number}-Я{self.cell_row}"
 
     def get_status(self):
-        """Возвращает статус ячейки для визуализации."""
-        cell_parts = list(self.parts.all())
-        if not cell_parts:
+        """Статус ячейки для раскраски сетки.
+
+        Дефицит важнее, чем «на минимуме», поэтому проверяется первым:
+        в ячейке с несколькими деталями цвет показывает худшее из состояний.
+        Раньше оба случая красились одинаково красным, и деталь ровно
+        на минимуме выглядела как дефицитная, хотя в план закупок не попадала.
+        """
+        states = {p.stock_state for p in self.parts.all()}
+        if not states:
             return 'free'
-        if any(p.current_stock <= p.min_stock and p.min_stock > 0 for p in cell_parts):
+        if SparePart.STOCK_BELOW in states:
             return 'low_stock'
+        if SparePart.STOCK_AT_MINIMUM in states:
+            return 'at_minimum'
         return 'normal'
 
 
