@@ -1,10 +1,13 @@
 """
-Django signals для LiftTeam v2.10.0.
+Django signals для LiftTeam v2.11.0.
 Сигналы используются только для:
 - настройки параметров подключения к SQLite
 - создания начальной записи истории статуса при создании заказа
 - отправки WebSocket-уведомлений
 """
+import re
+from functools import lru_cache
+
 from django.db.backends.signals import connection_created
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -12,6 +15,50 @@ from django.utils import timezone
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .models import RepairOrder, OrderStatusHistory, SparePart
+
+
+@lru_cache(maxsize=512)
+def _like_pattern(pattern, escape):
+    """Переводит шаблон SQL LIKE в регулярное выражение без учёта регистра."""
+    parts = []
+    literal = ''
+    escaped = False
+    for char in pattern:
+        if escaped:
+            literal += char
+            escaped = False
+        elif escape and char == escape:
+            escaped = True
+        elif char == '%':
+            parts.append(re.escape(literal))
+            literal = ''
+            parts.append('.*')
+        elif char == '_':
+            parts.append(re.escape(literal))
+            literal = ''
+            parts.append('.')
+        else:
+            literal += char
+    parts.append(re.escape(literal))
+    return re.compile(''.join(parts) + r'\Z', re.IGNORECASE | re.DOTALL)
+
+
+def _unicode_like(pattern, value, escape=None):
+    """Замена встроенной функции LIKE, понимающая кириллицу.
+
+    Встроенный LIKE в SQLite приводит к одному регистру только латиницу:
+    «скрип» не находит «Скрип», а «БУАД» не находит «буад». В приложении,
+    где все данные на русском, это означает, что поиск работает через раз —
+    и не только в заказах, а везде, где используется icontains.
+
+    SQLite разрешает переопределять like() своей функцией. Плата за это —
+    вызов Python на каждое сравнение и потеря оптимизации LIKE по индексу,
+    но искать по подстроке («%текст%») индекс всё равно не помогает,
+    а объёмы здесь измеряются тысячами строк, не миллионами.
+    """
+    if pattern is None or value is None:
+        return False
+    return _like_pattern(str(pattern), escape).match(str(value)) is not None
 
 
 @receiver(connection_created)
@@ -35,6 +82,12 @@ def configure_sqlite(sender, connection, **kwargs):
         cursor.execute('PRAGMA journal_mode=WAL;')
         cursor.execute('PRAGMA synchronous=FULL;')
         cursor.execute('PRAGMA busy_timeout=30000;')
+
+    # Поиск без учёта регистра для кириллицы (подробности в _unicode_like).
+    # Django строит icontains и как LIKE ? ESCAPE ?, и как LIKE ? — нужны
+    # обе арности, иначе часть запросов пойдёт мимо замены
+    connection.connection.create_function('like', 2, _unicode_like, deterministic=True)
+    connection.connection.create_function('like', 3, _unicode_like, deterministic=True)
 
 
 @receiver(post_save, sender=RepairOrder)

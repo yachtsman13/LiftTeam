@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.10.0.
+Views для LiftTeam v2.11.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -326,26 +326,97 @@ def equipment_model_delete(request, pk):
 
 # ==================== ЗАКАЗЫ НА РЕМОНТ ====================
 
-@login_required
-def repair_order_list(request):
-    search = request.GET.get('q', '')
-    status_filter = request.GET.get('status', '')
-    orders = RepairOrder.objects.select_related('client').prefetch_related('order_equipments__equipment__model')
+def _filter_orders(request):
+    """Отбор заказов по параметрам GET-запроса.
+
+    Поиск идёт по всему, что сотрудник может помнить о заказе: номеру,
+    заказчику, серийнику любой единицы в заказе, номеру счёта, трек-номеру
+    и описанию неисправности — как в самом заказе, так и по единицам.
+    Искать «где-то это было» по одному полю за раз бессмысленно: обычно
+    помнят обрывок, но не помнят, какое это было поле.
+    """
+    search = request.GET.get('q', '').strip()
+    status = request.GET.get('status', '')
+    payment_status = request.GET.get('payment_status', '')
+    client_id = request.GET.get('client', '')
+    model_id = request.GET.get('model', '')
+    date_from = request.GET.get('date_from', '')
+    date_to = request.GET.get('date_to', '')
+
+    orders = RepairOrder.objects.select_related('client').prefetch_related(
+        'order_equipments__equipment__model'
+    )
+
     if search:
-        orders = orders.filter(
+        condition = (
             Q(order_number__icontains=search) |
             Q(client__name__icontains=search) |
-            Q(order_equipments__equipment__serial_number__icontains=search)
-        ).distinct()
-    if status_filter:
-        orders = orders.filter(status=status_filter)
-    paginator = Paginator(orders.order_by('-date_received'), 25)
-    page = request.GET.get('page')
-    return render(request, 'core/repair_orders/list.html', {
-        'orders': paginator.get_page(page),
+            Q(client__inn__icontains=search) |
+            Q(invoice_number__icontains=search) |
+            Q(tracking_number__icontains=search) |
+            Q(fault_description__icontains=search) |
+            Q(order_equipments__fault_description__icontains=search) |
+            Q(order_equipments__equipment__serial_number__icontains=search) |
+            Q(order_equipments__equipment__model__name__icontains=search)
+        )
+        # Серийник ищем и в нормализованном виде — «буад 1234» должен найти
+        # заказ с «БУАД-1234», так же как это уже работает в оборудовании
+        normalized = Equipment.normalize_serial(search)
+        if normalized:
+            condition |= Q(order_equipments__equipment__serial_normalized__contains=normalized)
+        orders = orders.filter(condition)
+
+    if status in dict(RepairOrder.STATUS_CHOICES):
+        orders = orders.filter(status=status)
+    if payment_status in dict(RepairOrder.PAYMENT_STATUS_CHOICES):
+        orders = orders.filter(payment_status=payment_status)
+    if client_id.isdigit():
+        orders = orders.filter(client_id=int(client_id))
+    if model_id.isdigit():
+        orders = orders.filter(order_equipments__equipment__model_id=int(model_id))
+    # Даты приходят из адресной строки и правятся руками — неразобранное
+    # значение не применяется, иначе страница падала бы с ошибкой базы
+    if parse_date(date_from):
+        orders = orders.filter(date_received__date__gte=date_from)
+    if parse_date(date_to):
+        orders = orders.filter(date_received__date__lte=date_to)
+
+    # distinct нужен из-за связи с оборудованием: заказ с тремя единицами
+    # иначе попал бы в результат трижды
+    return orders.distinct().order_by('-date_received'), {
         'search': search,
-        'status_filter': status_filter,
+        'status_filter': status,
+        'payment_status_filter': payment_status,
+        'client_filter': client_id,
+        'model_filter': model_id,
+        'date_from': date_from,
+        'date_to': date_to,
+    }
+
+
+@login_required
+def repair_order_list(request):
+    orders, filter_context = _filter_orders(request)
+
+    paginator = Paginator(orders, 25)
+    page = request.GET.get('page')
+    page_obj = paginator.get_page(page)
+
+    # Признак «фильтры выставлены» — чтобы показать, сколько всего нашлось,
+    # и дать кнопку сброса: иначе пустой список выглядит как пустая база
+    filters_active = any(
+        value for key, value in filter_context.items() if key != 'search'
+    ) or bool(filter_context['search'])
+
+    return render(request, 'core/repair_orders/list.html', {
+        'orders': page_obj,
         'status_choices': RepairOrder.STATUS_CHOICES,
+        'payment_status_choices': RepairOrder.PAYMENT_STATUS_CHOICES,
+        'clients': Client.objects.order_by('name'),
+        'equipment_models': EquipmentModel.objects.order_by('name'),
+        'filters_active': filters_active,
+        'found_count': paginator.count,
+        **filter_context,
     })
 
 

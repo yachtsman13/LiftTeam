@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.10.0{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.11.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -10,25 +10,76 @@
 
 <div class="card">
     <div class="card-body">
-        <form method="get" class="row g-3 mb-3">
-            <div class="col-md-4">
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-search"></i></span>
-                    <input type="text" name="q" class="form-control" placeholder="Поиск..." value="{{ search }}">
+        <form method="get" class="mb-3">
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" name="q" class="form-control"
+                               placeholder="Номер заказа, заказчик, серийник, счёт, трек-номер, неисправность..."
+                               value="{{ search }}">
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <select name="status" class="form-select">
+                        <option value="">Все статусы</option>
+                        {% for value, label in status_choices %}
+                        <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-outline-primary flex-grow-1"><i class="bi bi-search me-1"></i>Найти</button>
+                    <button class="btn btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#moreFilters" title="Больше условий">
+                        <i class="bi bi-sliders"></i>
+                    </button>
                 </div>
             </div>
-            <div class="col-md-3">
-                <select name="status" class="form-select" onchange="this.form.submit()">
-                    <option value="">Все статусы</option>
-                    {% for value, label in status_choices %}
-                    <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="col-md-2">
-                <button type="submit" class="btn btn-outline-primary w-100">Фильтр</button>
+
+            <div class="collapse {% if payment_status_filter or client_filter or model_filter or date_from or date_to %}show{% endif %}" id="moreFilters">
+                <div class="row g-2 mt-1">
+                    <div class="col-md-3">
+                        <select name="payment_status" class="form-select">
+                            <option value="">Любая оплата</option>
+                            {% for value, label in payment_status_choices %}
+                            <option value="{{ value }}" {% if payment_status_filter == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <select name="client" class="form-select">
+                            <option value="">Все заказчики</option>
+                            {% for c in clients %}
+                            <option value="{{ c.pk }}" {% if client_filter == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <select name="model" class="form-select">
+                            <option value="">Любая модель</option>
+                            {% for m in equipment_models %}
+                            <option value="{{ m.pk }}" {% if model_filter == m.pk|stringformat:"s" %}selected{% endif %}>{{ m.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="input-group">
+                            <span class="input-group-text">с</span>
+                            <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+                            <span class="input-group-text">по</span>
+                            <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+                        </div>
+                    </div>
+                </div>
             </div>
         </form>
+
+        {% if filters_active %}
+        <div class="d-flex align-items-center gap-2 mb-3 text-muted small">
+            <span>Найдено заказов: <strong>{{ found_count }}</strong></span>
+            <a href="{% url 'repair_order_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Сбросить</a>
+        </div>
+        {% endif %}
 
         <div class="table-responsive">
             <table class="table table-hover">

@@ -1189,3 +1189,215 @@ class WarrantyTests(TestCase):
 
         self.assertIsNone(shown.previous_warranty)
         self.assertTrue(shown.is_under_warranty)
+
+
+class OrderSearchTests(TestCase):
+    """Расширенный поиск заказов: по всем полям, которые сотрудник может помнить."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_search', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.alpha = ClientModel.objects.create(name='ООО Альфа', inn='7700000001')
+        self.beta = ClientModel.objects.create(name='ООО Бета', inn='7700000002')
+        self.buad = EquipmentModel.objects.create(name='БУАД')
+        self.eco = EquipmentModel.objects.create(name='Экодрайв')
+
+        self.order_a = RepairOrder.objects.create(
+            client=self.alpha, status='repair', payment_status='unpaid',
+            invoice_number='СЧ-100', tracking_number='TRK-777',
+            fault_description='Не запускается двигатель',
+        )
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order_a,
+            equipment=Equipment.objects.create(model=self.buad, serial_number='БУАД-1234'),
+        )
+
+        self.order_b = RepairOrder.objects.create(
+            client=self.beta, status='shipped', payment_status='paid',
+            invoice_number='СЧ-200',
+        )
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order_b,
+            equipment=Equipment.objects.create(model=self.eco, serial_number='ECO-9'),
+            fault_description='Скрип при подъёме',
+        )
+
+    def _found(self, query=''):
+        resp = self.client_http.get(f'/repair-orders/{query}')
+        self.assertEqual(resp.status_code, 200)
+        return {order.pk for order in resp.context['orders']}
+
+    # --- текстовый поиск ---
+
+    def test_search_by_order_number(self):
+        self.assertEqual(self._found(f'?q={self.order_a.order_number}'), {self.order_a.pk})
+
+    def test_search_by_client_name(self):
+        self.assertEqual(self._found('?q=Альфа'), {self.order_a.pk})
+
+    def test_search_by_client_inn(self):
+        self.assertEqual(self._found('?q=7700000002'), {self.order_b.pk})
+
+    def test_search_by_invoice_number(self):
+        self.assertEqual(self._found('?q=СЧ-200'), {self.order_b.pk})
+
+    def test_search_by_tracking_number(self):
+        self.assertEqual(self._found('?q=TRK-777'), {self.order_a.pk})
+
+    def test_search_by_order_fault_description(self):
+        self.assertEqual(self._found('?q=двигатель'), {self.order_a.pk})
+
+    def test_search_by_unit_fault_description(self):
+        """Неисправность может быть записана у единицы, а не у заказа."""
+        self.assertEqual(self._found('?q=скрип'), {self.order_b.pk})
+
+    def test_search_by_equipment_model(self):
+        self.assertEqual(self._found('?q=Экодрайв'), {self.order_b.pk})
+
+    def test_search_by_serial_in_another_spelling(self):
+        """«буад 1234» должен находить заказ с «БУАД-1234» — как в оборудовании."""
+        self.assertEqual(self._found('?q=буад 1234'), {self.order_a.pk})
+
+    def test_search_finds_nothing_for_unknown_text(self):
+        self.assertEqual(self._found('?q=такого+нет'), set())
+
+    def test_order_with_several_units_is_listed_once(self):
+        """Регрессия: соединение с оборудованием размножало строки заказа."""
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order_a,
+            equipment=Equipment.objects.create(model=self.buad, serial_number='БУАД-5678'),
+        )
+        resp = self.client_http.get('?q=Альфа'.join(['/repair-orders/', '']))
+        listed = [o.pk for o in resp.context['orders']]
+
+        self.assertEqual(listed.count(self.order_a.pk), 1)
+
+    # --- фильтры ---
+
+    def test_filter_by_status(self):
+        self.assertEqual(self._found('?status=repair'), {self.order_a.pk})
+
+    def test_filter_by_payment_status(self):
+        self.assertEqual(self._found('?payment_status=paid'), {self.order_b.pk})
+
+    def test_filter_by_client(self):
+        self.assertEqual(self._found(f'?client={self.beta.pk}'), {self.order_b.pk})
+
+    def test_filter_by_equipment_model(self):
+        self.assertEqual(self._found(f'?model={self.buad.pk}'), {self.order_a.pk})
+
+    def test_filter_by_date_range(self):
+        today = timezone.localdate().isoformat()
+        self.assertEqual(
+            self._found(f'?date_from={today}&date_to={today}'),
+            {self.order_a.pk, self.order_b.pk},
+        )
+
+    def test_date_range_excludes_other_days(self):
+        tomorrow = (timezone.localdate() + datetime.timedelta(days=1)).isoformat()
+        self.assertEqual(self._found(f'?date_from={tomorrow}'), set())
+
+    def test_filters_combine(self):
+        self.assertEqual(
+            self._found(f'?q=Альфа&status=repair&payment_status=unpaid'),
+            {self.order_a.pk},
+        )
+
+    def test_contradictory_filters_find_nothing(self):
+        self.assertEqual(self._found('?q=Альфа&status=shipped'), set())
+
+    # --- устойчивость и мелочи интерфейса ---
+
+    def test_garbage_in_filters_does_not_break_the_page(self):
+        found = self._found('?client=abc&model=xyz&date_from=вчера&status=нет-такого')
+        self.assertEqual(found, {self.order_a.pk, self.order_b.pk})
+
+    def test_reset_link_shown_only_with_active_filters(self):
+        with_filter = self.client_http.get('/repair-orders/?status=repair')
+        without = self.client_http.get('/repair-orders/')
+
+        self.assertTrue(with_filter.context['filters_active'])
+        self.assertFalse(without.context['filters_active'])
+
+    def test_found_count_counts_all_matches_not_just_the_page(self):
+        for i in range(30):
+            RepairOrder.objects.create(client=self.alpha, status='accepted')
+
+        resp = self.client_http.get('/repair-orders/?status=accepted')
+        self.assertEqual(resp.context['found_count'], 30)
+        self.assertEqual(len(resp.context['orders']), 25)
+
+    def test_pagination_keeps_filters(self):
+        for i in range(30):
+            RepairOrder.objects.create(client=self.alpha, status='accepted')
+
+        content = self.client_http.get('/repair-orders/?status=accepted').content.decode()
+        self.assertIn('status=accepted', content)
+        self.assertIn('page=2', content)
+
+
+class CyrillicSearchTests(TestCase):
+    """Поиск без учёта регистра для кириллицы.
+
+    Встроенный LIKE в SQLite приводит к одному регистру только латиницу,
+    поэтому «скрип» не находил «Скрип». Заменённая функция like() чинит это
+    сразу везде, где используется icontains, — проверяем на разных разделах.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_cyr', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def test_lowercase_query_finds_capitalised_client(self):
+        ClientModel.objects.create(name='ООО Лифтсервис')
+
+        resp = self.client_http.get('/clients/?q=лифтсервис')
+        self.assertEqual(len(resp.context['clients']), 1)
+
+    def test_uppercase_query_finds_lowercase_part(self):
+        SparePart.objects.create(part_number='C-1', name='конденсатор плёночный')
+
+        resp = self.client_http.get('/parts/?q=КОНДЕНСАТОР')
+        self.assertEqual(len(resp.context['parts']), 1)
+
+    def test_mixed_case_finds_equipment_model(self):
+        model = EquipmentModel.objects.create(name='Экодрайв')
+        Equipment.objects.create(model=model, serial_number='E-1')
+
+        resp = self.client_http.get('/equipment/?q=эКоДрАйВ')
+        self.assertEqual(len(resp.context['equipment']), 1)
+
+    def test_latin_search_still_works(self):
+        SparePart.objects.create(part_number='RES-10', name='Resistor')
+
+        resp = self.client_http.get('/parts/?q=resistor')
+        self.assertEqual(len(resp.context['parts']), 1)
+
+    def test_percent_in_query_is_not_a_wildcard(self):
+        """Регрессия замены LIKE: символы шаблона внутри запроса Django
+        экранирует, и они должны искаться буквально."""
+        SparePart.objects.create(part_number='P-1', name='Резистор 5% точность')
+        SparePart.objects.create(part_number='P-2', name='Резистор обычный')
+
+        resp = self.client_http.get('/parts/?q=5%25')
+        self.assertEqual([p.part_number for p in resp.context['parts']], ['P-1'])
+
+    def test_underscore_in_query_is_not_a_wildcard(self):
+        SparePart.objects.create(part_number='A_1', name='С подчёркиванием')
+        SparePart.objects.create(part_number='AX1', name='Без него')
+
+        resp = self.client_http.get('/parts/?q=A_1')
+        self.assertEqual([p.part_number for p in resp.context['parts']], ['A_1'])
+
+    def test_like_helper_handles_null(self):
+        from core.signals import _unicode_like
+
+        self.assertFalse(_unicode_like('%текст%', None))
+        self.assertFalse(_unicode_like(None, 'текст'))
