@@ -4,6 +4,7 @@
 импорт/экспорт Excel, права доступа по ролям, маршрутизацию,
 настройку SQLite и резервное копирование.
 """
+import datetime
 import io
 import json
 import sqlite3
@@ -15,9 +16,10 @@ import openpyxl
 from django.conf import settings
 from django.core.management import call_command
 from django.db import connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test import Client as TestClient
 from django.urls import resolve
+from django.utils import timezone
 
 from .models import (
     Client as ClientModel, Employee, Equipment, EquipmentModel, RepairOrder,
@@ -987,3 +989,203 @@ class PaginationFilterTests(TestCase):
 
         self.assertIn('page=2', content)
         self.assertIn('date_from=2020-01-01', content)
+
+
+class WarrantyTests(TestCase):
+    """Гарантия на ремонт: отсчёт от даты завершения заказа."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_war', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.client_obj = ClientModel.objects.create(name='Заказчик')
+        self.model = EquipmentModel.objects.create(name='БУАД-3')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='W-001')
+
+    def _repair(self, completed_at, equipment=None):
+        """Завершённый ремонт единицы с заданной датой завершения."""
+        order = RepairOrder.objects.create(client=self.client_obj, status='shipped')
+        # date_completed заполняется сменой статуса, в тесте ставим напрямую
+        RepairOrder.objects.filter(pk=order.pk).update(date_completed=completed_at)
+        order.refresh_from_db()
+        return RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=equipment or self.equipment, repair_cost=1000
+        )
+
+    # --- арифметика срока ---
+
+    def test_add_months_keeps_day_of_month(self):
+        from core.models import add_months
+        from datetime import datetime
+
+        self.assertEqual(
+            add_months(datetime(2026, 8, 12), 12), datetime(2027, 8, 12)
+        )
+
+    def test_add_months_clamps_to_last_day(self):
+        """29 февраля плюс год — 28 февраля, а не ошибка."""
+        from core.models import add_months
+        from datetime import datetime
+
+        self.assertEqual(
+            add_months(datetime(2024, 2, 29), 12), datetime(2025, 2, 28)
+        )
+
+    def test_warranty_uses_calendar_year_not_365_days(self):
+        """В високосный год гарантия должна кончаться в ту же дату, а не на день раньше."""
+        completed = timezone.make_aware(datetime.datetime(2024, 3, 1, 12, 0))
+        visit = self._repair(completed)
+
+        self.assertEqual(timezone.localtime(visit.warranty_until).date(),
+                         datetime.date(2025, 3, 1))
+
+    # --- границы ---
+
+    def test_recent_repair_is_under_warranty(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=30))
+
+        self.assertTrue(visit.is_under_warranty)
+        self.assertGreater(visit.warranty_days_left, 300)
+
+    def test_repair_just_inside_the_year_is_still_covered(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=364))
+        self.assertTrue(visit.is_under_warranty)
+
+    def test_repair_older_than_the_year_is_not_covered(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=400))
+
+        self.assertFalse(visit.is_under_warranty)
+        self.assertLess(visit.warranty_days_left, 0)
+
+    def test_unfinished_order_has_no_warranty_yet(self):
+        order = RepairOrder.objects.create(client=self.client_obj)
+        visit = RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=self.equipment
+        )
+
+        self.assertIsNone(visit.warranty_until)
+        self.assertFalse(visit.is_under_warranty)
+        self.assertIsNone(visit.warranty_days_left)
+
+    @override_settings(WARRANTY_MONTHS=0)
+    def test_zero_months_disables_warranty(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=1))
+
+        self.assertIsNone(visit.warranty_until)
+        self.assertEqual(Equipment.warranty_map([self.equipment]), {})
+
+    @override_settings(WARRANTY_MONTHS=6)
+    def test_period_is_configurable(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=200))
+        self.assertFalse(visit.is_under_warranty)
+
+    # --- поиск действующей гарантии ---
+
+    def test_active_warranty_picks_the_latest_repair(self):
+        self._repair(timezone.now() - datetime.timedelta(days=300))
+        recent = self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        found = self.equipment.active_warranty()
+        self.assertEqual(found.pk, recent.pk)
+
+    def test_active_warranty_is_none_when_all_repairs_are_old(self):
+        self._repair(timezone.now() - datetime.timedelta(days=500))
+        self.assertIsNone(self.equipment.active_warranty())
+
+    def test_active_warranty_can_exclude_current_order(self):
+        """На странице заказа его собственная гарантия не должна выглядеть
+        как гарантия по прошлому ремонту."""
+        visit = self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        self.assertIsNotNone(self.equipment.active_warranty())
+        self.assertIsNone(
+            self.equipment.active_warranty(exclude_order_id=visit.repair_order_id)
+        )
+
+    def test_warranty_map_covers_many_units_in_one_query(self):
+        other = Equipment.objects.create(model=self.model, serial_number='W-002')
+        cold = Equipment.objects.create(model=self.model, serial_number='W-003')
+        self._repair(timezone.now() - datetime.timedelta(days=10))
+        self._repair(timezone.now() - datetime.timedelta(days=20), equipment=other)
+        self._repair(timezone.now() - datetime.timedelta(days=500), equipment=cold)
+
+        units = [self.equipment, other, cold]
+        with self.assertNumQueries(1):
+            found = Equipment.warranty_map(units)
+
+        self.assertEqual(set(found), {self.equipment.pk, other.pk})
+
+    # --- интерфейс ---
+
+    def test_history_page_shows_active_warranty(self):
+        self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        resp = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertContains(resp, 'На гарантии до')
+
+    def test_history_page_marks_expired_warranty(self):
+        self._repair(timezone.now() - datetime.timedelta(days=500))
+
+        resp = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertNotContains(resp, 'На гарантии до')
+        self.assertContains(resp, 'истекла')
+
+    def test_equipment_list_shows_warranty_badge(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=10))
+        expiry = timezone.localtime(visit.warranty_until).strftime('%d.%m.%Y')
+
+        resp = self.client_http.get('/equipment/')
+        self.assertContains(resp, f'до {expiry}')
+
+    def test_equipment_list_leaves_uncovered_units_empty(self):
+        self._repair(timezone.now() - datetime.timedelta(days=500))
+
+        resp = self.client_http.get('/equipment/')
+        self.assertIsNone(resp.context['equipment'][0].warranty)
+
+    def test_intake_hint_reports_warranty(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        resp = self.client_http.get(
+            f'/ajax/equipment/{self.equipment.pk}/history-summary/'
+        )
+        data = resp.json()
+
+        self.assertTrue(data['under_warranty'])
+        self.assertEqual(data['warranty_order_number'], visit.repair_order.order_number)
+        self.assertTrue(data['warranty_until'])
+
+    def test_intake_hint_without_warranty(self):
+        self._repair(timezone.now() - datetime.timedelta(days=500))
+
+        data = self.client_http.get(
+            f'/ajax/equipment/{self.equipment.pk}/history-summary/'
+        ).json()
+
+        self.assertFalse(data['under_warranty'])
+        self.assertEqual(data['warranty_until'], '')
+
+    def test_order_page_flags_repeat_visit_under_warranty(self):
+        """Регрессия смысла: гарантия по прошлому заказу должна быть видна
+        в новом, иначе повторный ремонт примут как обычный платный."""
+        old = self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        new_order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=new_order, equipment=self.equipment
+        )
+
+        resp = self.client_http.get(f'/repair-orders/{new_order.pk}/')
+        self.assertContains(resp, old.repair_order.order_number)
+
+    def test_order_page_does_not_flag_its_own_warranty_as_previous(self):
+        visit = self._repair(timezone.now() - datetime.timedelta(days=10))
+
+        resp = self.client_http.get(f'/repair-orders/{visit.repair_order.pk}/')
+        shown = resp.context['order_equipments'][0]
+
+        self.assertIsNone(shown.previous_warranty)
+        self.assertTrue(shown.is_under_warranty)

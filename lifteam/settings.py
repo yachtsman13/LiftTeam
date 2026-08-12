@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.9.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.10.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -183,6 +183,10 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ],
 }
+
+# Срок гарантии на ремонт, месяцев. Отсчитывается от даты завершения заказа.
+# 0 отключает гарантию: отметки о ней просто не показываются.
+WARRANTY_MONTHS = int(os.getenv('WARRANTY_MONTHS', '12'))
 
 # Login
 LOGIN_URL = '/login/'

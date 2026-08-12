@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.9.0.
+Views для LiftTeam v2.10.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -189,9 +189,17 @@ def equipment_list(request):
         equipment = equipment.filter(condition)
     paginator = Paginator(equipment.order_by('serial_number'), 25)
     page = request.GET.get('page')
+    page_obj = paginator.get_page(page)
+
+    # Гарантия считается сразу по всей странице: поштучная проверка
+    # означала бы запрос на каждую строку списка
+    warranty_map = Equipment.warranty_map(list(page_obj))
+    for item in page_obj:
+        item.warranty = warranty_map.get(item.pk)
+
     return render(request, 'core/equipment/list.html', {
-        'equipment': paginator.get_page(page),
-        'search': search
+        'equipment': page_obj,
+        'search': search,
     })
 
 
@@ -257,6 +265,7 @@ def equipment_history(request, pk):
         'visit_rows': visit_rows,
         'visits_count': len(visit_rows),
         'similar': similar,
+        'warranty': equipment.active_warranty(),
     })
 
 
@@ -373,7 +382,16 @@ def repair_order_detail(request, pk):
     )
     details = order.details.select_related('part')
     history = order.status_history.select_related('changed_by').order_by('-changed_at')
-    order_equipments = order.order_equipments.select_related('equipment__model').order_by('id')
+    order_equipments = list(order.order_equipments.select_related('equipment__model').order_by('id'))
+
+    # Гарантия по прошлым ремонтам: текущий заказ исключён, иначе сразу после
+    # его завершения он же и попадал бы в «повторное обращение по гарантии»
+    previous_warranty = Equipment.warranty_map(
+        [oe.equipment for oe in order_equipments], exclude_order_id=order.pk
+    )
+    for oe in order_equipments:
+        oe.previous_warranty = previous_warranty.get(oe.equipment_id)
+
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
     return render(request, 'core/repair_orders/detail.html', {
@@ -1423,6 +1441,11 @@ def ajax_equipment_history_summary(request, pk):
     count = visits.count()
     last = visits.first()
 
+    # Гарантия — самое важное, что можно сказать при приёме: если единица
+    # вернулась в её пределах, это повторное обращение по тому же ремонту,
+    # и решать по оплате нужно до того, как заказ оформлен
+    warranty = equipment.active_warranty()
+
     return JsonResponse({
         'equipment': str(equipment),
         'orders_count': count,
@@ -1432,6 +1455,16 @@ def ajax_equipment_history_summary(request, pk):
             if last else ''
         ),
         'history_url': reverse('equipment_history', args=[equipment.pk]),
+        'under_warranty': warranty is not None,
+        'warranty_until': (
+            timezone.localtime(warranty.warranty_until).strftime('%d.%m.%Y')
+            if warranty else ''
+        ),
+        'warranty_order_number': warranty.repair_order.order_number if warranty else '',
+        'warranty_order_url': (
+            reverse('repair_order_detail', args=[warranty.repair_order_id])
+            if warranty else ''
+        ),
     })
 
 

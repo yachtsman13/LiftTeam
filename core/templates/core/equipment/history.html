@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}История {{ equipment.serial_number }} — LiftTeam v2.9.0{% endblock %}
+{% block title %}История {{ equipment.serial_number }} — LiftTeam v2.10.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -29,6 +29,19 @@
         </div>
     </div>
 </div>
+
+{% if warranty %}
+<div class="alert alert-success d-flex align-items-center flex-wrap gap-2">
+    <i class="bi bi-shield-check me-1"></i>
+    <span>
+        <strong>На гарантии до {{ warranty.warranty_until|date:"d.m.Y" }}</strong>
+        — по заказу
+        <a href="{% url 'repair_order_detail' warranty.repair_order.pk %}" class="alert-link">{{ warranty.repair_order.order_number }}</a>,
+        завершённому {{ warranty.repair_order.date_completed|date:"d.m.Y" }}.
+        Осталось дней: {{ warranty.warranty_days_left }}
+    </span>
+</div>
+{% endif %}
 
 {% if similar %}
 <div class="alert alert-warning">
@@ -72,6 +85,19 @@
             <div class="col-md-3">
                 <div class="text-muted small">Стоимость ремонта</div>
                 <div>{% if row.roe.repair_cost %}{{ row.roe.repair_cost }} ₽{% else %}—{% endif %}</div>
+            </div>
+        </div>
+
+        <div class="mb-2">
+            <div class="text-muted small">Гарантия</div>
+            <div>
+                {% if not row.roe.warranty_until %}
+                    <span class="text-muted">отсчёт начнётся после завершения заказа</span>
+                {% elif row.roe.is_under_warranty %}
+                    <span class="badge bg-success">действует до {{ row.roe.warranty_until|date:"d.m.Y" }}</span>
+                {% else %}
+                    <span class="badge bg-secondary">истекла {{ row.roe.warranty_until|date:"d.m.Y" }}</span>
+                {% endif %}
             </div>
         </div>
 

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.9.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.10.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -198,11 +198,24 @@ function showEquipmentHistory(select) {
             }
             const times = data.orders_count === 1 ? 'раз' :
                           (data.orders_count < 5 ? 'раза' : 'раз');
-            hint.innerHTML =
+            let text =
                 '<i class="bi bi-info-circle me-1"></i>Уже обслуживалось: <strong>' +
                 data.orders_count + '</strong> ' + times +
                 ', последний — ' + data.last_date +
                 ' <a href="' + data.history_url + '" target="_blank" class="alert-link">смотреть историю</a>';
+
+            // Гарантия важнее числа обращений: если она действует, это
+            // повторный ремонт, и вопрос оплаты решается сейчас, а не потом.
+            // Поэтому подсказка меняет цвет на предупреждающий.
+            hint.classList.toggle('alert-info', !data.under_warranty);
+            hint.classList.toggle('alert-warning', data.under_warranty);
+            if (data.under_warranty) {
+                text = '<i class="bi bi-shield-exclamation me-1"></i><strong>На гарантии до ' +
+                    data.warranty_until + '</strong> по заказу ' +
+                    '<a href="' + data.warranty_order_url + '" target="_blank" class="alert-link">' +
+                    data.warranty_order_number + '</a> — повторное обращение.<br>' + text;
+            }
+            hint.innerHTML = text;
             hint.classList.remove('d-none');
         })
         .catch(() => {

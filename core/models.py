@@ -1,13 +1,36 @@
 """
-Модели данных для LiftTeam v2.9.0.
+Модели данных для LiftTeam v2.10.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
+import calendar
+
+from django.conf import settings
 from django.db import models, transaction
 from django.db.models import Sum
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from django.utils import timezone
+
+
+def warranty_months():
+    """Срок гарантии в месяцах. 0 — гарантия не ведётся."""
+    return getattr(settings, 'WARRANTY_MONTHS', 12)
+
+
+def add_months(moment, months):
+    """Дата через `months` месяцев (месяцы могут быть отрицательными).
+
+    В стандартной библиотеке сложения месяцев нет, а `timedelta` считает
+    только в днях: «год» превратился бы в 365 дней и в високосный год
+    гарантия заканчивалась бы на день раньше срока. Если в конечном месяце
+    нужного числа нет (31 марта минус месяц), берётся последний день месяца.
+    """
+    month_index = moment.month - 1 + months
+    year = moment.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(moment.day, calendar.monthrange(year, month)[1])
+    return moment.replace(year=year, month=month, day=day)
 
 
 class EmployeeManager(BaseUserManager):
@@ -157,6 +180,48 @@ class Equipment(models.Model):
             .order_by('-repair_order__date_received')
         )
 
+    def active_warranty(self, exclude_order_id=None):
+        """Последний ремонт этой единицы, гарантия на который ещё действует.
+
+        Возвращает `RepairOrderEquipment` или None. Заказ, из которого
+        смотрят, исключается: на странице самого заказа интересно, была ли
+        единица на гарантии по прошлому ремонту, а не по текущему.
+        """
+        found = Equipment.warranty_map([self], exclude_order_id=exclude_order_id)
+        return found.get(self.pk)
+
+    @staticmethod
+    def warranty_map(equipments, exclude_order_id=None):
+        """{id единицы: действующий гарантийный ремонт} — одним запросом.
+
+        Для списка оборудования проверять гарантию поштучно нельзя: это
+        запрос на строку таблицы. Условие «гарантия ещё действует»
+        разворачивается в «заказ завершён не раньше, чем N месяцев назад»,
+        и такой отбор целиком делает база.
+        """
+        months = warranty_months()
+        ids = [eq.pk if hasattr(eq, 'pk') else eq for eq in equipments]
+        if not months or not ids:
+            return {}
+
+        cutoff = add_months(timezone.now(), -months)
+        visits = (
+            RepairOrderEquipment.objects
+            .filter(
+                equipment_id__in=ids,
+                repair_order__date_completed__isnull=False,
+                repair_order__date_completed__gte=cutoff,
+            )
+            .select_related('repair_order')
+            .order_by('repair_order__date_completed')
+        )
+        if exclude_order_id is not None:
+            visits = visits.exclude(repair_order_id=exclude_order_id)
+
+        # Порядок по возрастанию даты: последняя запись по единице затирает
+        # предыдущие, и в словаре остаётся самый свежий ремонт
+        return {visit.equipment_id: visit for visit in visits}
+
 
 class RepairOrder(models.Model):
     """Заказ на ремонт."""
@@ -257,6 +322,32 @@ class RepairOrderEquipment(models.Model):
 
     def __str__(self):
         return f"{self.equipment} в {self.repair_order.order_number}"
+
+    @property
+    def warranty_until(self):
+        """Дата окончания гарантии на этот ремонт.
+
+        None, пока заказ не завершён: гарантия отсчитывается от даты
+        завершения, а у незакрытого заказа её ещё нет.
+        """
+        completed = self.repair_order.date_completed
+        months = warranty_months()
+        if not completed or not months:
+            return None
+        return add_months(completed, months)
+
+    @property
+    def is_under_warranty(self):
+        until = self.warranty_until
+        return bool(until and timezone.now() <= until)
+
+    @property
+    def warranty_days_left(self):
+        """Сколько дней гарантии осталось; None — если гарантии нет."""
+        until = self.warranty_until
+        if not until:
+            return None
+        return (until - timezone.now()).days
 
 
 class OrderStatusHistory(models.Model):
