@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load static %}
 
-{% block title %}Этикетки деталей — LiftTeam v2.25.0{% endblock %}
+{% block title %}Этикетки деталей — LiftTeam v2.26.0{% endblock %}
 
 {% block content %}
 <div class="no-print">
@@ -83,4 +84,8 @@
         {% endif %}
     }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/label-fit.js' %}"></script>
 {% endblock %}

@@ -1,5 +1,5 @@
 """
-Утилиты для LiftTeam v2.25.0.
+Утилиты для LiftTeam v2.26.0.
 """
 import barcode
 from barcode.writer import ImageWriter

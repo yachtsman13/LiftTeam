@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.25.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.26.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -36,6 +36,14 @@
                     <option value="">Все типы</option>
                     {% for ct in component_types %}
                     <option value="{{ ct }}" {% if component_type == ct %}selected{% endif %}>{{ ct }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <select name="package" class="form-select" onchange="this.form.submit()">
+                    <option value="">Все корпуса</option>
+                    {% for pkg in packages %}
+                    <option value="{{ pkg }}" {% if package == pkg %}selected{% endif %}>{{ pkg }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -133,7 +141,7 @@
                         </th>
                         <th>Артикул</th>
                         <th>Название</th>
-                        <th>Тип</th>
+                        <th>Тип и корпус</th>
                         <th>Остаток</th>
                         <th>Мин.</th>
                         <th class="col-cell">Ячейка</th>
@@ -148,7 +156,10 @@
                         </td>
                         <td class="fw-bold">{{ part.part_number }}</td>
                         <td>{{ part.name }}</td>
-                        <td>{{ part.component_type|default:"—" }}</td>
+                        <td>
+                            {{ part.component_type|default:"—" }}
+                            {% if part.package %}<span class="badge bg-light text-dark border">{{ part.package }}</span>{% endif %}
+                        </td>
                         <td><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span></td>
                         <td>{{ part.min_stock }}</td>
                         <td class="col-cell">{{ part.current_cell.address|default:"—" }}</td>

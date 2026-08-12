@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.25.0
+v2.26.0
 """
 from django.urls import path
 from . import views
@@ -59,7 +59,9 @@ urlpatterns = [
     path('parts/<int:pk>/label/', views.part_label, name='part_label'),
     path('parts/labels/', views.part_labels_batch, name='part_labels_batch'),
 
-    # Короткие адреса для QR-кодов: чем короче ссылка, тем крупнее модули кода
+    # Короткие адреса для QR-кодов: чем короче ссылка, тем крупнее модули кода.
+    # `e` сохранён, хотя отдельную этикетку оборудования больше не печатают:
+    # коды с уже наклеенных этикеток должны открываться и дальше.
     path('p/<int:pk>/', views.short_part, name='short_part'),
     path('c/<int:pk>/', views.short_cell, name='short_cell'),
     path('e/<int:pk>/', views.short_equipment, name='short_equipment'),
@@ -85,9 +87,6 @@ urlpatterns = [
     path('storage-cells/labels/', views.storage_cell_labels_batch, name='storage_cell_labels_batch'),
     path('storage-cells/<int:pk>/add-part/', views.storage_cell_add_part, name='storage_cell_add_part'),
     path('storage-cells/<int:pk>/remove-part/', views.storage_cell_remove_part, name='storage_cell_remove_part'),
-
-    # Этикетки оборудования
-    path('equipment/<int:pk>/label/', views.equipment_label, name='equipment_label'),
 
     # Отчёты
     path('reports/', views.reports, name='reports'),

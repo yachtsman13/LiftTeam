@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.25.0.
+Формы для LiftTeam v2.26.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -166,7 +166,7 @@ class SparePartForm(forms.ModelForm):
     class Meta:
         model = SparePart
         fields = [
-            'part_number', 'name', 'component_type',
+            'part_number', 'name', 'component_type', 'package',
             'resistance', 'resistance_unit',
             'power', 'power_unit',
             'voltage', 'voltage_unit',
@@ -179,6 +179,7 @@ class SparePartForm(forms.ModelForm):
             'part_number': forms.TextInput(attrs={'class': 'form-control'}),
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'component_type': forms.TextInput(attrs={'class': 'form-control', 'list': 'component-types'}),
+            'package': forms.TextInput(attrs={'class': 'form-control', 'list': 'packages'}),
             'resistance': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
             'resistance_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'resistance-units', 'placeholder': 'Ом'}),
             'power': forms.NumberInput(attrs={'class': 'form-control', 'step': 'any', 'placeholder': '0'}),
@@ -198,6 +199,7 @@ class SparePartForm(forms.ModelForm):
             'part_number': 'Артикул',
             'name': 'Название',
             'component_type': 'Тип компонента',
+            'package': 'Тип корпуса',
             'resistance': 'Сопротивление',
             'resistance_unit': 'Ед. изм.',
             'power': 'Мощность',

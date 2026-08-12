@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.25.0.
+Модели данных для LiftTeam v2.26.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -408,6 +408,12 @@ class SparePart(models.Model):
     name = models.CharField('Название', max_length=255)
     component_type = models.CharField('Тип компонента', max_length=100, blank=True,
                                       help_text='Резистор, конденсатор, транзистор и т.д.')
+    # Корпус — то, по чему деталь опознают в руках и по чему подбирают замену:
+    # 0805 вместо 1206 не встанет на плату, как бы ни совпадали характеристики.
+    # Короткое поле: обозначения корпусов не бывают длинными, а на этикетке
+    # значение печатается рядом с артикулом
+    package = models.CharField('Тип корпуса', max_length=50, blank=True,
+                               help_text='0805, DIP-8, TO-220, SOT-23 и т.д.')
     resistance = models.DecimalField('Сопротивление', max_digits=15, decimal_places=6, null=True, blank=True)
     resistance_unit = models.CharField('Ед. изм. сопротивления', max_length=10, blank=True, default='Ом',
                                        help_text='Ом, кОм, МОм')
@@ -474,6 +480,15 @@ class SparePart(models.Model):
             (self.capacitance, self.capacitance_unit),
         ]
         return ', '.join(f'{float(value):g}{unit}' for value, unit in field_pairs if value is not None)
+
+    @property
+    def label_text(self):
+        """Пояснение под характеристиками на этикетке.
+
+        Описание, а если его не заполнили — название. Пустая строка на
+        этикетке не нужна никому, а название есть у каждой детали.
+        """
+        return (self.description or '').strip() or self.name
 
     @property
     def current_cell(self):

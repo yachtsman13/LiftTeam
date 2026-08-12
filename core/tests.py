@@ -292,6 +292,26 @@ class ExcelImportExportTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(resp.content))
         self.assertEqual(wb.active.max_row, 2)  # заголовок + 1 деталь
 
+    def test_package_survives_import_and_export(self):
+        """Выгрузка принимается обратно импортом, поэтому новая колонка
+        обязана быть в обеих."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['part_number', 'name', 'component_type', 'package'])
+        ws.append(['PKG-1', 'Стабилизатор', 'Микросхема', 'TO-220'])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'import.xlsx'
+
+        self.client_http.post('/parts/import/', {'file': buf, 'update_existing': False})
+        self.assertEqual(SparePart.objects.get(part_number='PKG-1').package, 'TO-220')
+
+        resp = self.client_http.get('/parts/export/?q=PKG-1')
+        exported = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        row = dict(zip([c.value for c in exported[1]], [c.value for c in exported[2]]))
+        self.assertEqual(row['package'], 'TO-220')
+
     def test_import_then_export_round_trip_preserves_values(self):
         f = self._make_xlsx([['RT-1', 'Round trip', 'Диод', '3,3']])
         self.client_http.post('/parts/import/', {'file': f, 'update_existing': False})
@@ -563,6 +583,41 @@ class LabelTests(TestCase):
         with self.settings(LABEL_BASE_URL='http://100.108.92.92/'):
             self.assertEqual(label_base_url(request), 'http://100.108.92.92')
 
+    def test_part_label_shows_the_package_next_to_the_article(self):
+        """Корпус — то, по чему деталь опознают в руках."""
+        self.part.package = 'TO-220'
+        self.part.save(update_fields=['package'])
+
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertContains(response, 'TO-220')
+        self.assertContains(response, 'label-package')
+
+    def test_part_label_prints_the_description(self):
+        self.part.description = 'Ставится в блок питания БУАД'
+        self.part.save(update_fields=['description'])
+
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertContains(response, 'Ставится в блок питания БУАД')
+
+    def test_part_label_falls_back_to_the_name(self):
+        """Описание заполняют не всегда, а пустая строка на этикетке
+        не нужна никому."""
+        self.assertEqual(self.part.description, '')
+
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertContains(response, 'Деталь для этикетки')
+
+    def test_part_label_loads_the_font_fitting_script(self):
+        """Без него длинный артикул обрезался бы многоточием."""
+        for page in (f'/parts/{self.part.pk}/label/', '/parts/labels/?ids=%d' % self.part.pk):
+            with self.subTest(page=page):
+                response = self.client_http.get(page)
+                self.assertContains(response, 'label-fit.js')
+                self.assertContains(response, 'data-fit')
+
     def test_short_urls_work_without_the_trailing_slash(self):
         """Именно эта форма попадает в QR — она на символ короче."""
         part_response = self.client_http.get(f'/p/{self.part.pk}')
@@ -584,7 +639,7 @@ class LabelTests(TestCase):
 
     @override_settings(LABEL_BASE_URL='http://100.108.92.92')
     def test_every_label_type_points_at_the_configured_address(self):
-        """Все четыре этикетки, а не только те, о которых вспомнили."""
+        """Все этикетки, а не только те, о которых вспомнили."""
         equipment_model = EquipmentModel.objects.create(name='БУАД-QR')
         equipment = Equipment.objects.create(model=equipment_model, serial_number='QR-1')
         client = ClientModel.objects.create(name='Заказчик QR')
@@ -596,7 +651,6 @@ class LabelTests(TestCase):
         pages = {
             f'/parts/{self.part.pk}/label/': f'http://100.108.92.92/p/{self.part.pk}',
             f'/storage-cells/{self.cell.pk}/label/': f'http://100.108.92.92/c/{self.cell.pk}',
-            f'/equipment/{equipment.pk}/label/': f'http://100.108.92.92/e/{equipment.pk}',
             f'/repair-orders/{order.pk}/equipment/{roe.pk}/label/':
                 f'http://100.108.92.92/o/{order.pk}',
         }
@@ -1497,12 +1551,12 @@ class CyrillicSearchTests(TestCase):
         self.assertFalse(_unicode_like(None, 'текст'))
 
 
-class EquipmentLabelLinkTests(TestCase):
-    """Этикетка оборудования: в QR ссылка вместо JSON.
+class EquipmentShortLinkTests(TestCase):
+    """Короткий адрес единицы оборудования.
 
-    Раньше в код клали {"id":…,"model":"БУАД","serial":…} — сканирование
-    давало строку с кириллицей, которую всё равно искали руками, а сам код
-    из-за кириллицы распухал.
+    Отдельную этикетку оборудования больше не печатают — нужную наклейку
+    даёт заказ. Сам адрес оставлен: коды с уже наклеенных этикеток должны
+    открываться и дальше.
     """
 
     def setUp(self):
@@ -1528,36 +1582,10 @@ class EquipmentLabelLinkTests(TestCase):
         resp = self.client_http.get('/e/999999/')
         self.assertEqual(resp.status_code, 404)
 
-    def test_label_encodes_short_link(self):
-        with patch('core.views.generate_qr_image') as qr:
-            qr.return_value = 'data:image/png;base64,x'
-            self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
-
-        encoded = qr.call_args[0][0]
-        self.assertTrue(encoded.endswith(f'/e/{self.equipment.pk}'), encoded)
-        self.assertNotIn('{', encoded)
-        self.assertNotIn('БУАД', encoded)
-
-    @override_settings(LABEL_BASE_URL='http://192.168.1.50')
-    def test_label_uses_configured_base_url(self):
-        """Печать через Tailscale, сканирование в офисе: адрес берётся
-        из настройки, а не из того, как открыта страница печати."""
-        with patch('core.views.generate_qr_image') as qr:
-            qr.return_value = 'data:image/png;base64,x'
-            self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
-
-        self.assertEqual(
-            qr.call_args[0][0], f'http://192.168.1.50/e/{self.equipment.pk}'
-        )
-
-    def test_label_still_shows_barcode_of_serial(self):
-        """Штрихкод серийника остаётся — его читает сканер с клавиатурным вводом."""
-        with patch('core.views.generate_barcode_image') as barcode:
-            barcode.return_value = 'data:image/png;base64,x'
-            resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
-
-        self.assertEqual(resp.status_code, 200)
-        barcode.assert_called_once_with('БУАД-1234')
+    def test_the_label_page_is_gone(self):
+        """Печать этикетки оборудования вне заказа убрана в v2.26.0."""
+        resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
+        self.assertEqual(resp.status_code, 404)
 
 
 class OrderLabelLinkTests(TestCase):
@@ -1960,6 +1988,19 @@ class PartStockFilterTests(TestCase):
         resp = self.client_http.get(f'/parts/{query}')
         self.assertEqual(resp.status_code, 200)
         return {p.part_number for p in resp.context['parts']}
+
+    def test_filter_by_package(self):
+        """Корпус — такой же признак отбора, как тип: 0805 вместо 1206
+        на плату не встанет, как бы ни совпадали характеристики."""
+        SparePart.objects.filter(part_number='PF-OK').update(package='TO-220')
+        SparePart.objects.filter(part_number='PF-AT').update(package='0805')
+
+        self.assertEqual(self._found('?package=TO-220'), {'PF-OK'})
+
+    def test_search_finds_the_package(self):
+        SparePart.objects.filter(part_number='PF-OK').update(package='SOT-23')
+
+        self.assertEqual(self._found('?q=SOT-23'), {'PF-OK'})
 
     def test_only_shortage(self):
         self.assertEqual(self._found('?stock_state=below'), {'PF-BELOW'})

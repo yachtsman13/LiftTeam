@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.25.0.
+Views для LiftTeam v2.26.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -34,7 +34,7 @@ from .forms import (
     RepairOrderEquipmentFormSet, PartImportForm
 )
 from .utils import (
-    generate_barcode_image, generate_qr_image,
+    generate_qr_image,
     build_workbook, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
@@ -868,6 +868,7 @@ def _filter_parts(request):
     """Общая фильтрация деталей по параметрам GET-запроса (используется списком и экспортом)."""
     search = request.GET.get('q', '')
     component_type = request.GET.get('component_type', '')
+    package = request.GET.get('package', '')
 
     # Диапазоны характеристик: поле в модели -> префикс параметра
     ranges = {
@@ -891,14 +892,18 @@ def _filter_parts(request):
             Q(part_number__icontains=search) |
             Q(name__icontains=search) |
             Q(component_type__icontains=search) |
+            Q(package__icontains=search) |
             Q(description__icontains=search)
         )
     if component_type:
         parts = parts.filter(component_type=component_type)
+    if package:
+        parts = parts.filter(package=package)
 
     context = {
         'search': search,
         'component_type': component_type,
+        'package': package,
         'stock_from': stock_from,
         'stock_to': stock_to,
         'stock_state': stock_state,
@@ -937,13 +942,11 @@ def _filter_parts(request):
 def part_list(request):
     parts, filter_context = _filter_parts(request)
 
-    component_types = SparePart.objects.exclude(component_type='').values_list('component_type', flat=True).distinct().order_by('component_type')
-
     paginator = Paginator(parts.order_by('part_number'), 25)
     page = request.GET.get('page')
     return render(request, 'core/parts/list.html', {
         'parts': paginator.get_page(page),
-        'component_types': component_types,
+        **_part_choices(),
         'found_count': paginator.count,
         'filters_active': any(filter_context.values()),
         **filter_context,
@@ -958,7 +961,7 @@ def part_export(request):
     # Заголовки — имена полей, а не русские подписи: этот же файл принимает
     # импорт, и переименование колонок разорвало бы выгрузку и загрузку
     headers = [
-        'part_number', 'name', 'component_type',
+        'part_number', 'name', 'component_type', 'package',
         'resistance', 'resistance_unit',
         'power', 'power_unit',
         'voltage', 'voltage_unit',
@@ -993,6 +996,22 @@ def part_detail(request, pk):
     })
 
 
+def _part_choices():
+    """Уже встречавшиеся типы компонентов и корпуса — для подсказок в форме
+    и отбора в списке. Оба поля заполняются руками, и без готового списка
+    одно и то же обозначение расходится на «TO-220» и «то220»."""
+    return {
+        'component_types': list(
+            SparePart.objects.exclude(component_type='')
+            .values_list('component_type', flat=True).distinct().order_by('component_type')
+        ),
+        'packages': list(
+            SparePart.objects.exclude(package='')
+            .values_list('package', flat=True).distinct().order_by('package')
+        ),
+    }
+
+
 def _measurement_pairs(form):
     """Пары «значение — единица измерения» для вывода в одной строке формы."""
     return [
@@ -1022,6 +1041,7 @@ def part_create(request):
         'form': form,
         'title': 'Новая деталь',
         'measurement_pairs': _measurement_pairs(form),
+        **_part_choices(),
     })
 
 
@@ -1042,6 +1062,7 @@ def part_edit(request, pk):
         'title': 'Редактирование детали',
         'part': part,
         'measurement_pairs': _measurement_pairs(form),
+        **_part_choices(),
     })
 
 
@@ -1196,6 +1217,7 @@ def part_import(request):
                     defaults = {
                         'name': _get_str(data.get('name')) or part_number,
                         'component_type': _get_str(data.get('component_type')),
+                        'package': _get_str(data.get('package')),
                         'voltage': _parse_decimal(data.get('voltage')),
                         'voltage_unit': _get_str(data.get('voltage_unit')) or 'В',
                         'current': _parse_decimal(data.get('current')),
@@ -1427,29 +1449,6 @@ def storage_cell_label(request, pk):
     return render(
         request, 'core/storage_cells/label.html', _cell_label(cell, label_base_url(request))
     )
-
-
-@login_required
-def equipment_label(request, pk):
-    """Печать этикетки единицы оборудования (43x25 мм)."""
-    equipment = get_object_or_404(Equipment.objects.select_related('model'), pk=pk)
-
-    # Ссылка вместо JSON. Раньше в код клали {"id":…,"model":"БУАД",…}:
-    # сканирование давало строку с фигурными скобками, которую человек всё
-    # равно шёл искать руками, а кириллица внутри — худший случай по плотности
-    # кода (QR переключается в побайтовый режим и распухает). Короткая ссылка
-    # укладывается в 25–29 модулей и сразу открывает историю этой единицы.
-    qr_img = generate_qr_image(qr_url(label_base_url(request), 'e', equipment.pk))
-
-    # Штрихкод оставлен: он кодирует сам серийный номер и читается сканером
-    # с клавиатурным вводом, которым QR не заменить
-    barcode_img = generate_barcode_image(equipment.serial_number)
-
-    return render(request, 'core/equipment/label.html', {
-        'equipment': equipment,
-        'barcode_img': barcode_img,
-        'qr_img': qr_img,
-    })
 
 
 @login_required

@@ -1,5 +1,5 @@
 """
-REST API для LiftTeam v2.25.0 (Django REST Framework).
+REST API для LiftTeam v2.26.0 (Django REST Framework).
 """
 from django.db.models import Q
 from django.utils import timezone
@@ -116,8 +116,8 @@ class SparePartViewSet(viewsets.ModelViewSet):
     queryset = SparePart.objects.all()
     serializer_class = SparePartSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['component_type']
-    search_fields = ['part_number', 'name', 'component_type']
+    filterset_fields = ['component_type', 'package']
+    search_fields = ['part_number', 'name', 'component_type', 'package']
     ordering_fields = ['part_number', 'name', 'current_stock']
 
     @action(detail=False, methods=['get'])
@@ -129,7 +129,8 @@ class SparePartViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(part_number__icontains=search) |
                 Q(name__icontains=search) |
-                Q(component_type__icontains=search)
+                Q(component_type__icontains=search) |
+                Q(package__icontains=search)
             )
         component_type = request.query_params.get('component_type')
         if component_type:

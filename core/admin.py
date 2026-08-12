@@ -1,5 +1,5 @@
 """
-Настройка Django Admin для LiftTeam v2.25.0.
+Настройка Django Admin для LiftTeam v2.26.0.
 """
 from django.contrib import admin
 from .models import (
@@ -71,9 +71,9 @@ class RepairOrderAdmin(admin.ModelAdmin):
 
 @admin.register(SparePart)
 class SparePartAdmin(admin.ModelAdmin):
-    list_display = ['part_number', 'name', 'component_type', 'current_stock', 'min_stock', 'lead_time_days']
-    list_filter = ['component_type']
-    search_fields = ['part_number', 'name', 'component_type']
+    list_display = ['part_number', 'name', 'component_type', 'package', 'current_stock', 'min_stock', 'lead_time_days']
+    list_filter = ['component_type', 'package']
+    search_fields = ['part_number', 'name', 'component_type', 'package']
     readonly_fields = ['current_stock']
 
 

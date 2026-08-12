@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.25.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.26.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -19,12 +19,12 @@
             {% endif %}
 
             <div class="row g-3">
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">{{ form.part_number.label }}</label>
                     {{ form.part_number }}
                     {% if form.part_number.errors %}<div class="text-danger small">{{ form.part_number.errors.0 }}</div>{% endif %}
                 </div>
-                <div class="col-md-5">
+                <div class="col-md-4">
                     <label class="form-label">{{ form.name.label }}</label>
                     {{ form.name }}
                     {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
@@ -33,6 +33,12 @@
                     <label class="form-label">{{ form.component_type.label }}</label>
                     {{ form.component_type }}
                     {% if form.component_type.errors %}<div class="text-danger small">{{ form.component_type.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">{{ form.package.label }}</label>
+                    {{ form.package }}
+                    <div class="form-text">{{ form.package.help_text }}</div>
+                    {% if form.package.errors %}<div class="text-danger small">{{ form.package.errors.0 }}</div>{% endif %}
                 </div>
             </div>
 
@@ -80,6 +86,15 @@
         </form>
     </div>
 </div>
+
+{# Подсказки берутся из уже заведённых деталей: типы и корпуса пишут руками,
+   и без списка одно и то же обозначение расходится на «TO-220» и «то220» #}
+<datalist id="component-types">
+    {% for value in component_types %}<option value="{{ value }}">{% endfor %}
+</datalist>
+<datalist id="packages">
+    {% for value in packages %}<option value="{{ value }}">{% endfor %}
+</datalist>
 
 <!-- Datalists для единиц измерения -->
 <datalist id="resistance-units">

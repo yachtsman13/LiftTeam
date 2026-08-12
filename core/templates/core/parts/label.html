@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load static %}
 
-{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.25.0{% endblock %}
+{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.26.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
@@ -35,4 +36,8 @@
         .label-sheet { border: none; page-break-inside: avoid; }
     }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/label-fit.js' %}"></script>
 {% endblock %}
