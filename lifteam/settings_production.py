@@ -1,6 +1,6 @@
 """
 Django production settings for Lifteam.
-v2.17.0 — Docker (PostgreSQL + Redis + Nginx)
+v2.18.0 — Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path

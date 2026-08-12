@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.17.0{% endblock %}
+{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.18.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
@@ -65,10 +65,10 @@
         gap: 1.5mm;
         width: 100%;
     }
-    /* Ширины заданы явно: 24 + 1,5 + 13 = 38,5 мм при полезных 40 мм */
+    /* Ширины заданы явно: 23,5 + 1,5 + 15 = 40 мм — вся полезная ширина */
     .label-info {
-        flex: 0 0 24mm;
-        width: 24mm;
+        flex: 0 0 23.5mm;
+        width: 23.5mm;
         min-width: 0;
         overflow: hidden;
     }
@@ -84,9 +84,10 @@
         font-size: 6pt;
         line-height: 1.15;
         margin-top: 0.4mm;
-        /* Две строки: названия деталей часто длиннее одной */
+        /* Три строки: названия деталей часто длиннее одной, а по высоте
+           этикетки место есть — раньше нижние 6 мм пустовали */
         display: -webkit-box;
-        -webkit-line-clamp: 2;
+        -webkit-line-clamp: 3;
         -webkit-box-orient: vertical;
         overflow: hidden;
     }
@@ -103,11 +104,14 @@
         margin-top: 0.6mm;
         white-space: nowrap;
     }
-    /* Обёртка нужна, чтобы размер не зависел от собственных размеров картинки */
+    /* Обёртка нужна, чтобы размер не зависел от собственных размеров картинки.
+       15 мм вместо 13: под кодом простаивало 6 мм высоты, а каждый лишний
+       миллиметр — это 4,1 точки принтера на модуль вместо 3,6. Текстовая
+       колонка при этом теряет полмиллиметра, что на ней не сказывается. */
     .label-qr-wrap {
-        flex: 0 0 13mm;
-        width: 13mm;
-        height: 13mm;
+        flex: 0 0 15mm;
+        width: 15mm;
+        height: 15mm;
     }
     .label-qr {
         display: block;

@@ -1,4 +1,4 @@
-// LiftTeam v2.17.0 Application JS
+// LiftTeam v2.18.0 Application JS
 
 
 

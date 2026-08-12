@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.17.0{% endblock %}
+{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.18.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
@@ -73,11 +73,13 @@
         display: flex;
         flex-direction: column;
     }
+    /* Чёрный, а не синий: печать термопринтером монохромная, и цвет
+       превращается в серый растр — мелкий текст от этого только бледнеет. */
     .label-address-bar {
         text-align: center;
         font-size: 8.5pt;
         font-weight: bold;
-        color: #0d6efd;
+        color: #000;
         margin-bottom: 0.5mm;
         flex-shrink: 0;
     }
@@ -95,13 +97,14 @@
         justify-content: center;
         overflow: hidden;
     }
-    /* 13 мм вместо 9: в коде теперь ссылка, она длиннее короткого адреса
-       и занимает 29 модулей вместо 21. При 13 мм это 3,6 точки принтера
-       на модуль — с запасом над практическим порогом около трёх. */
+    /* В коде ссылка, она занимает 29 модулей вместо 21 у прежнего текста.
+       15 мм вместо 13 — это 4,1 точки принтера на модуль вместо 3,6:
+       место под этикеткой всё равно простаивало (снизу оставалось 4 мм),
+       а запас на затёртую или криво напечатанную этикетку лишним не бывает. */
     .label-qr-col {
-        flex: 0 0 13mm;
-        width: 13mm;
-        height: 13mm;
+        flex: 0 0 15mm;
+        width: 15mm;
+        height: 15mm;
         align-self: center;
     }
     .label-qr {
