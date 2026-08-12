@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.13.0.
+Views для LiftTeam v2.14.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -418,6 +418,53 @@ def repair_order_list(request):
         'found_count': paginator.count,
         **filter_context,
     })
+
+
+@login_required
+def repair_order_export(request):
+    """Список заказов в Excel — с теми же условиями, что выставлены на странице."""
+    orders, _ = _filter_orders(request)
+
+    # Стоимости одним запросом. Считать их свойством заказа нельзя: это запрос
+    # на строку, а выгружают обычно как раз длинные списки. Отдельный запрос
+    # вместо annotate — потому что фильтры уже соединяют таблицу с
+    # оборудованием, и сумма по такому соединению задвоилась бы.
+    costs = dict(
+        RepairOrderEquipment.objects
+        .filter(repair_order__in=orders)
+        .values_list('repair_order_id')
+        .annotate(total=Sum('repair_cost'))
+    )
+
+    headers = [
+        '№ заказа', 'Дата приёма', 'Заказчик', 'ИНН', 'Оборудование',
+        'Статус ремонта', 'Статус оплаты', '№ счёта', 'Дата счёта',
+        'Дата завершения', 'Трек-номер', 'Сумма, ₽',
+    ]
+    rows = []
+    total_sum = 0
+    for order in orders:
+        cost = costs.get(order.pk) or 0
+        total_sum += cost
+        rows.append([
+            order.order_number,
+            excel_datetime(order.date_received),
+            order.client.name,
+            order.client.inn,
+            ', '.join(str(roe.equipment) for roe in order.order_equipments.all()),
+            order.get_status_display(),
+            order.get_payment_status_display(),
+            order.invoice_number,
+            order.invoice_date,
+            excel_datetime(order.date_completed),
+            order.tracking_number,
+            cost,
+        ])
+    if rows:
+        rows.append(['Итого'] + [''] * (len(headers) - 2) + [total_sum])
+
+    wb = build_workbook('Заказы', headers, rows)
+    return xlsx_response(wb, f'Заказы {timezone.localdate():%Y-%m-%d}.xlsx')
 
 
 @login_required

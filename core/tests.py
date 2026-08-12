@@ -1533,3 +1533,83 @@ class OrderLabelLinkTests(TestCase):
         logo = content[content.index('<svg class="label-logo"'):content.index('</svg>')]
 
         self.assertEqual(logo.count('<circle'), 1)
+
+
+class OrderExportTests(TestCase):
+    """Выгрузка списка заказов в Excel — с учётом фильтров страницы."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_oexp', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.alpha = ClientModel.objects.create(name='ООО Альфа', inn='7700000001')
+        model = EquipmentModel.objects.create(name='БУАД')
+
+        self.paid = RepairOrder.objects.create(
+            client=self.alpha, status='shipped', payment_status='paid',
+            invoice_number='СЧ-1',
+        )
+        RepairOrderEquipment.objects.create(
+            repair_order=self.paid,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-1'),
+            repair_cost=1000,
+        )
+
+        self.unpaid = RepairOrder.objects.create(
+            client=self.alpha, status='repair', payment_status='unpaid',
+        )
+        for serial, cost in (('SN-2', 2000), ('SN-3', 500)):
+            RepairOrderEquipment.objects.create(
+                repair_order=self.unpaid,
+                equipment=Equipment.objects.create(model=model, serial_number=serial),
+                repair_cost=cost,
+            )
+
+    def _rows(self, query=''):
+        resp = self.client_http.get(f'/repair-orders/export/{query}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('spreadsheetml', resp['Content-Type'])
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        headers = [c.value for c in ws[1]]
+        return [dict(zip(headers, [c.value for c in row])) for row in ws.iter_rows(min_row=2)]
+
+    def test_export_lists_all_orders_with_total(self):
+        rows = self._rows()
+
+        self.assertEqual(len(rows), 3)  # два заказа плюс «Итого»
+        self.assertEqual(rows[-1]['№ заказа'], 'Итого')
+        self.assertEqual(float(rows[-1]['Сумма, ₽']), 3500.0)
+
+    def test_export_respects_filters(self):
+        rows = self._rows('?payment_status=unpaid')
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['№ заказа'], self.unpaid.order_number)
+        self.assertEqual(float(rows[0]['Сумма, ₽']), 2500.0)
+
+    def test_export_sums_all_units_of_an_order(self):
+        """Регрессия: соединение с оборудованием при фильтрах могло задвоить сумму."""
+        rows = self._rows(f'?q=Альфа&status=repair')
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(float(rows[0]['Сумма, ₽']), 2500.0)
+
+    def test_export_lists_every_unit_of_an_order(self):
+        rows = self._rows('?payment_status=unpaid')
+        self.assertIn('SN-2', rows[0]['Оборудование'])
+        self.assertIn('SN-3', rows[0]['Оборудование'])
+
+    def test_empty_result_has_no_total_row(self):
+        ws_rows = self._rows('?q=такого-заказа-нет')
+        self.assertEqual(ws_rows, [])
+
+    def test_export_requires_login(self):
+        resp = TestClient().get('/repair-orders/export/')
+        self.assertEqual(resp.status_code, 302)
+
+    def test_order_list_page_offers_export(self):
+        resp = self.client_http.get('/repair-orders/')
+        self.assertContains(resp, '/repair-orders/export/')

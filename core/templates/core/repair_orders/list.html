@@ -1,11 +1,14 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.13.0{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.14.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-tools me-2"></i>Заказы на ремонт</h2>
-    <a href="{% url 'repair_order_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новый заказ</a>
+    <div>
+        <a href="{% url 'repair_order_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success me-2"><i class="bi bi-file-earmark-excel me-2"></i>В Excel</a>
+        <a href="{% url 'repair_order_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новый заказ</a>
+    </div>
 </div>
 
 <div class="card">
