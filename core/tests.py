@@ -23,7 +23,7 @@ from django.utils import timezone
 
 from .models import (
     Client as ClientModel, Employee, Equipment, EquipmentModel, RepairOrder,
-    RepairOrderEquipment, SparePart, StockMovement, StorageCell,
+    RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement, StorageCell,
 )
 
 
@@ -1843,3 +1843,131 @@ class StockStateTests(TestCase):
     def test_normal_and_empty_cells(self):
         self.assertEqual(self._cell_with(self.ok).get_status(), 'normal')
         self.assertEqual(self._cell_with().get_status(), 'free')
+
+
+class PartStockFilterTests(TestCase):
+    """Фильтры списка деталей: состояние остатка, диапазоны, устойчивость."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_pf', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        SparePart.objects.create(part_number='PF-BELOW', name='Дефицит',
+                                 current_stock=1, min_stock=5, voltage=12, current=2, power=1)
+        SparePart.objects.create(part_number='PF-AT', name='На минимуме',
+                                 current_stock=5, min_stock=5, voltage=24, current=5, power=10)
+        SparePart.objects.create(part_number='PF-OK', name='В норме',
+                                 current_stock=50, min_stock=5, voltage=48, current=10, power=100)
+
+    def _found(self, query=''):
+        resp = self.client_http.get(f'/parts/{query}')
+        self.assertEqual(resp.status_code, 200)
+        return {p.part_number for p in resp.context['parts']}
+
+    def test_only_shortage(self):
+        self.assertEqual(self._found('?stock_state=below'), {'PF-BELOW'})
+
+    def test_only_at_minimum(self):
+        self.assertEqual(self._found('?stock_state=at_minimum'), {'PF-AT'})
+
+    def test_attention_covers_both(self):
+        self.assertEqual(self._found('?stock_state=attention'), {'PF-BELOW', 'PF-AT'})
+
+    def test_old_below_min_link_still_works(self):
+        """Ссылки вида ?below_min=1 могли остаться в закладках."""
+        self.assertEqual(self._found('?below_min=1'), {'PF-BELOW'})
+
+    def test_stock_range(self):
+        self.assertEqual(self._found('?stock_from=2&stock_to=10'), {'PF-AT'})
+
+    def test_current_range_now_reaches_the_view(self):
+        self.assertEqual(self._found('?current_from=4&current_to=6'), {'PF-AT'})
+
+    def test_power_range_is_supported(self):
+        self.assertEqual(self._found('?power_from=50'), {'PF-OK'})
+
+    def test_ranges_combine_with_state(self):
+        self.assertEqual(self._found('?stock_state=attention&voltage_from=20'), {'PF-AT'})
+
+    def test_garbage_in_range_does_not_break_the_page(self):
+        """Регрессия: голый float() на «5 В» ронял страницу целиком."""
+        self.assertEqual(len(self._found('?voltage_from=5 В&stock_from=много')), 3)
+
+    def test_comma_decimal_is_accepted(self):
+        self.assertEqual(self._found('?voltage_from=23,5&voltage_to=24,5'), {'PF-AT'})
+
+    def test_export_uses_the_same_filters(self):
+        resp = self.client_http.get('/parts/export/?stock_state=below')
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        self.assertEqual(ws.max_row, 2)  # шапка и одна деталь
+        self.assertEqual(ws.cell(row=2, column=1).value, 'PF-BELOW')
+
+
+class EquipmentHistoryExportTests(TestCase):
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_hexp', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.client_obj = ClientModel.objects.create(name='ООО Альфа')
+        model = EquipmentModel.objects.create(name='БУАД')
+        self.equipment = Equipment.objects.create(model=model, serial_number='SN-100')
+        self.other = Equipment.objects.create(model=model, serial_number='SN-200')
+
+        self.order = RepairOrder.objects.create(
+            client=self.client_obj, status='shipped', fault_description='Общая неисправность'
+        )
+        RepairOrder.objects.filter(pk=self.order.pk).update(
+            date_completed=timezone.now() - datetime.timedelta(days=5)
+        )
+        self.visit = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment,
+            fault_description='Не крутится', seal_numbers='П-1, П-2',
+            initial_condition='Корпус цел', repair_cost=3000,
+        )
+        part = SparePart.objects.create(part_number='D-1', name='Диод', current_stock=10)
+        RepairOrderDetail.objects.create(repair_order=self.order, part=part, quantity_used=2)
+
+    def _rows(self, equipment=None):
+        target = equipment or self.equipment
+        resp = self.client_http.get(f'/equipment/{target.pk}/history/export/')
+        self.assertEqual(resp.status_code, 200)
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        headers = [c.value for c in ws[1]]
+        return [dict(zip(headers, [c.value for c in row])) for row in ws.iter_rows(min_row=2)]
+
+    def test_export_contains_the_visit(self):
+        row = self._rows()[0]
+
+        self.assertEqual(row['№ заказа'], self.order.order_number)
+        self.assertEqual(row['Заказчик'], 'ООО Альфа')
+        self.assertEqual(row['Неисправность'], 'Не крутится')
+        self.assertEqual(row['Номера пломб'], 'П-1, П-2')
+        self.assertEqual(float(row['Стоимость, ₽']), 3000.0)
+        self.assertIn('Диод x2', row['Детали'])
+
+    def test_parts_are_marked_as_order_wide_for_multi_unit_orders(self):
+        RepairOrderEquipment.objects.create(repair_order=self.order, equipment=self.other)
+
+        row = self._rows()[0]
+        self.assertIn('на весь заказ', row['Детали'])
+
+    def test_export_covers_only_the_requested_equipment(self):
+        self.assertEqual(self._rows(self.other), [])
+
+    def test_warranty_column_filled_for_completed_order(self):
+        row = self._rows()[0]
+        self.assertIsNotNone(row['Гарантия до'])
+
+    def test_history_page_offers_export(self):
+        resp = self.client_http.get(f'/equipment/{self.equipment.pk}/history/')
+        self.assertContains(resp, f'/equipment/{self.equipment.pk}/history/export/')
+
+    def test_export_requires_login(self):
+        resp = TestClient().get(f'/equipment/{self.equipment.pk}/history/export/')
+        self.assertEqual(resp.status_code, 302)

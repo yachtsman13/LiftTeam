@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.16.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.17.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -60,10 +60,54 @@
                     <input type="number" name="capacitance_to" class="form-control" placeholder="до" value="{{ capacitance_to }}" step="any">
                 </div>
             </div>
-            <div class="col-md-1">
-                <button type="submit" class="btn btn-outline-primary w-100"><i class="bi bi-funnel"></i></button>
+            <div class="col-md-1 d-flex gap-1">
+                <button type="submit" class="btn btn-outline-primary flex-grow-1" title="Применить"><i class="bi bi-funnel"></i></button>
+                <button class="btn btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#morePartFilters" title="Больше условий">
+                    <i class="bi bi-sliders"></i>
+                </button>
+            </div>
+
+            <div class="collapse {% if current_from or current_to or power_from or power_to or stock_from or stock_to or stock_state %}show{% endif %}" id="morePartFilters">
+                <div class="row g-2 mt-1">
+                    <div class="col-md-3">
+                        <div class="input-group input-group-sm">
+                            <input type="number" name="current_from" class="form-control" placeholder="А от" value="{{ current_from }}" step="any">
+                            <span class="input-group-text">-</span>
+                            <input type="number" name="current_to" class="form-control" placeholder="до" value="{{ current_to }}" step="any">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="input-group input-group-sm">
+                            <input type="number" name="power_from" class="form-control" placeholder="Вт от" value="{{ power_from }}" step="any">
+                            <span class="input-group-text">-</span>
+                            <input type="number" name="power_to" class="form-control" placeholder="до" value="{{ power_to }}" step="any">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="input-group input-group-sm">
+                            <input type="number" name="stock_from" class="form-control" placeholder="остаток от" value="{{ stock_from }}">
+                            <span class="input-group-text">-</span>
+                            <input type="number" name="stock_to" class="form-control" placeholder="до" value="{{ stock_to }}">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <select name="stock_state" class="form-select form-select-sm">
+                            <option value="">Остаток: любой</option>
+                            <option value="attention" {% if stock_state == 'attention' %}selected{% endif %}>Требуют внимания</option>
+                            <option value="below" {% if stock_state == 'below' %}selected{% endif %}>Только дефицит</option>
+                            <option value="at_minimum" {% if stock_state == 'at_minimum' %}selected{% endif %}>Только на минимуме</option>
+                        </select>
+                    </div>
+                </div>
             </div>
         </form>
+
+        {% if filters_active %}
+        <div class="d-flex align-items-center gap-2 mb-3 text-muted small">
+            <span>Найдено деталей: <strong>{{ found_count }}</strong></span>
+            <a href="{% url 'part_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Сбросить</a>
+        </div>
+        {% endif %}
 
         <div class="table-responsive">
             <table class="table table-hover">

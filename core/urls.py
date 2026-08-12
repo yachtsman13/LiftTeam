@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.16.0
+v2.17.0
 """
 from django.urls import path
 from . import views
@@ -26,6 +26,7 @@ urlpatterns = [
     path('equipment/create/', views.equipment_create, name='equipment_create'),
     path('equipment/<int:pk>/edit/', views.equipment_edit, name='equipment_edit'),
     path('equipment/<int:pk>/history/', views.equipment_history, name='equipment_history'),
+    path('equipment/<int:pk>/history/export/', views.equipment_history_export, name='equipment_history_export'),
     path('equipment/<int:pk>/delete/', views.equipment_delete, name='equipment_delete'),
     path('equipment/models/', views.equipment_model_list, name='equipment_model_list'),
     path('equipment/models/create/', views.equipment_model_create, name='equipment_model_create'),

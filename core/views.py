@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.16.0.
+Views для LiftTeam v2.17.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -383,6 +383,50 @@ def equipment_history(request, pk):
         'similar': similar,
         'warranty': equipment.active_warranty(),
     })
+
+
+@login_required
+def equipment_history_export(request, pk):
+    """История ремонтов одной единицы в Excel — приложить к акту или письму."""
+    equipment = get_object_or_404(Equipment.objects.select_related('model'), pk=pk)
+    visits = equipment.repair_history()
+
+    headers = [
+        '№ заказа', 'Дата приёма', 'Дата завершения', 'Заказчик',
+        'Неисправность', 'Начальное состояние', 'Номера пломб',
+        'Стоимость, ₽', 'Гарантия до', 'Детали',
+    ]
+    rows = []
+    for visit in visits:
+        order = visit.repair_order
+        # Детали списываются на заказ целиком. Когда единица в заказе одна,
+        # список относится к ней; иначе честно помечаем, что он общий
+        units = order.order_equipments.count()
+        parts = ', '.join(
+            f'{detail.part.name} x{detail.quantity_used}'
+            for detail in order.details.select_related('part')
+        )
+        if parts and units > 1:
+            parts = f'{parts} (на весь заказ, единиц в нём: {units})'
+
+        warranty_until = visit.warranty_until
+        rows.append([
+            order.order_number,
+            excel_datetime(order.date_received),
+            excel_datetime(order.date_completed),
+            order.client.name,
+            visit.fault_description or order.fault_description,
+            visit.initial_condition,
+            visit.seal_numbers,
+            visit.repair_cost if visit.repair_cost is not None else '',
+            excel_datetime(warranty_until).date() if warranty_until else '',
+            parts,
+        ])
+
+    wb = build_workbook('История ремонтов', headers, rows)
+    return xlsx_response(
+        wb, f'История {equipment.serial_number} {timezone.localdate():%Y-%m-%d}.xlsx'
+    )
 
 
 @role_required('repair_manager', 'warehouse')
@@ -796,23 +840,38 @@ def repair_order_delete(request, pk):
 
 # ==================== ДЕТАЛИ / ЗАПЧАСТИ ====================
 
+def _as_number(value):
+    """Число из строки запроса или None.
+
+    Значения приходят из адресной строки, и её правят руками. Раньше здесь
+    стоял голый float(), и «5 В» вместо «5» роняло страницу целиком.
+    """
+    try:
+        return float(str(value).replace(',', '.'))
+    except (TypeError, ValueError):
+        return None
+
+
 def _filter_parts(request):
     """Общая фильтрация деталей по параметрам GET-запроса (используется списком и экспортом)."""
     search = request.GET.get('q', '')
     component_type = request.GET.get('component_type', '')
 
-    voltage_from = request.GET.get('voltage_from', '')
-    voltage_to = request.GET.get('voltage_to', '')
-    current_from = request.GET.get('current_from', '')
-    current_to = request.GET.get('current_to', '')
-    resistance_from = request.GET.get('resistance_from', '')
-    resistance_to = request.GET.get('resistance_to', '')
-    capacitance_from = request.GET.get('capacitance_from', '')
-    capacitance_to = request.GET.get('capacitance_to', '')
+    # Диапазоны характеристик: поле в модели -> префикс параметра
+    ranges = {
+        'voltage': 'voltage',
+        'current': 'current',
+        'resistance': 'resistance',
+        'capacitance': 'capacitance',
+        'power': 'power',
+    }
+    stock_state = request.GET.get('stock_state', '')
+    # Старая ссылка вида ?below_min=1 продолжает работать
+    if not stock_state and request.GET.get('below_min'):
+        stock_state = 'below'
 
     stock_from = request.GET.get('stock_from', '')
     stock_to = request.GET.get('stock_to', '')
-    below_min = request.GET.get('below_min', '')
 
     parts = SparePart.objects.all()
     if search:
@@ -825,45 +884,41 @@ def _filter_parts(request):
     if component_type:
         parts = parts.filter(component_type=component_type)
 
-    if voltage_from:
-        parts = parts.filter(voltage__gte=float(voltage_from))
-    if voltage_to:
-        parts = parts.filter(voltage__lte=float(voltage_to))
-    if current_from:
-        parts = parts.filter(current__gte=float(current_from))
-    if current_to:
-        parts = parts.filter(current__lte=float(current_to))
-    if resistance_from:
-        parts = parts.filter(resistance__gte=float(resistance_from))
-    if resistance_to:
-        parts = parts.filter(resistance__lte=float(resistance_to))
-    if capacitance_from:
-        parts = parts.filter(capacitance__gte=float(capacitance_from))
-    if capacitance_to:
-        parts = parts.filter(capacitance__lte=float(capacitance_to))
-
-    if stock_from:
-        parts = parts.filter(current_stock__gte=int(stock_from))
-    if stock_to:
-        parts = parts.filter(current_stock__lte=int(stock_to))
-    if below_min:
-        parts = parts.below_minimum()
-
-    return parts, {
+    context = {
         'search': search,
         'component_type': component_type,
-        'voltage_from': voltage_from,
-        'voltage_to': voltage_to,
-        'current_from': current_from,
-        'current_to': current_to,
-        'resistance_from': resistance_from,
-        'resistance_to': resistance_to,
-        'capacitance_from': capacitance_from,
-        'capacitance_to': capacitance_to,
         'stock_from': stock_from,
         'stock_to': stock_to,
-        'below_min': below_min,
+        'stock_state': stock_state,
     }
+
+    for field, prefix in ranges.items():
+        for bound, lookup in (('from', 'gte'), ('to', 'lte')):
+            raw = request.GET.get(f'{prefix}_{bound}', '')
+            context[f'{prefix}_{bound}'] = raw
+            value = _as_number(raw)
+            if value is not None:
+                parts = parts.filter(**{f'{field}__{lookup}': value})
+
+    stock_low = _as_number(stock_from)
+    stock_high = _as_number(stock_to)
+    if stock_low is not None:
+        parts = parts.filter(current_stock__gte=int(stock_low))
+    if stock_high is not None:
+        parts = parts.filter(current_stock__lte=int(stock_high))
+
+    if stock_state == 'below':
+        parts = parts.below_minimum()
+    elif stock_state == 'at_minimum':
+        parts = parts.at_minimum()
+    elif stock_state == 'attention':
+        # Дефицит и «ровно на минимуме» вместе — то, на что стоит смотреть
+        parts = parts.filter(
+            Q(current_stock__lt=F('min_stock')) |
+            Q(min_stock__gt=0, current_stock=F('min_stock'))
+        )
+
+    return parts, context
 
 
 @login_required
@@ -877,6 +932,8 @@ def part_list(request):
     return render(request, 'core/parts/list.html', {
         'parts': paginator.get_page(page),
         'component_types': component_types,
+        'found_count': paginator.count,
+        'filters_active': any(filter_context.values()),
         **filter_context,
     })
 
