@@ -1,0 +1,82 @@
+{% comment %}
+Оформление этикетки ячейки. Общее для печати по одной и пачкой.
+{% endcomment %}
+<style>
+    .label-sheet {
+        width: 43mm;
+        height: 25mm;
+        padding: 1.5mm;
+        box-sizing: border-box;
+        font-family: Arial, sans-serif;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+    /* Чёрный, а не синий: печать термопринтером монохромная, и цвет
+       превращается в серый растр — мелкий текст от этого только бледнеет. */
+    .label-address-bar {
+        text-align: center;
+        font-size: 8.5pt;
+        font-weight: bold;
+        color: #000;
+        margin-bottom: 0.5mm;
+        flex-shrink: 0;
+    }
+    .label-body {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        gap: 1mm;
+    }
+    .label-text-col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        overflow: hidden;
+    }
+    /* В коде ссылка, она занимает 29 модулей вместо 21 у прежнего текста.
+       15 мм — это 4,1 точки принтера на модуль: место под этикеткой всё равно
+       простаивало, а запас на затёртую этикетку лишним не бывает. */
+    .label-qr-col {
+        flex: 0 0 15mm;
+        width: 15mm;
+        height: 15mm;
+        align-self: center;
+    }
+    .label-qr {
+        display: block;
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+    }
+    .label-part-name {
+        font-size: 7pt;
+        font-weight: bold;
+        color: #333;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .label-specs {
+        font-size: 6pt;
+        color: #555;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 0.5mm;
+    }
+    .label-specs-multiline {
+        white-space: normal;
+        line-height: 1.3;
+        max-height: 3.1mm;
+        overflow: hidden;
+        margin-top: 0.7mm;
+    }
+    .label-empty {
+        font-size: 7pt;
+        color: #999;
+        font-style: italic;
+    }
+</style>

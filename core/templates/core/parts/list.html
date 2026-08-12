@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.18.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.19.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -109,10 +109,28 @@
         </div>
         {% endif %}
 
+        {% comment %}
+        Отметки и печать пачкой — отдельной формой: форма фильтров выше
+        отправляет свои поля, вложить одну в другую нельзя.
+        {% endcomment %}
+        <form method="get" action="{% url 'part_labels_batch' %}" id="labelsForm">
+        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+            <button type="submit" class="btn btn-sm btn-outline-dark">
+                <i class="bi bi-tags me-1"></i>Этикетки на отмеченные
+            </button>
+            <a href="{% url 'part_labels_batch' %}?{{ request.GET.urlencode }}" class="btn btn-sm btn-outline-dark">
+                <i class="bi bi-tags me-1"></i>На все отобранные{% if filters_active %} ({{ found_count }}){% endif %}
+            </a>
+        </div>
+
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead class="table-light">
                     <tr>
+                        <th style="width:1%">
+                            <input type="checkbox" class="form-check-input" title="Отметить всё на странице"
+                                   onclick="document.querySelectorAll('#labelsForm .row-check').forEach(c => c.checked = this.checked);">
+                        </th>
                         <th>Артикул</th>
                         <th>Название</th>
                         <th>Тип</th>
@@ -125,6 +143,9 @@
                 <tbody>
                     {% for part in parts %}
                     <tr class="clickable-row {% if part.stock_state == 'below' %}table-danger{% elif part.stock_state == 'at_minimum' %}table-warning{% endif %}" data-href="{% url 'part_detail' part.pk %}">
+                        <td onclick="event.stopPropagation();">
+                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ part.pk }}">
+                        </td>
                         <td class="fw-bold">{{ part.part_number }}</td>
                         <td>{{ part.name }}</td>
                         <td>{{ part.component_type|default:"—" }}</td>
@@ -139,11 +160,12 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="7" class="text-center text-muted py-4">Детали не найдены</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted py-4">Детали не найдены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+        </form>
 
         {% if parts.has_other_pages %}
         <nav>

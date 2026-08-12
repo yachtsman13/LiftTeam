@@ -1971,3 +1971,141 @@ class EquipmentHistoryExportTests(TestCase):
     def test_export_requires_login(self):
         resp = TestClient().get(f'/equipment/{self.equipment.pk}/history/export/')
         self.assertEqual(resp.status_code, 302)
+
+
+class BatchLabelTests(TestCase):
+    """Печать этикеток пачкой: отбор, ограничение, раскладка."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_batch', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.resistor = SparePart.objects.create(
+            part_number='B-RES', name='Резистор', component_type='Резистор', current_stock=5
+        )
+        self.diode = SparePart.objects.create(
+            part_number='B-DIO', name='Диод', component_type='Диод', current_stock=5
+        )
+
+        self.filled = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=1)
+        self.filled.parts.add(self.resistor)
+        self.empty = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=2)
+        StorageCell.objects.create(cabinet_number=2, row_number=1, cell_row=1)
+
+    def _labels(self, url):
+        resp = self.client_http.get(url)
+        self.assertEqual(resp.status_code, 200)
+        return resp, resp.context['labels']
+
+    # --- детали ---
+
+    def test_selected_parts_only(self):
+        _, labels = self._labels(f'/parts/labels/?ids={self.diode.pk}')
+
+        self.assertEqual([item['part'].part_number for item in labels], ['B-DIO'])
+
+    def test_several_selected_parts(self):
+        _, labels = self._labels(f'/parts/labels/?ids={self.diode.pk}&ids={self.resistor.pk}')
+        self.assertEqual(len(labels), 2)
+
+    def test_without_selection_falls_back_to_the_current_filter(self):
+        """Кнопка «на все отобранные» передаёт условия списка, а не номера."""
+        _, labels = self._labels('/parts/labels/?q=Диод')
+
+        self.assertEqual([item['part'].part_number for item in labels], ['B-DIO'])
+
+    def test_without_selection_and_filter_takes_everything(self):
+        _, labels = self._labels('/parts/labels/')
+        self.assertEqual(len(labels), 2)
+
+    def test_garbage_in_ids_is_ignored(self):
+        _, labels = self._labels('/parts/labels/?ids=abc')
+        # мусор отброшен, отбора нет — печатается всё
+        self.assertEqual(len(labels), 2)
+
+    def test_every_label_has_its_own_qr(self):
+        _, labels = self._labels('/parts/labels/')
+        codes = {item['qr_img'] for item in labels}
+
+        self.assertEqual(len(codes), 2)
+        self.assertTrue(all(code for code in codes))
+
+    def test_batch_is_capped(self):
+        from core.views import MAX_LABELS_PER_BATCH
+
+        SparePart.objects.bulk_create([
+            SparePart(part_number=f'CAP-{i:04d}', name='Деталь')
+            for i in range(MAX_LABELS_PER_BATCH + 5)
+        ])
+        _, labels = self._labels('/parts/labels/')
+
+        self.assertEqual(len(labels), MAX_LABELS_PER_BATCH)
+
+    # --- ячейки ---
+
+    def test_whole_cabinet(self):
+        _, labels = self._labels('/storage-cells/labels/?cabinet=1')
+        self.assertEqual({item['cell'].address for item in labels}, {'К1-Р1-Я1', 'К1-Р1-Я2'})
+
+    def test_only_filled_cells(self):
+        _, labels = self._labels('/storage-cells/labels/?cabinet=1&only_filled=1')
+        self.assertEqual([item['cell'].address for item in labels], ['К1-Р1-Я1'])
+
+    def test_cabinet_filter_excludes_other_cabinets(self):
+        _, labels = self._labels('/storage-cells/labels/?cabinet=2')
+        self.assertEqual([item['cell'].address for item in labels], ['К2-Р1-Я1'])
+
+    def test_selected_cells_win_over_cabinet(self):
+        _, labels = self._labels(f'/storage-cells/labels/?ids={self.empty.pk}&cabinet=2')
+        self.assertEqual([item['cell'].address for item in labels], ['К1-Р1-Я2'])
+
+    def test_without_cabinet_nothing_is_printed(self):
+        """Иначе одна опечатка в адресе вывела бы этикетки на все 768 ячеек."""
+        _, labels = self._labels('/storage-cells/labels/')
+        self.assertEqual(labels, [])
+
+    def test_cell_label_keeps_grouping_logic(self):
+        """Пачка и одиночная печать используют одну сборку данных."""
+        second = SparePart.objects.create(
+            part_number='B-RES2', name='Резистор 2', component_type='Резистор'
+        )
+        self.filled.parts.add(second)
+
+        _, labels = self._labels('/storage-cells/labels/?cabinet=1&only_filled=1')
+        self.assertTrue(labels[0]['grouped'])
+        self.assertEqual(labels[0]['group_type'], 'Резистор')
+
+    # --- раскладка и доступ ---
+
+    def test_roll_layout_by_default(self):
+        resp, _ = self._labels('/parts/labels/')
+
+        self.assertEqual(resp.context['layout'], 'roll')
+        self.assertContains(resp, 'size: 43mm 25mm')
+        self.assertContains(resp, 'page-break-after: always')
+
+    def test_a4_layout(self):
+        resp, _ = self._labels('/parts/labels/?layout=a4')
+
+        self.assertEqual(resp.context['layout'], 'a4')
+        self.assertContains(resp, 'size: A4')
+        self.assertNotContains(resp, 'page-break-after: always')
+
+    def test_unknown_layout_falls_back_to_roll(self):
+        resp, _ = self._labels('/parts/labels/?layout=что-то')
+        self.assertEqual(resp.context['layout'], 'roll')
+
+    def test_batch_pages_require_login(self):
+        anon = TestClient()
+        self.assertEqual(anon.get('/parts/labels/').status_code, 302)
+        self.assertEqual(anon.get('/storage-cells/labels/').status_code, 302)
+
+    def test_entry_points_are_on_the_pages(self):
+        parts_page = self.client_http.get('/parts/')
+        grid_page = self.client_http.get('/storage-cells/?cabinet=1')
+
+        self.assertContains(parts_page, '/parts/labels/')
+        self.assertContains(grid_page, '/storage-cells/labels/')

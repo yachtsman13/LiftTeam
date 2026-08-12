@@ -1,0 +1,31 @@
+{% comment %}
+Одна этикетка ячейки. Общая разметка для печати по одной и пачкой.
+Ожидает: cell, cell_parts, qr_img, grouped, group_type, group_values.
+{% endcomment %}
+<div class="label-sheet">
+    <div class="label-address-bar">{{ cell.address }}</div>
+    <div class="label-body">
+        <div class="label-text-col">
+            {% if cell_parts|length == 0 %}
+            <div class="label-empty">Ячейка пуста</div>
+            {% elif cell_parts|length == 1 %}
+            {% with p=cell_parts.0 %}
+            <div class="label-part-name">{{ p.name|truncatechars:26 }}</div>
+            <div class="label-specs">{{ p.specs_display|default:p.component_type }}</div>
+            {% endwith %}
+            {% elif grouped %}
+            <div class="label-part-name">{{ group_type }}</div>
+            <div class="label-specs label-specs-multiline">{{ group_values }}</div>
+            {% else %}
+            {% for p in cell_parts|slice:":3" %}
+            <div class="label-specs">{{ p.name|truncatechars:22 }}{% if p.specs_display %} — {{ p.specs_display }}{% endif %}</div>
+            {% endfor %}
+            {% endif %}
+        </div>
+        <div class="label-qr-col">
+            {% if qr_img %}
+            <img src="{{ qr_img }}" alt="{{ cell.address }}" class="label-qr">
+            {% endif %}
+        </div>
+    </div>
+</div>

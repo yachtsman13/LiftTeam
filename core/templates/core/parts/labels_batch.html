@@ -1,0 +1,86 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Этикетки деталей — LiftTeam v2.19.0{% endblock %}
+
+{% block content %}
+<div class="no-print">
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <h2 class="mb-0"><i class="bi bi-tags me-2"></i>Этикетки деталей: {{ labels|length }}</h2>
+        <div class="d-flex gap-2">
+            <div class="btn-group">
+                <a href="{% querystring layout='roll' %}" class="btn btn-outline-secondary{% if layout == 'roll' %} active{% endif %}">Рулон</a>
+                <a href="{% querystring layout='a4' %}" class="btn btn-outline-secondary{% if layout == 'a4' %} active{% endif %}">Лист A4</a>
+            </div>
+            <button onclick="window.print()" class="btn btn-primary" {% if not labels %}disabled{% endif %}>
+                <i class="bi bi-printer me-2"></i>Печать
+            </button>
+            <a href="{% url 'part_list' %}" class="btn btn-outline-secondary">Назад</a>
+        </div>
+    </div>
+
+    {% if not labels %}
+    <div class="alert alert-warning">
+        Ничего не выбрано. Отметьте детали в списке или задайте фильтр —
+        тогда напечатаются этикетки на всё отобранное.
+    </div>
+    {% elif labels|length == limit %}
+    <div class="alert alert-info">
+        Показаны первые {{ limit }} этикеток. Разбейте печать на части —
+        столько ленты за раз всё равно не заряжают.
+    </div>
+    {% endif %}
+
+    <div class="alert alert-secondary small">
+        {% if layout == 'roll' %}
+        Режим рулона: каждая этикетка уходит отдельной страницей 43×25 мм —
+        так печатает термопринтер. В настройках печати поля должны быть
+        нулевыми, масштаб 100%.
+        {% else %}
+        Режим листа A4: этикетки размещены рядами с пунктиром для резки.
+        Масштаб в настройках печати обязательно 100% — «вписать в страницу»
+        уменьшит этикетки, и QR перестанет считываться.
+        {% endif %}
+    </div>
+</div>
+
+<div class="labels-area">
+    {% for label in labels %}
+    {% include 'core/parts/_label.html' with part=label.part cell=label.cell qr_img=label.qr_img %}
+    {% endfor %}
+</div>
+
+{% include 'core/parts/_label_styles.html' %}
+<style>
+    @media screen {
+        .labels-area {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4mm;
+            background: #e9ecef;
+            padding: 6mm;
+            border-radius: 6px;
+        }
+        .labels-area .label-sheet { background: #fff; border: 1px dashed #999; }
+    }
+    @media print {
+        body { margin: 0; padding: 0; background: white; }
+        .sidebar, .sidebar-toggle, .main-content > *:not(.labels-area), .no-print, nav, .btn { display: none !important; }
+        .main-content { margin-left: 0 !important; padding: 0 !important; }
+
+        {% if layout == 'a4' %}
+        /* Лист: этикетки рядами, пунктир по краю — линия реза */
+        @page { size: A4; margin: 6mm; }
+        .labels-area { display: flex; flex-wrap: wrap; gap: 2mm; }
+        .label-sheet { border: 1px dotted #999; page-break-inside: avoid; }
+        {% else %}
+        /* Рулон: страница размером с этикетку, по одной на страницу.
+           page-break-after у последней снимается, иначе принтер выгоняет
+           лишнюю пустую этикетку в конце пачки. */
+        @page { size: 43mm 25mm; margin: 0; }
+        .labels-area { display: block; }
+        .label-sheet { border: none; page-break-after: always; page-break-inside: avoid; }
+        .label-sheet:last-child { page-break-after: auto; }
+        {% endif %}
+    }
+</style>
+{% endblock %}

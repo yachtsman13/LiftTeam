@@ -1,0 +1,24 @@
+{% comment %}
+Одна этикетка детали. Общая разметка для печати по одной и пачкой —
+чтобы два способа печати не разъехались по виду.
+Ожидает: part, cell, qr_img.
+{% endcomment %}
+<div class="label-sheet">
+    <div class="label-body">
+        <div class="label-info">
+            <div class="label-number">{{ part.part_number }}</div>
+            <div class="label-name">{{ part.name }}</div>
+            <div class="label-specs">
+                {% if part.component_type %}{{ part.component_type }}{% if part.specs_display %} · {% endif %}{% endif %}{{ part.specs_display }}
+            </div>
+            <div class="label-cell">
+                {% if cell %}{{ cell.address }}{% else %}ячейка не назначена{% endif %}
+            </div>
+        </div>
+        {% if qr_img %}
+        <div class="label-qr-wrap">
+            <img src="{{ qr_img }}" alt="QR" class="label-qr">
+        </div>
+        {% endif %}
+    </div>
+</div>

@@ -1,0 +1,76 @@
+{% comment %}
+Оформление этикетки детали. Подключается и страницей печати одной этикетки,
+и страницей пачки — размеры и шрифты должны совпадать до миллиметра,
+иначе одна и та же деталь напечатается по-разному.
+{% endcomment %}
+<style>
+    .label-sheet {
+        width: 43mm;
+        height: 25mm;
+        padding: 1mm 1.5mm;
+        box-sizing: border-box;
+        font-family: Arial, sans-serif;
+        color: #000;
+        display: flex;
+        overflow: hidden;
+    }
+    .label-body {
+        display: flex;
+        align-items: center;
+        gap: 1.5mm;
+        width: 100%;
+    }
+    /* Ширины заданы явно: 23,5 + 1,5 + 15 = 40 мм — вся полезная ширина */
+    .label-info {
+        flex: 0 0 23.5mm;
+        width: 23.5mm;
+        min-width: 0;
+        overflow: hidden;
+    }
+    .label-number {
+        font-size: 9pt;
+        font-weight: bold;
+        line-height: 1.05;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .label-name {
+        font-size: 6pt;
+        line-height: 1.15;
+        margin-top: 0.4mm;
+        /* Три строки: названия деталей часто длиннее одной, а по высоте
+           этикетки место есть — раньше нижние 6 мм пустовали */
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    .label-specs {
+        font-size: 6pt;
+        margin-top: 0.4mm;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .label-cell {
+        font-size: 8pt;
+        font-weight: bold;
+        margin-top: 0.6mm;
+        white-space: nowrap;
+    }
+    /* Обёртка нужна, чтобы размер не зависел от собственных размеров картинки.
+       15 мм: под кодом простаивало 6 мм высоты, а каждый лишний миллиметр —
+       это 4,1 точки принтера на модуль вместо 3,6. */
+    .label-qr-wrap {
+        flex: 0 0 15mm;
+        width: 15mm;
+        height: 15mm;
+    }
+    .label-qr {
+        display: block;
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+    }
+</style>

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.18.0.
+Views для LiftTeam v2.19.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1382,34 +1382,39 @@ def storage_cell_remove_part(request, pk):
     return JsonResponse({'success': True, 'message': f'Деталь {part.part_number} удалена из ячейки {cell.address}'})
 
 
-@login_required
-def storage_cell_label(request, pk):
-    """Печать этикетки ячейки.
+def _cell_label(cell, base_url):
+    """Данные одной этикетки ячейки.
+
     Если все детали в ячейке одного типа (набор номиналов одного типа —
     резисторы, конденсаторы и т.д.), тип указывается один раз, а значения
-    характеристик перечисляются списком. Иначе — построчно название + характеристика."""
-    cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
+    характеристик перечисляются списком. Иначе — построчно название
+    и характеристика.
+    """
     parts = list(cell.parts.all())
-    # Ссылка вместо простого адреса ячейки: сканирование сразу открывает
-    # содержимое, а не показывает строку, которую потом ищут вручную
-    qr_img = generate_qr_image(f"{label_base_url(request)}/c/{cell.pk}/")
-
     component_types = {p.component_type for p in parts if p.component_type}
     grouped = len(parts) > 1 and len(component_types) == 1
-    group_type = None
-    group_values = ''
-    if grouped:
-        group_type = parts[0].component_type
-        group_values = ', '.join(p.specs_display for p in parts if p.specs_display)
 
-    return render(request, 'core/storage_cells/label.html', {
+    return {
         'cell': cell,
         'cell_parts': parts,
-        'qr_img': qr_img,
+        # Ссылка вместо простого адреса: сканирование сразу открывает
+        # содержимое, а не показывает строку, которую потом ищут вручную
+        'qr_img': generate_qr_image(f'{base_url}/c/{cell.pk}/'),
         'grouped': grouped,
-        'group_type': group_type,
-        'group_values': group_values,
-    })
+        'group_type': parts[0].component_type if grouped else None,
+        'group_values': (
+            ', '.join(p.specs_display for p in parts if p.specs_display) if grouped else ''
+        ),
+    }
+
+
+@login_required
+def storage_cell_label(request, pk):
+    """Печать этикетки одной ячейки."""
+    cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
+    return render(
+        request, 'core/storage_cells/label.html', _cell_label(cell, label_base_url(request))
+    )
 
 
 @login_required
@@ -1936,13 +1941,86 @@ def label_base_url(request):
     return configured.rstrip('/') if configured else request.build_absolute_uri('/').rstrip('/')
 
 
+def _part_label(part, base_url):
+    """Данные одной этикетки детали."""
+    return {
+        'part': part,
+        'cell': part.current_cell,
+        'qr_img': generate_qr_image(f'{base_url}/p/{part.pk}/'),
+    }
+
+
 @login_required
 def part_label(request, pk):
     """Этикетка детали — для наклейки на пакет."""
     part = get_object_or_404(SparePart, pk=pk)
-    qr_img = generate_qr_image(f"{label_base_url(request)}/p/{part.pk}/")
-    return render(request, 'core/parts/label.html', {
-        'part': part,
-        'cell': part.current_cell,
-        'qr_img': qr_img,
+    return render(request, 'core/parts/label.html', _part_label(part, label_base_url(request)))
+
+
+# Верхняя граница пачки. Столько этикеток — уже полтора метра ленты; больше
+# за один раз не печатают, а страница с тысячей QR-картинок открывалась бы
+# на планшете минуту и могла не влезть в память.
+MAX_LABELS_PER_BATCH = 200
+
+
+def _batch_layout(request):
+    """Раскладка пачки: рулон (по этикетке на страницу) или лист A4."""
+    return 'a4' if request.GET.get('layout') == 'a4' else 'roll'
+
+
+def _selected_ids(request):
+    """Отмеченные записи из формы списка."""
+    return [value for value in request.GET.getlist('ids') if value.isdigit()]
+
+
+@login_required
+def part_labels_batch(request):
+    """Пачка этикеток деталей: по отмеченным или по всему текущему отбору."""
+    ids = _selected_ids(request)
+    if ids:
+        parts = SparePart.objects.filter(pk__in=ids)
+    else:
+        parts, _ = _filter_parts(request)
+
+    parts = list(parts.prefetch_related('storage_cells').order_by('part_number')[:MAX_LABELS_PER_BATCH])
+    base_url = label_base_url(request)
+
+    return render(request, 'core/parts/labels_batch.html', {
+        'labels': [_part_label(part, base_url) for part in parts],
+        'layout': _batch_layout(request),
+        'limit': MAX_LABELS_PER_BATCH,
+    })
+
+
+@login_required
+def storage_cell_labels_batch(request):
+    """Пачка этикеток ячеек: по отмеченным, либо по кассетнице целиком.
+
+    Кассетница целиком — обычный случай: этикетки клеят на все ячейки сразу,
+    когда собирают новую или переклеивают старые.
+    """
+    ids = _selected_ids(request)
+    cells = StorageCell.objects.prefetch_related('parts')
+
+    if ids:
+        cells = cells.filter(pk__in=ids)
+    else:
+        cabinet = request.GET.get('cabinet', '')
+        cells = cells.filter(cabinet_number=int(cabinet)) if cabinet.isdigit() else cells.none()
+
+    # Пустые ячейки обычно подписывать незачем: адрес и так виден в сетке,
+    # а лента тратится
+    only_filled = request.GET.get('only_filled') == '1'
+    cells = list(cells.order_by('cabinet_number', 'row_number', 'cell_row')[:MAX_LABELS_PER_BATCH])
+    if only_filled:
+        cells = [cell for cell in cells if cell.parts.all()]
+
+    base_url = label_base_url(request)
+
+    return render(request, 'core/storage_cells/labels_batch.html', {
+        'labels': [_cell_label(cell, base_url) for cell in cells],
+        'layout': _batch_layout(request),
+        'only_filled': only_filled,
+        'cabinet': request.GET.get('cabinet', ''),
+        'limit': MAX_LABELS_PER_BATCH,
     })

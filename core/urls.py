@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.18.0
+v2.19.0
 """
 from django.urls import path
 from . import views
@@ -57,6 +57,7 @@ urlpatterns = [
     path('parts/import/', views.part_import, name='part_import'),
     path('parts/export/', views.part_export, name='part_export'),
     path('parts/<int:pk>/label/', views.part_label, name='part_label'),
+    path('parts/labels/', views.part_labels_batch, name='part_labels_batch'),
 
     # Короткие адреса для QR-кодов: чем короче ссылка, тем крупнее модули кода
     path('p/<int:pk>/', views.short_part, name='short_part'),
@@ -68,6 +69,7 @@ urlpatterns = [
     path('storage-cells/', views.storage_cell_grid, name='storage_cell_grid'),
     path('storage-cells/move/', views.storage_cell_move, name='storage_cell_move'),
     path('storage-cells/<int:pk>/label/', views.storage_cell_label, name='storage_cell_label'),
+    path('storage-cells/labels/', views.storage_cell_labels_batch, name='storage_cell_labels_batch'),
     path('storage-cells/<int:pk>/add-part/', views.storage_cell_add_part, name='storage_cell_add_part'),
     path('storage-cells/<int:pk>/remove-part/', views.storage_cell_remove_part, name='storage_cell_remove_part'),
 
