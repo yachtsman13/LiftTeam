@@ -28,7 +28,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        if not messengers.is_configured():
+        if not messengers.max_is_configured():
             self.stderr.write(
                 'Не задан MAX_BOT_TOKEN. Токен выдаёт @MasterBot в MAX '
                 'по команде /create, вписывается в .env (см. DEPLOY.md).'
@@ -37,7 +37,7 @@ class Command(BaseCommand):
 
         try:
             data = messengers.get_max_updates(limit=options['limit'])
-        except messengers.MaxError as error:
+        except messengers.MessengerError as error:
             self.stderr.write(str(error))
             return
 

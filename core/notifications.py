@@ -31,24 +31,47 @@ def staff_recipients():
     return list(_staff().exclude(email='').values_list('email', flat=True))
 
 
-def staff_max_recipients():
-    """Получатели складских оповещений в MAX.
+def _messenger_recipients(enabled, configured, group_chat, id_field,
+                          personal=str, group=str):
+    """Получатели складских оповещений в одном из мессенджеров.
 
     Если задан общий чат, пишем один раз в него: в маленькой конторе всем
     и так интересно, что кончилось, а три одинаковых сообщения подряд —
     это не оповещение, а шум. Иначе — каждому, кто указал свой идентификатор.
     """
-    if not _setting('NOTIFY_MAX', False) or not messengers.is_configured():
+    if not enabled or not configured:
         return []
 
-    group_chat = str(_setting('MAX_GROUP_CHAT_ID', '') or '').strip()
-    if group_chat:
-        return [messengers.format_recipient('chat', group_chat)]
+    chat = str(group_chat or '').strip()
+    if chat:
+        return [group(chat)]
 
     return [
-        messengers.format_recipient('user', max_user_id)
-        for max_user_id in _staff().exclude(max_user_id='').values_list('max_user_id', flat=True)
+        personal(value)
+        for value in _staff().exclude(**{id_field: ''}).values_list(id_field, flat=True)
     ]
+
+
+def staff_max_recipients():
+    return _messenger_recipients(
+        _setting('NOTIFY_MAX', False),
+        messengers.max_is_configured(),
+        _setting('MAX_GROUP_CHAT_ID', ''),
+        'max_user_id',
+        personal=lambda value: messengers.format_recipient('user', value),
+        group=lambda value: messengers.format_recipient('chat', value),
+    )
+
+
+def staff_telegram_recipients():
+    # Приставок «user:»/«chat:» здесь нет: в Telegram и человек, и группа —
+    # это chat_id, и различать их в получателе незачем
+    return _messenger_recipients(
+        _setting('NOTIFY_TELEGRAM', False),
+        messengers.telegram_is_configured(),
+        _setting('TELEGRAM_GROUP_CHAT_ID', ''),
+        'telegram_chat_id',
+    )
 
 
 def queue(event, recipient, subject, body, repair_order=None, part=None,
@@ -138,11 +161,15 @@ def notify_low_stock(part):
         queue('low_stock', email, subject, body, part=part)
         for email in staff_recipients()
     ]
-    # В MAX уходит то же самое, но темой первой строкой: у сообщения в
-    # мессенджере нет отдельного поля темы
-    queued += [
-        queue('low_stock', recipient, subject, f'{subject}\n\n{body}', part=part,
-              channel=Notification.CHANNEL_MAX)
-        for recipient in staff_max_recipients()
-    ]
+    # В мессенджеры уходит то же самое, но темой первой строкой: у сообщения
+    # там нет отдельного поля темы
+    for channel, recipients in (
+        (Notification.CHANNEL_MAX, staff_max_recipients()),
+        (Notification.CHANNEL_TELEGRAM, staff_telegram_recipients()),
+    ):
+        queued += [
+            queue('low_stock', recipient, subject, f'{subject}\n\n{body}',
+                  part=part, channel=channel)
+            for recipient in recipients
+        ]
     return [item for item in queued if item is not None]

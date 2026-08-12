@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Пользователи — LiftTeam v2.23.0{% endblock %}
+{% block title %}Пользователи — LiftTeam v2.24.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -18,6 +18,7 @@
                         <th>ФИО</th>
                         <th>Email</th>
                         <th>MAX</th>
+                        <th>Telegram</th>
                         <th>Роль</th>
                         <th>Статус</th>
                         <th class="text-end">Действия</th>
@@ -30,6 +31,7 @@
                         <td>{{ u.full_name }}</td>
                         <td>{{ u.email|default:"—" }}</td>
                         <td class="text-nowrap">{{ u.max_user_id|default:"—" }}</td>
+                        <td class="text-nowrap">{{ u.telegram_chat_id|default:"—" }}</td>
                         <td><span class="badge bg-{% if u.role == 'admin' %}danger{% elif u.role == 'warehouse' %}warning{% elif u.role == 'accountant' %}info{% else %}primary{% endif %}">{{ u.get_role_display }}</span></td>
                         <td>{% if u.is_active %}<span class="badge bg-success">Активен</span>{% else %}<span class="badge bg-secondary">Неактивен</span>{% endif %}</td>
                         <td class="text-end">
@@ -37,7 +39,7 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="7" class="text-center text-muted py-4">Пользователей не найдено</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted py-4">Пользователей не найдено</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

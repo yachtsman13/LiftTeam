@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.23.0.
+Модели данных для LiftTeam v2.24.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -79,6 +79,9 @@ class Employee(AbstractBaseUser, PermissionsMixin):
     # только по этому номеру и только после того, как тот сам ему написал.
     # Узнать его помогает команда `manage.py max_updates`.
     max_user_id = models.CharField('ID в MAX', max_length=32, blank=True)
+    # То же самое для Telegram. Идентификатор другой: в Telegram и человек,
+    # и группа — это chat_id, приставок вроде «user:» там нет.
+    telegram_chat_id = models.CharField('ID в Telegram', max_length=32, blank=True)
     role = models.CharField('Роль', max_length=20, choices=ROLE_CHOICES, default='repair_manager')
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)
@@ -564,10 +567,15 @@ class Notification(models.Model):
     ]
     CHANNEL_EMAIL = 'email'
     CHANNEL_MAX = 'max'
+    CHANNEL_TELEGRAM = 'telegram'
     CHANNEL_CHOICES = [
         (CHANNEL_EMAIL, 'Почта'),
         (CHANNEL_MAX, 'MAX'),
+        (CHANNEL_TELEGRAM, 'Telegram'),
     ]
+    # Каналы мессенджеров: у них общий порядок настройки и общий вид строки
+    # в очереди, поэтому в нескольких местах их удобно перечислить разом
+    MESSENGER_CHANNELS = (CHANNEL_MAX, CHANNEL_TELEGRAM)
 
     event = models.CharField('Событие', max_length=30, choices=EVENT_CHOICES)
     # Канал определяет и способ отправки, и то, как читать `recipient`:
@@ -614,16 +622,26 @@ class Notification(models.Model):
         Адрес почты понятен сам по себе, а «user:842910» в списке ни о чём
         не говорит: подставляем имя сотрудника, если такой в базе найдётся.
         """
-        if self.channel != self.CHANNEL_MAX:
-            return self.recipient
+        if self.channel == self.CHANNEL_MAX:
+            kind, _, value = self.recipient.partition(':')
+            if kind != 'user':
+                return f'MAX, чат {value}'
+            return self._employee_name('max_user_id', value, 'MAX')
 
-        kind, _, value = self.recipient.partition(':')
-        if kind == 'user':
-            employee = Employee.objects.filter(max_user_id=value).first()
-            if employee:
-                return f'{employee.full_name} (MAX)'
-            return f'MAX, пользователь {value}'
-        return f'MAX, чат {value}'
+        if self.channel == self.CHANNEL_TELEGRAM:
+            # Идентификатор группы в Telegram отрицательный — этим она
+            # и отличается от человека
+            if self.recipient.startswith('-'):
+                return f'Telegram, чат {self.recipient}'
+            return self._employee_name('telegram_chat_id', self.recipient, 'Telegram')
+
+        return self.recipient
+
+    def _employee_name(self, field, value, channel_name):
+        employee = Employee.objects.filter(**{field: value}).first()
+        if employee:
+            return f'{employee.full_name} ({channel_name})'
+        return f'{channel_name}, пользователь {value}'
 
 
 class StockMovement(models.Model):

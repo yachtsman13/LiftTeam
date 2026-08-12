@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.23.0.
+Views для LiftTeam v2.24.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1877,8 +1877,20 @@ def admin_notifications(request):
         'sending_enabled': getattr(settings, 'NOTIFICATIONS_ENABLED', False),
         'clients_enabled': getattr(settings, 'NOTIFY_CLIENTS', False),
         'low_stock_enabled': getattr(settings, 'NOTIFY_LOW_STOCK', True),
-        'max_enabled': getattr(settings, 'NOTIFY_MAX', False) and messengers.is_configured(),
-        'max_configured': messengers.is_configured(),
+        'channels': [
+            {
+                'name': 'MAX',
+                'configured': messengers.max_is_configured(),
+                'enabled': getattr(settings, 'NOTIFY_MAX', False)
+                           and messengers.max_is_configured(),
+            },
+            {
+                'name': 'Telegram',
+                'configured': messengers.telegram_is_configured(),
+                'enabled': getattr(settings, 'NOTIFY_TELEGRAM', False)
+                           and messengers.telegram_is_configured(),
+            },
+        ],
     })
 
 

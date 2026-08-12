@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.23.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.24.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -231,6 +231,21 @@ NOTIFY_MAX = os.getenv('NOTIFY_MAX', 'False').lower() == 'true'
 # Общий чат для складских оповещений. Если задан, сообщение уходит один раз
 # в чат, а не каждому кладовщику отдельно.
 MAX_GROUP_CHAT_ID = os.getenv('MAX_GROUP_CHAT_ID', '')
+
+# --- Мессенджер Telegram -------------------------------------------------
+# Третий канал складских оповещений, устроен так же, как MAX. Токен выдаёт
+# @BotFather по команде /newbot. Пустой токен — канал не используется.
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+
+# Адрес API. Меняется, если Telegram недоступен напрямую и запросы идут
+# через зеркало или локальный Bot API server.
+TELEGRAM_API_URL = os.getenv('TELEGRAM_API_URL', 'https://api.telegram.org')
+
+NOTIFY_TELEGRAM = os.getenv('NOTIFY_TELEGRAM', 'False').lower() == 'true'
+
+# Общая группа для складских оповещений. Если задана, сообщение уходит один
+# раз в неё, а не каждому кладовщику отдельно.
+TELEGRAM_GROUP_CHAT_ID = os.getenv('TELEGRAM_GROUP_CHAT_ID', '')
 
 # Срок гарантии на ремонт, месяцев. Отсчитывается от даты завершения заказа.
 # 0 отключает гарантию: отметки о ней просто не показываются.

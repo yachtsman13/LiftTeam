@@ -2729,6 +2729,189 @@ class MaxDeliveryTests(TestCase):
         connect.assert_not_called()
 
 
+class TelegramTransportTests(TestCase):
+    """Отправка в Telegram: что уходит в сеть и как разбирается ответ."""
+
+    def _fake_urlopen(self, body='{"ok": true, "result": {}}', calls=None):
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+            def read(self_inner):
+                return body.encode('utf-8')
+
+        def _open(req, timeout=None):
+            if calls is not None:
+                calls.append(req)
+            return _Response()
+
+        return _open
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:ABC',
+                       TELEGRAM_API_URL='https://api.telegram.org')
+    def test_token_is_part_of_the_address(self):
+        """У Telegram токен в адресе, а не в заголовке, — в отличие от MAX."""
+        calls = []
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(calls=calls)):
+            messengers.send_telegram_message('842910', 'Дефицит')
+
+        self.assertEqual(
+            calls[0].full_url,
+            'https://api.telegram.org/bot123:ABC/sendMessage',
+        )
+        self.assertEqual(
+            json.loads(calls[0].data.decode()),
+            {'chat_id': '842910', 'text': 'Дефицит'},
+        )
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_group_looks_the_same_as_a_person(self):
+        """В Telegram и человек, и группа — это chat_id."""
+        calls = []
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(calls=calls)):
+            messengers.send_telegram_message('-1001234567890', 'текст')
+
+        self.assertEqual(
+            json.loads(calls[0].data.decode())['chat_id'], '-1001234567890'
+        )
+
+    @override_settings(TELEGRAM_BOT_TOKEN='')
+    def test_without_token_it_refuses(self):
+        with self.assertRaises(messengers.TelegramError):
+            messengers.send_telegram_message('1', 'текст')
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_empty_recipient_is_rejected(self):
+        with self.assertRaises(messengers.TelegramError):
+            messengers.send_telegram_message('  ', 'текст')
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_refusal_inside_a_200_response_is_noticed(self):
+        """«ok: false» приходит и с кодом 200 — например, если бота заблокировали."""
+        body = '{"ok": false, "error_code": 403, "description": "bot was blocked by the user"}'
+        with patch('core.messengers.request.urlopen', self._fake_urlopen(body=body)):
+            with self.assertRaises(messengers.TelegramError) as caught:
+                messengers.send_telegram_message('1', 'текст')
+
+        self.assertIn('bot was blocked', str(caught.exception))
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_unreachable_telegram_becomes_a_readable_reason(self):
+        """Из России Telegram может быть попросту недоступен."""
+        import urllib.error
+
+        with patch('core.messengers.request.urlopen',
+                   side_effect=urllib.error.URLError('Network is unreachable')):
+            with self.assertRaises(messengers.TelegramError) as caught:
+                messengers.send_telegram_message('1', 'текст')
+
+        self.assertIn('Telegram недоступен', str(caught.exception))
+
+
+class TelegramQueueTests(TestCase):
+    """Кому ставится оповещение в Telegram при дефиците детали."""
+
+    def setUp(self):
+        Employee.objects.create_user(
+            username='wh_tg', full_name='Кладовщик', password='pass',
+            role='warehouse', email='wh@example.com', telegram_chat_id='842910',
+        )
+        Employee.objects.create_user(
+            username='wh_notg', full_name='Без Telegram', password='pass',
+            role='warehouse', email='wh2@example.com',
+        )
+        self.part = SparePart.objects.create(
+            part_number='TG-1', name='Резистор', current_stock=10, min_stock=5
+        )
+
+    def _spend(self):
+        self.part.current_stock -= 6
+        self.part.save(update_fields=['current_stock'])
+
+    def _recipients(self):
+        return set(
+            Notification.objects.filter(channel='telegram')
+            .values_list('recipient', flat=True)
+        )
+
+    @override_settings(NOTIFY_TELEGRAM=True, TELEGRAM_BOT_TOKEN='123:ABC',
+                       TELEGRAM_GROUP_CHAT_ID='')
+    def test_shortage_reaches_those_who_gave_their_id(self):
+        self._spend()
+        self.assertEqual(self._recipients(), {'842910'})
+
+    @override_settings(NOTIFY_TELEGRAM=True, TELEGRAM_BOT_TOKEN='123:ABC',
+                       TELEGRAM_GROUP_CHAT_ID='-1001234567890')
+    def test_group_replaces_personal_messages(self):
+        self._spend()
+        self.assertEqual(self._recipients(), {'-1001234567890'})
+
+    @override_settings(NOTIFY_TELEGRAM=False, TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_disabled_channel_queues_nothing(self):
+        self._spend()
+        self.assertEqual(Notification.objects.filter(channel='telegram').count(), 0)
+
+    @override_settings(NOTIFY_TELEGRAM=True, TELEGRAM_BOT_TOKEN='')
+    def test_without_a_token_the_channel_is_silent(self):
+        self._spend()
+        self.assertEqual(Notification.objects.filter(channel='telegram').count(), 0)
+
+    @override_settings(NOTIFY_TELEGRAM=True, TELEGRAM_BOT_TOKEN='123:ABC',
+                       TELEGRAM_GROUP_CHAT_ID='',
+                       NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='-9')
+    def test_channels_do_not_interfere(self):
+        """Оба мессенджера и почта работают одновременно и независимо."""
+        self._spend()
+
+        self.assertEqual(self._recipients(), {'842910'})
+        self.assertEqual(
+            set(Notification.objects.filter(channel='max').values_list('recipient', flat=True)),
+            {'chat:-9'},
+        )
+        self.assertEqual(Notification.objects.filter(channel='email').count(), 2)
+
+
+class TelegramDeliveryTests(TestCase):
+    """Команда отправки: Telegram идёт своим транспортом."""
+
+    def setUp(self):
+        self.message = Notification.objects.create(
+            event='low_stock', channel='telegram', recipient='842910',
+            subject='Дефицит', body='Дефицит\n\nТекст',
+        )
+
+    def _run(self):
+        call_command('send_notifications', stdout=io.StringIO(), stderr=io.StringIO())
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, TELEGRAM_BOT_TOKEN='123:ABC')
+    def test_message_goes_through_telegram_and_not_the_post(self):
+        with patch('core.messengers.send_telegram_message') as send, \
+             patch('core.management.commands.send_notifications.get_connection') as connect:
+            self._run()
+
+        self.message.refresh_from_db()
+
+        send.assert_called_once_with('842910', 'Дефицит\n\nТекст')
+        connect.assert_not_called()
+        self.assertEqual(self.message.status, 'sent')
+
+    @override_settings(NOTIFICATIONS_ENABLED=True, TELEGRAM_BOT_TOKEN='123:ABC',
+                       NOTIFICATIONS_MAX_ATTEMPTS=2)
+    def test_failure_is_recorded_and_retried(self):
+        with patch('core.messengers.send_telegram_message',
+                   side_effect=messengers.TelegramError('Telegram недоступен')):
+            self._run()
+
+        self.message.refresh_from_db()
+
+        self.assertEqual(self.message.status, 'pending')
+        self.assertEqual(self.message.attempts, 1)
+        self.assertIn('Telegram недоступен', self.message.last_error)
+
+
 class MaxRecipientDisplayTests(TestCase):
     """«user:842910» в списке оповещений ни о чём не говорит."""
 
@@ -2757,6 +2940,27 @@ class MaxRecipientDisplayTests(TestCase):
             subject='Дефицит', body='Текст',
         )
         self.assertEqual(note.recipient_display, 'wh@example.com')
+
+    def test_telegram_employee_is_shown_by_name(self):
+        Employee.objects.create_user(
+            username='wh_tg_disp', full_name='Сидоров С.С.', password='pass',
+            role='warehouse', telegram_chat_id='842910',
+        )
+        note = Notification.objects.create(
+            event='low_stock', channel='telegram', recipient='842910',
+            subject='Дефицит', body='Текст',
+        )
+
+        self.assertEqual(note.recipient_display, 'Сидоров С.С. (Telegram)')
+
+    def test_telegram_group_is_told_apart_by_the_minus(self):
+        """Идентификатор группы в Telegram отрицательный."""
+        note = Notification.objects.create(
+            event='low_stock', channel='telegram', recipient='-1001234567890',
+            subject='Дефицит', body='Текст',
+        )
+
+        self.assertIn('чат', note.recipient_display)
 
 
 class NotificationAdminPageTests(TestCase):

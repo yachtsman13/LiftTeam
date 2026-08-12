@@ -16,6 +16,15 @@ from django.utils import timezone
 from core import messengers
 from core.models import Notification
 
+# Чем отправлять сообщение каждого канала мессенджера. Почта устроена иначе:
+# ей нужно соединение, общее на всю пачку, поэтому она обрабатывается отдельно
+MESSENGERS = {
+    Notification.CHANNEL_MAX:
+        lambda item: messengers.send_max_message(item.recipient, item.body),
+    Notification.CHANNEL_TELEGRAM:
+        lambda item: messengers.send_telegram_message(item.recipient, item.body),
+}
+
 
 class Command(BaseCommand):
     help = 'Отправляет оповещения из очереди'
@@ -72,8 +81,9 @@ class Command(BaseCommand):
             # открывать SMTP-сессию на каждое письмо — лишние секунды каждый
             # раз, а если писем в пачке нет вовсе, она и не понадобится
             for item in queued:
-                if item.channel == Notification.CHANNEL_MAX:
-                    ok = self._deliver(item, max_attempts, self._send_max)
+                messenger = MESSENGERS.get(item.channel)
+                if messenger is not None:
+                    ok = self._deliver(item, max_attempts, messenger)
                 else:
                     if connection is None:
                         connection = get_connection()
@@ -103,9 +113,6 @@ class Command(BaseCommand):
             to=[item.recipient],
             connection=connection,
         ).send(fail_silently=False)
-
-    def _send_max(self, item):
-        messengers.send_max_message(item.recipient, item.body)
 
     def _deliver(self, item, max_attempts, send):
         item.attempts += 1
