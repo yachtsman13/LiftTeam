@@ -1464,3 +1464,72 @@ class EquipmentLabelLinkTests(TestCase):
 
         self.assertEqual(resp.status_code, 200)
         barcode.assert_called_once_with('БУАД-1234')
+
+
+class OrderLabelLinkTests(TestCase):
+    """Этикетка оборудования в заказе: ссылка в QR вместо текста «LT-…/1»."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_olbl', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='Заказчик')
+        model = EquipmentModel.objects.create(name='БУАД-3')
+        self.order = RepairOrder.objects.create(client=client_obj)
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='БУАД-1234'),
+        )
+
+    def _label_url(self):
+        return f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/'
+
+    def test_short_url_opens_the_order(self):
+        resp = self.client_http.get(f'/o/{self.order.pk}/')
+        self.assertRedirects(resp, f'/repair-orders/{self.order.pk}/')
+
+    def test_short_url_requires_login(self):
+        resp = TestClient().get(f'/o/{self.order.pk}/')
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_short_url_404_for_missing_order(self):
+        self.assertEqual(self.client_http.get('/o/999999/').status_code, 404)
+
+    def test_label_encodes_link_to_the_order(self):
+        with patch('core.views.generate_qr_image') as qr:
+            qr.return_value = 'data:image/png;base64,x'
+            self.client_http.get(self._label_url())
+
+        encoded = qr.call_args[0][0]
+        self.assertTrue(encoded.endswith(f'/o/{self.order.pk}/'), encoded)
+        # Прежнее содержимое кода — «LT-2026-08-001/1» — больше не годится:
+        # сканирование им ничего не открывало
+        self.assertNotIn(self.order.order_number, encoded)
+
+    @override_settings(LABEL_BASE_URL='http://192.168.1.50')
+    def test_label_uses_configured_base_url(self):
+        with patch('core.views.generate_qr_image') as qr:
+            qr.return_value = 'data:image/png;base64,x'
+            self.client_http.get(self._label_url())
+
+        self.assertEqual(qr.call_args[0][0], f'http://192.168.1.50/o/{self.order.pk}/')
+
+    def test_position_still_printed_on_the_label(self):
+        """Позиция в ссылку не входит, поэтому она обязана остаться на бумаге —
+        в строке с номером заказа, вида «LT-2026-08-001/1»."""
+        resp = self.client_http.get(self._label_url())
+        content = resp.content.decode()
+
+        self.assertContains(resp, self.order.order_number)
+        self.assertIn('/1</span>', content)
+
+    def test_logo_has_no_inner_circle(self):
+        """У логотипа осталась одна окружность: внутренняя поджимала QR."""
+        content = self.client_http.get(self._label_url()).content.decode()
+        logo = content[content.index('<svg class="label-logo"'):content.index('</svg>')]
+
+        self.assertEqual(logo.count('<circle'), 1)

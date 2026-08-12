@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.12.0.
+Views для LiftTeam v2.13.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1226,18 +1226,17 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     roe = get_object_or_404(RepairOrderEquipment, pk=roe_pk, repair_order=order)
     position = next(i for i, r in enumerate(roe_list, start=1) if r.pk == roe.pk)
 
-    # Компактная строка вместо JSON: только заглавные, цифры и '-', '/'.
-    # QR кодирует такой набор вдвое плотнее, чем произвольный текст, и код
-    # укладывается в минимальный размер 21x21 модуль — при печати 9 мм это
-    # даёт крупные модули, что решает, считается ли этикетка после месяца
-    # на складе. Заодно строка читается человеком, если QR не сканируется.
-    qr_img = generate_qr_image(f'{order.order_number}/{position}')
+    # Ссылка на заказ вместо текста «LT-2026-08-001/1». Текст читался
+    # человеком, но сканирование им ничего не давало: заказ всё равно искали
+    # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
+    # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому под него
+    # освобождено место: у логотипа убран внутренний круг, а сам он увеличен.
+    qr_img = generate_qr_image(f'{label_base_url(request)}/o/{order.pk}/')
 
     return render(request, 'core/repair_orders/equipment_label.html', {
         'order': order,
         'roe': roe,
         'position': position,
-        'total': len(roe_list),
         'qr_img': qr_img,
     })
 
@@ -1679,6 +1678,18 @@ def short_cell(request, pk):
     Открывает сетку на нужной кассетнице и сразу показывает содержимое ячейки."""
     cell = get_object_or_404(StorageCell, pk=pk)
     return redirect(f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet_number}&open_cell={cell.pk}")
+
+
+@login_required
+def short_order(request, pk):
+    """Короткий адрес заказа для QR: /o/<id>/
+
+    Ведёт в карточку заказа. Номер позиции в ссылку не входит: он крупно
+    напечатан на самой этикетке, а каждый лишний символ — это модули кода,
+    которых на 43x25 мм и так впритык.
+    """
+    get_object_or_404(RepairOrder, pk=pk)
+    return redirect('repair_order_detail', pk=pk)
 
 
 @login_required

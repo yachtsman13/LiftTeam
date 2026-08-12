@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.12.0{% endblock %}
+{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.13.0{% endblock %}
 
 {% block content %}
 <div class="label-container">
@@ -14,7 +14,6 @@
                 <div class="label-model">{{ roe.equipment.model.name }}</div>
                 <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
                 <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
-                <div class="label-of-total">оборудование {{ position }} из {{ total }}</div>
             </div>
 
             {% comment %}
@@ -25,25 +24,41 @@
             {% endcomment %}
             <div class="label-logo-wrap">
             <svg class="label-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="100" cy="100" r="94" fill="none" stroke="#000" stroke-width="4"/>
-                <circle cx="100" cy="100" r="78" fill="none" stroke="#000" stroke-width="2"/>
+                {% comment %}
+                    Внутренней окружности нет: она вплотную подходила к QR
+                    и на термопринтере грозила слиться с его крайними модулями,
+                    а место под код нужнее, чем вторая линия.
+                {% endcomment %}
+                {% comment %}
+                    Окружность r=90, а не 94: при 94 она вплотную подходила
+                    к краю блока и на этикетке казалась приклеенной к строке
+                    с телефонами. Теперь по 0,7 мм воздуха сверху и снизу.
+                {% endcomment %}
+                <circle cx="100" cy="100" r="90" fill="none" stroke="#000" stroke-width="4"/>
 
-                <path id="logoTop" d="M 44.7 34.1 A 86 86 0 0 1 155.3 34.1" fill="none"/>
+                {% comment %}
+                    Дуги надписей опущены с r=86 до r=78. Буквы растут от линии
+                    наружу, и при 86 верхушки букв пересекали окружность —
+                    название сливалось с ней в одну кашу. Теперь между ними
+                    остаётся зазор.
+                {% endcomment %}
+                <path id="logoTop" d="M 49.9 40.2 A 78 78 0 0 1 150.1 40.2" fill="none"/>
                 <text class="label-logo-text">
                     <textPath href="#logoTop" startOffset="50%" text-anchor="middle">LIFT TEAM</textPath>
                 </text>
 
-                <path id="logoBottom" d="M 44.7 165.9 A 86 86 0 0 0 155.3 165.9" fill="none"/>
+                <path id="logoBottom" d="M 49.9 159.8 A 78 78 0 0 0 150.1 159.8" fill="none"/>
                 <text class="label-logo-text">
                     <textPath href="#logoBottom" startOffset="50%" text-anchor="middle">LIFTTEAM.RU</textPath>
                 </text>
 
                 {% comment %}
-                    Сторона 108 из 200 — максимум, что помещается во внутреннюю
-                    окружность r=78: половина диагонали квадрата 108 равна 76,4.
+                    Сторона 110 из 200: половина диагонали равна 77,8, а
+                    внутренний край надписей проходит примерно по r=79,5 —
+                    код подходит к буквам вплотную, но не задевает их.
                 {% endcomment %}
                 {% if qr_img %}
-                <image href="{{ qr_img }}" x="46" y="46" width="108" height="108"/>
+                <image href="{{ qr_img }}" x="45" y="45" width="110" height="110"/>
                 {% endif %}
             </svg>
             </div>
@@ -92,14 +107,14 @@
         font-weight: bold;
         line-height: 1;
         border-bottom: 0.25mm solid #000;
-        padding-bottom: 0.3mm;
+        padding-bottom: 0.15mm;
         flex-shrink: 0;
         white-space: nowrap;
     }
     /* Номер позиции вынесен в ту же строку, что и номер заказа: по одной
        строке сразу видно и заказ, и какая это единица оборудования. */
     .label-position {
-        font-size: 10pt;
+        font-size: 9pt;
     }
     .label-body {
         display: flex;
@@ -110,11 +125,12 @@
         padding-top: 0.4mm;
     }
     /* Ширины заданы явно: при flex: 1 колонка не сжималась под содержимое
-       и выталкивала логотип за край этикетки. 21 + 1 + 17 = 39 мм при
-       полезной ширине 40 мм. */
+       и выталкивала логотип за край этикетки. 20 + 1 + 18.6 = 39.6 мм при
+       полезной ширине 40 мм. Текстовая колонка ужата в пользу логотипа:
+       ссылке в коде нужны модули покрупнее, чем прежней короткой строке. */
     .label-info {
-        flex: 0 0 21mm;
-        width: 21mm;
+        flex: 0 0 20mm;
+        width: 20mm;
         min-width: 0;
         overflow: hidden;
         display: flex;
@@ -135,14 +151,18 @@
         text-overflow: ellipsis;
     }
     .label-date { font-size: 5.5pt; }
-    .label-of-total { font-size: 5pt; }
     /* SVG как flex-элемент резервирует в раскладке ширину из viewBox,
        а не заданную в CSS, и выталкивает соседей за край. Обёртка обычным
        блоком делает размер предсказуемым. */
+    /* Логотип ровно по высоте средней полосы, не больше. Если задать больше,
+       он не обрежется, а вылезет вверх и вниз (align-items: center) и наедет
+       на строку с телефонами — именно так и было при 18,6 мм в полосе 17 мм.
+       Размер здесь напрямую задаёт размер модуля QR, поэтому под него отыграна
+       высота у строки с номером заказа. */
     .label-logo-wrap {
-        flex: 0 0 16.4mm;
-        width: 16.4mm;
-        height: 16.4mm;
+        flex: 0 0 17.4mm;
+        width: 17.4mm;
+        height: 17.4mm;
         overflow: hidden;
     }
     .label-logo {
@@ -150,9 +170,12 @@
         width: 100%;
         height: 100%;
     }
+    /* 11px вместо 13: при 13 верхушки букв доходили до r≈87,3 при внутреннем
+       крае окружности 88 — на печати это выглядело как слипшиеся линии.
+       При 11 буквы кончаются на r≈86, и зазор виден. */
     .label-logo-text {
         font-family: Arial, sans-serif;
-        font-size: 13px;
+        font-size: 11px;
         font-weight: bold;
         fill: #000;
         letter-spacing: 0.5px;
@@ -162,7 +185,7 @@
         font-size: 4.5pt;
         line-height: 1;
         flex-shrink: 0;
-        padding-top: 0.2mm;
+        padding-top: 0.4mm;
     }
 </style>
 {% endblock %}
