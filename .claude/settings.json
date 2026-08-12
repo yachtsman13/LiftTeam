@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install -r requirements.txt)",
+      "Bash(python manage.py test)",
+      "Bash(python manage.py test *)",
+      "Bash(python manage.py check)",
+      "Bash(python manage.py check --deploy *)",
+      "Bash(python manage.py migrate)",
+      "Bash(python manage.py migrate *)",
+      "Bash(python manage.py makemigrations *)",
+      "Bash(python manage.py showmigrations *)",
+      "Bash(python manage.py init_cells *)",
+      "Bash(python manage.py create_admin *)",
+      "Bash(python manage.py backup_db *)",
+      "Bash(python -m py_compile *)",
+      "Bash(python -c *)",
+      "Bash(pip list *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(bash update_version.sh *)",
+      "Bash(bash -n deploy/*.sh)"
+    ]
+  }
+}
