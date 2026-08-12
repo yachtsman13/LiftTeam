@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оборудование — LiftTeam v2.8.0{% endblock %}
+{% block title %}Оборудование — LiftTeam v2.9.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -56,11 +56,11 @@
         <nav>
             <ul class="pagination justify-content-center">
                 {% if equipment.has_previous %}
-                <li class="page-item"><a class="page-link" href="?page={{ equipment.previous_page_number }}&q={{ search }}">←</a></li>
+                <li class="page-item"><a class="page-link" href="{% querystring page=equipment.previous_page_number %}">←</a></li>
                 {% endif %}
                 <li class="page-item active"><span class="page-link">{{ equipment.number }} / {{ equipment.paginator.num_pages }}</span></li>
                 {% if equipment.has_next %}
-                <li class="page-item"><a class="page-link" href="?page={{ equipment.next_page_number }}&q={{ search }}">→</a></li>
+                <li class="page-item"><a class="page-link" href="{% querystring page=equipment.next_page_number %}">→</a></li>
                 {% endif %}
             </ul>
         </nav>

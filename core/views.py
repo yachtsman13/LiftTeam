@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.8.0.
+Views для LiftTeam v2.9.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -12,8 +12,9 @@ from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.contrib import messages
 from django.db.models import Q, Sum, Count, F
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.core.paginator import Paginator
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -31,7 +32,10 @@ from .forms import (
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm
 )
-from .utils import generate_barcode_image, generate_qr_image
+from .utils import (
+    generate_barcode_image, generate_qr_image,
+    build_workbook, xlsx_response, excel_datetime,
+)
 from .decorators import role_required
 from . import updater
 
@@ -99,7 +103,7 @@ def dashboard(request):
     debtors = RepairOrder.objects.filter(
         payment_status__in=['unpaid', 'partially_paid']
     ).select_related('client')
-    total_debt = sum(order.total_repair_cost for order in debtors)
+    total_debt = _total_debt(debtors)
 
     context = {
         'total_orders': total_orders,
@@ -630,10 +634,8 @@ def part_export(request):
     """Экспорт радиодеталей в Excel (с учётом текущих фильтров списка)."""
     parts, _ = _filter_parts(request)
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = 'Радиодетали'
-
+    # Заголовки — имена полей, а не русские подписи: этот же файл принимает
+    # импорт, и переименование колонок разорвало бы выгрузку и загрузку
     headers = [
         'part_number', 'name', 'component_type',
         'resistance', 'resistance_unit',
@@ -644,17 +646,12 @@ def part_export(request):
         'min_stock', 'current_stock', 'lead_time_days',
         'preferred_supplier', 'description',
     ]
-    ws.append(headers)
-
-    for part in parts.order_by('part_number'):
-        ws.append([getattr(part, field) for field in headers])
-
-    response = HttpResponse(
-        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-    response['Content-Disposition'] = 'attachment; filename="spare_parts.xlsx"'
-    wb.save(response)
-    return response
+    rows = [
+        [getattr(part, field) for field in headers]
+        for part in parts.order_by('part_number')
+    ]
+    wb = build_workbook('Радиодетали', headers, rows)
+    return xlsx_response(wb, 'spare_parts.xlsx')
 
 
 @login_required
@@ -1164,31 +1161,78 @@ def reports(request):
     return render(request, 'core/reports/index.html')
 
 
+def _purchase_plan_parts():
+    """Детали ниже минимального остатка — общее для отчёта и его выгрузки."""
+    return (
+        SparePart.objects
+        .filter(current_stock__lt=F('min_stock'))
+        .prefetch_related('storage_cells')
+        .order_by('part_number')
+    )
+
+
 @login_required
 def report_purchase_plan(request):
     """План закупок — детали ниже минимального остатка."""
-    parts = SparePart.objects.filter(current_stock__lt=F('min_stock')).order_by('part_number')
-    return render(request, 'core/reports/purchase_plan.html', {'parts': parts})
+    return render(request, 'core/reports/purchase_plan.html', {
+        'parts': _purchase_plan_parts(),
+    })
+
+
+@login_required
+def report_purchase_plan_export(request):
+    """План закупок в Excel — файл отправляют поставщику."""
+    headers = [
+        'Артикул', 'Название', 'Тип', 'Характеристики',
+        'Остаток', 'Мин. остаток', 'Не хватает',
+        'Срок поставки, дней', 'Поставщик', 'Ячейка',
+    ]
+    rows = [
+        [
+            part.part_number, part.name, part.component_type, part.specs_display,
+            part.current_stock, part.min_stock, part.stock_deficit,
+            part.lead_time_days, part.preferred_supplier,
+            part.current_cell.address if part.current_cell else '',
+        ]
+        for part in _purchase_plan_parts()
+    ]
+    wb = build_workbook('План закупок', headers, rows)
+    return xlsx_response(wb, f'План закупок {timezone.localdate():%Y-%m-%d}.xlsx')
+
+
+def _filter_movements(request):
+    """Фильтрация движений склада (общая для журнала и его выгрузки)."""
+    part_id = request.GET.get('part', '')
+    movement_type = request.GET.get('type', '')
+    date_from = request.GET.get('date_from', '')
+    date_to = request.GET.get('date_to', '')
+
+    movements = StockMovement.objects.select_related('part', 'repair_order', 'created_by')
+
+    # Значения приходят из адресной строки, и её правят руками: нечисловой
+    # номер детали или дата вроде «вчера» роняли бы страницу с ошибкой базы,
+    # поэтому неразобранное значение просто не применяется как фильтр.
+    if part_id.isdigit():
+        movements = movements.filter(part_id=int(part_id))
+    if movement_type in dict(StockMovement.MOVEMENT_TYPE_CHOICES):
+        movements = movements.filter(movement_type=movement_type)
+    if parse_date(date_from):
+        movements = movements.filter(movement_date__date__gte=date_from)
+    if parse_date(date_to):
+        movements = movements.filter(movement_date__date__lte=date_to)
+
+    return movements.order_by('-movement_date'), {
+        'part_id': part_id,
+        'movement_type': movement_type,
+        'date_from': date_from,
+        'date_to': date_to,
+    }
 
 
 @login_required
 def report_stock_movements(request):
     """Журнал движений запчастей."""
-    movements = StockMovement.objects.select_related('part', 'repair_order').order_by('-movement_date')
-
-    part_id = request.GET.get('part')
-    movement_type = request.GET.get('type')
-    date_from = request.GET.get('date_from')
-    date_to = request.GET.get('date_to')
-
-    if part_id:
-        movements = movements.filter(part_id=part_id)
-    if movement_type:
-        movements = movements.filter(movement_type=movement_type)
-    if date_from:
-        movements = movements.filter(movement_date__date__gte=date_from)
-    if date_to:
-        movements = movements.filter(movement_date__date__lte=date_to)
+    movements, filter_context = _filter_movements(request)
 
     paginator = Paginator(movements, 50)
     page = request.GET.get('page')
@@ -1197,20 +1241,98 @@ def report_stock_movements(request):
     return render(request, 'core/reports/stock_movements.html', {
         'movements': paginator.get_page(page),
         'parts_list': parts_list,
+        'movement_types': StockMovement.MOVEMENT_TYPE_CHOICES,
+        **filter_context,
     })
+
+
+@login_required
+def report_stock_movements_export(request):
+    """Журнал движений в Excel — с учётом фильтров, выставленных на странице."""
+    movements, _ = _filter_movements(request)
+
+    headers = [
+        'Дата', 'Артикул', 'Название', 'Тип', 'Количество',
+        'Документ', 'Заказ', 'Сотрудник', 'Примечания',
+    ]
+    rows = [
+        [
+            excel_datetime(m.movement_date),
+            m.part.part_number, m.part.name,
+            m.get_movement_type_display(), m.quantity,
+            m.document_number,
+            m.repair_order.order_number if m.repair_order else '',
+            m.created_by.full_name if m.created_by else '',
+            m.notes,
+        ]
+        for m in movements
+    ]
+    wb = build_workbook('Движения', headers, rows)
+    return xlsx_response(wb, f'Журнал движений {timezone.localdate():%Y-%m-%d}.xlsx')
+
+
+def _debtor_orders():
+    """Неоплаченные и частично оплаченные заказы — общее для отчёта и выгрузки."""
+    return (
+        RepairOrder.objects
+        .filter(payment_status__in=['unpaid', 'partially_paid'])
+        .select_related('client')
+        .prefetch_related('order_equipments__equipment__model')
+        .order_by('-date_received')
+    )
+
+
+def _total_debt(orders):
+    """Сумма долга одним запросом.
+
+    Складываем стоимости всех единиц оборудования в отобранных заказах: обход
+    заказов в цикле давал бы отдельный запрос на каждый, а должников
+    в конце месяца бывает много.
+    """
+    return orders.aggregate(total=Sum('order_equipments__repair_cost'))['total'] or 0
 
 
 @login_required
 def report_debtors(request):
     """Задолженности по заказам."""
-    orders = RepairOrder.objects.filter(
-        payment_status__in=['unpaid', 'partially_paid']
-    ).select_related('client').prefetch_related('order_equipments').order_by('-date_received')
-    total_debt = sum(order.total_repair_cost for order in orders)
+    orders = _debtor_orders()
     return render(request, 'core/reports/debtors.html', {
         'orders': orders,
-        'total_debt': total_debt,
+        'total_debt': _total_debt(orders),
     })
+
+
+@login_required
+def report_debtors_export(request):
+    """Задолженности в Excel — для сверки с бухгалтерией."""
+    orders = _debtor_orders()
+
+    headers = [
+        '№ заказа', 'Дата приёма', 'Заказчик', 'ИНН', 'Оборудование',
+        'Статус ремонта', 'Статус оплаты', '№ счёта', 'Дата счёта', 'Сумма, ₽',
+    ]
+    rows = [
+        [
+            order.order_number,
+            excel_datetime(order.date_received),
+            order.client.name,
+            order.client.inn,
+            ', '.join(str(roe.equipment) for roe in order.order_equipments.all()),
+            order.get_status_display(),
+            order.get_payment_status_display(),
+            order.invoice_number,
+            order.invoice_date,
+            order.total_repair_cost,
+        ]
+        for order in orders
+    ]
+    # Итог в самой книге: иначе бухгалтеру пришлось бы складывать столбец
+    # вручную, а именно эта цифра из отчёта и нужна
+    if rows:
+        rows.append(['Итого'] + [''] * (len(headers) - 2) + [_total_debt(orders)])
+
+    wb = build_workbook('Задолженности', headers, rows)
+    return xlsx_response(wb, f'Задолженности {timezone.localdate():%Y-%m-%d}.xlsx')
 
 
 # ==================== AJAX: Создание из формы заказа ====================

@@ -21,7 +21,7 @@ from django.urls import resolve
 
 from .models import (
     Client as ClientModel, Employee, Equipment, EquipmentModel, RepairOrder,
-    RepairOrderEquipment, SparePart, StorageCell,
+    RepairOrderEquipment, SparePart, StockMovement, StorageCell,
 )
 
 
@@ -797,3 +797,193 @@ class BackupRestoreTests(TestCase):
 
         with self.assertRaises(CommandError):
             call_command('restore_db', str(corrupted), yes=True, verbosity=0)
+
+
+class ReportExportTests(TestCase):
+    """Выгрузка отчётов в Excel: состав строк, учёт фильтров, итог по долгам."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_rep', full_name='Админ отчётов', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def _sheet(self, url):
+        resp = self.client_http.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('spreadsheetml', resp['Content-Type'])
+        return openpyxl.load_workbook(io.BytesIO(resp.content)).active
+
+    def _rows(self, ws):
+        """Строки листа без шапки, в виде словарей по названиям колонок."""
+        headers = [c.value for c in ws[1]]
+        return [
+            dict(zip(headers, [c.value for c in row]))
+            for row in ws.iter_rows(min_row=2)
+        ]
+
+    # --- План закупок ---
+
+    def test_purchase_plan_export_lists_only_parts_below_minimum(self):
+        SparePart.objects.create(part_number='LOW-1', name='Не хватает', current_stock=1, min_stock=5)
+        SparePart.objects.create(part_number='OK-1', name='В норме', current_stock=10, min_stock=5)
+
+        rows = self._rows(self._sheet('/reports/purchase-plan/export/'))
+
+        self.assertEqual([r['Артикул'] for r in rows], ['LOW-1'])
+        self.assertEqual(rows[0]['Не хватает'], 4)
+
+    def test_purchase_plan_export_shows_cell_address(self):
+        part = SparePart.objects.create(part_number='LOW-2', name='Деталь', current_stock=0, min_stock=3)
+        cell = StorageCell.objects.create(cabinet_number=1, row_number=2, cell_row=3)
+        cell.parts.add(part)
+
+        rows = self._rows(self._sheet('/reports/purchase-plan/export/'))
+        self.assertEqual(rows[0]['Ячейка'], 'К1-Р2-Я3')
+
+    def test_purchase_plan_export_requires_login(self):
+        resp = TestClient().get('/reports/purchase-plan/export/')
+        self.assertEqual(resp.status_code, 302)
+
+    # --- Журнал движений ---
+
+    def test_movements_export_writes_timezone_aware_dates(self):
+        """Регрессия: openpyxl отказывается записывать дату с часовым поясом,
+        а все движения хранятся именно такими."""
+        part = SparePart.objects.create(part_number='MOV-1', name='Деталь', current_stock=5)
+        StockMovement.objects.create(
+            part=part, quantity=3, movement_type='incoming',
+            notes='Первый приход', created_by=self.admin
+        )
+
+        rows = self._rows(self._sheet('/reports/stock-movements/export/'))
+
+        self.assertEqual(len(rows), 1)
+        self.assertIsNotNone(rows[0]['Дата'])
+        self.assertEqual(rows[0]['Тип'], 'Приход')
+        self.assertEqual(rows[0]['Сотрудник'], 'Админ отчётов')
+        self.assertEqual(rows[0]['Примечания'], 'Первый приход')
+
+    def test_movements_export_respects_type_filter(self):
+        part = SparePart.objects.create(part_number='MOV-2', name='Деталь', current_stock=5)
+        StockMovement.objects.create(part=part, quantity=1, movement_type='incoming')
+        StockMovement.objects.create(part=part, quantity=2, movement_type='outgoing')
+
+        rows = self._rows(self._sheet('/reports/stock-movements/export/?type=outgoing'))
+
+        self.assertEqual([r['Количество'] for r in rows], [2])
+
+    def test_movements_export_respects_part_filter(self):
+        first = SparePart.objects.create(part_number='MOV-3', name='Первая')
+        second = SparePart.objects.create(part_number='MOV-4', name='Вторая')
+        StockMovement.objects.create(part=first, quantity=1, movement_type='incoming')
+        StockMovement.objects.create(part=second, quantity=1, movement_type='incoming')
+
+        rows = self._rows(self._sheet(f'/reports/stock-movements/export/?part={first.pk}'))
+        self.assertEqual([r['Артикул'] for r in rows], ['MOV-3'])
+
+    def test_movement_filters_ignore_unparsable_values(self):
+        """Адрес правят руками; мусор в фильтре не должен ронять страницу."""
+        part = SparePart.objects.create(part_number='MOV-5', name='Деталь')
+        StockMovement.objects.create(part=part, quantity=1, movement_type='incoming')
+
+        page = self.client_http.get('/reports/stock-movements/?part=abc&date_from=вчера&type=что-то')
+        self.assertEqual(page.status_code, 200)
+
+        rows = self._rows(self._sheet('/reports/stock-movements/export/?part=abc&date_from=вчера'))
+        self.assertEqual(len(rows), 1)
+
+    # --- Задолженности ---
+
+    def _debtor_order(self, cost, payment_status='unpaid'):
+        client_obj = ClientModel.objects.create(name=f'Должник {cost}')
+        order = RepairOrder.objects.create(client=client_obj, payment_status=payment_status)
+        model = EquipmentModel.objects.create(name=f'Модель {cost}')
+        equipment = Equipment.objects.create(model=model, serial_number=f'SN-{cost}')
+        RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=equipment, repair_cost=cost
+        )
+        return order
+
+    def test_debtors_export_excludes_paid_orders(self):
+        self._debtor_order(1000)
+        self._debtor_order(2000, payment_status='paid')
+
+        rows = self._rows(self._sheet('/reports/debtors/export/'))
+
+        # одна строка долга плюс строка «Итого»
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(float(rows[0]['Сумма, ₽']), 1000.0)
+
+    def test_debtors_export_ends_with_total(self):
+        self._debtor_order(1500)
+        self._debtor_order(2500, payment_status='partially_paid')
+
+        rows = self._rows(self._sheet('/reports/debtors/export/'))
+        total_row = rows[-1]
+
+        self.assertEqual(total_row['№ заказа'], 'Итого')
+        self.assertEqual(float(total_row['Сумма, ₽']), 4000.0)
+
+    def test_debtors_export_is_empty_without_debts(self):
+        ws = self._sheet('/reports/debtors/export/')
+        self.assertEqual(ws.max_row, 1)  # только шапка, без строки «Итого»
+
+    def test_report_pages_offer_export(self):
+        self._debtor_order(100)
+        SparePart.objects.create(part_number='LOW-3', name='Деталь', current_stock=0, min_stock=1)
+
+        for url in ('/reports/purchase-plan/', '/reports/stock-movements/', '/reports/debtors/'):
+            with self.subTest(url=url):
+                resp = self.client_http.get(url)
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn('export/', resp.content.decode())
+
+    def test_total_debt_matches_sum_of_orders(self):
+        """Итог считается одним запросом — он должен совпадать с суммой по заказам."""
+        from core.views import _debtor_orders, _total_debt
+
+        self._debtor_order(700)
+        self._debtor_order(300, payment_status='partially_paid')
+
+        orders = _debtor_orders()
+        self.assertEqual(
+            _total_debt(orders),
+            sum(order.total_repair_cost for order in orders)
+        )
+
+
+class PaginationFilterTests(TestCase):
+    """Переход на следующую страницу не должен терять выставленные фильтры."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_pag', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def test_parts_pagination_keeps_voltage_filter(self):
+        """Регрессия: ссылка на следующую страницу собиралась вручную и не
+        включала фильтры по напряжению, току и остатку — на второй странице
+        показывались детали, не проходящие фильтр."""
+        for i in range(30):
+            SparePart.objects.create(part_number=f'PAG-{i:03d}', name='Деталь', voltage=12)
+
+        resp = self.client_http.get('/parts/?voltage_from=5')
+        content = resp.content.decode()
+
+        self.assertIn('page=2', content)
+        self.assertIn('voltage_from=5', content)
+
+    def test_movements_pagination_keeps_date_filter(self):
+        part = SparePart.objects.create(part_number='PAG-MOV', name='Деталь')
+        for _ in range(60):
+            StockMovement.objects.create(part=part, quantity=1, movement_type='incoming')
+
+        resp = self.client_http.get('/reports/stock-movements/?date_from=2020-01-01')
+        content = resp.content.decode()
+
+        self.assertIn('page=2', content)
+        self.assertIn('date_from=2020-01-01', content)

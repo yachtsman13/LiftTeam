@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.8.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.9.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -105,11 +105,11 @@
         <nav>
             <ul class="pagination justify-content-center">
                 {% if parts.has_previous %}
-                <li class="page-item"><a class="page-link" href="?page={{ parts.previous_page_number }}&q={{ search }}&component_type={{ component_type }}&voltage={{ voltage }}&current={{ current }}&stock_from={{ stock_from }}&stock_to={{ stock_to }}">←</a></li>
+                <li class="page-item"><a class="page-link" href="{% querystring page=parts.previous_page_number %}">←</a></li>
                 {% endif %}
                 <li class="page-item active"><span class="page-link">{{ parts.number }} / {{ parts.paginator.num_pages }}</span></li>
                 {% if parts.has_next %}
-                <li class="page-item"><a class="page-link" href="?page={{ parts.next_page_number }}&q={{ search }}&component_type={{ component_type }}&voltage={{ voltage }}&current={{ current }}&stock_from={{ stock_from }}&stock_to={{ stock_to }}">→</a></li>
+                <li class="page-item"><a class="page-link" href="{% querystring page=parts.next_page_number %}">→</a></li>
                 {% endif %}
             </ul>
         </nav>
