@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дашборд — LiftTeam v2.20.0{% endblock %}
+{% block title %}Дашборд — LiftTeam v2.21.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -63,6 +63,26 @@
                     <i class="bi bi-cash-stack fs-1 opacity-50"></i>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+{% comment %}
+Разбивка заказов по статусам. Каждая плитка ведёт в список заказов
+с уже выставленным фильтром — с дашборда сразу к делу, а не через
+повторный отбор руками.
+{% endcomment %}
+<div class="card mb-4">
+    <div class="card-body py-2">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="text-muted small me-2">Заказы по статусам:</span>
+            {% for item in status_stats %}
+            <a href="{% url 'repair_order_list' %}?status={{ item.code }}"
+               class="btn btn-sm {% if item.count %}btn-outline-primary{% else %}btn-outline-secondary disabled{% endif %}">
+                {{ item.label }}
+                <span class="badge {% if item.count %}bg-primary{% else %}bg-secondary{% endif %} ms-1">{{ item.count }}</span>
+            </a>
+            {% endfor %}
         </div>
     </div>
 </div>

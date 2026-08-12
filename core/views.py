@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.20.0.
+Views для LiftTeam v2.21.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -101,9 +101,17 @@ def dashboard(request):
     at_minimum_count = at_minimum_parts.count()
     recent_orders = RepairOrder.objects.select_related('client').prefetch_related('order_equipments__equipment__model').order_by('-date_received')[:10]
 
-    # Статистика по статусам
-    status_stats = RepairOrder.objects.values('status').annotate(count=Count('id'))
-    status_stats_dict = {item['status']: item['count'] for item in status_stats}
+    # Разбивка по статусам — с нулями для тех, которых сейчас нет: пустая
+    # колонка «Готов к отгрузке» тоже сведение, а прыгающий набор ячеек
+    # читать труднее, чем постоянный
+    counts = {
+        item['status']: item['count']
+        for item in RepairOrder.objects.values('status').annotate(count=Count('id'))
+    }
+    status_stats = [
+        {'code': code, 'label': label, 'count': counts.get(code, 0)}
+        for code, label in RepairOrder.STATUS_CHOICES
+    ]
 
     # Должники (не оплаченные заказы)
     debtors = RepairOrder.objects.filter(
@@ -119,7 +127,7 @@ def dashboard(request):
         'at_minimum_count': at_minimum_count,
         'at_minimum_parts': at_minimum_parts[:10],
         'recent_orders': recent_orders,
-        'status_stats': status_stats_dict,
+        'status_stats': status_stats,
         'debtors': debtors[:10],
         'total_debt': total_debt,
         'now': timezone.now(),

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.20.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.21.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -357,6 +357,10 @@
 <script>
 const CELLS_DATA = {{ cells_data_json|safe }};
 const ALL_PARTS = {{ all_parts_json|safe }};
+
+// Живое обновление остатков (stock-updates.js) лежит в отдельном файле
+// и до объявленной через const переменной не дотянется — отдаём явно.
+window.CELLS_DATA = CELLS_DATA;
 
 let selectedCellId = null;
 let moveFromCellId = null;

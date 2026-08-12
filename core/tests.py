@@ -2214,3 +2214,74 @@ class StockWatchMarkupTests(TestCase):
         content = self.client_http.get('/parts/').content.decode()
         self.assertIn('js/stock-updates.js', content)
         self.assertIn('id="stockToasts"', content)
+
+
+class DashboardStatusStatsTests(TestCase):
+    """Разбивка заказов по статусам на дашборде.
+
+    Данные считались с самого начала, но в шаблон не попадали — на экране
+    их не было вовсе.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_stats', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='Заказчик')
+        for status in ('repair', 'repair', 'shipped'):
+            RepairOrder.objects.create(client=client_obj, status=status)
+
+    def test_counts_by_status(self):
+        resp = self.client_http.get('/')
+        counts = {item['code']: item['count'] for item in resp.context['status_stats']}
+
+        self.assertEqual(counts['repair'], 2)
+        self.assertEqual(counts['shipped'], 1)
+
+    def test_statuses_without_orders_are_shown_as_zero(self):
+        """Иначе набор плиток менялся бы от загрузки к загрузке."""
+        resp = self.client_http.get('/')
+        codes = [item['code'] for item in resp.context['status_stats']]
+
+        self.assertEqual(codes, [code for code, _ in RepairOrder.STATUS_CHOICES])
+        counts = {item['code']: item['count'] for item in resp.context['status_stats']}
+        self.assertEqual(counts['diagnostic'], 0)
+
+    def test_tiles_link_to_the_filtered_order_list(self):
+        content = self.client_http.get('/').content.decode()
+        self.assertIn('/repair-orders/?status=repair', content)
+
+    def test_link_actually_filters(self):
+        resp = self.client_http.get('/repair-orders/?status=repair')
+        self.assertEqual(len(resp.context['orders']), 2)
+
+
+class GridLiveUpdateMarkupTests(TestCase):
+    """Сетка кассетниц отдаёт данные, по которым скрипт перекрашивает ячейки."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_grid', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        call_command('init_cells', verbosity=0)
+        self.part = SparePart.objects.create(
+            part_number='GRID-1', name='Деталь', current_stock=10, min_stock=2
+        )
+        cell = StorageCell.objects.filter(cabinet_number=1).first()
+        cell.parts.add(self.part)
+
+    def test_grid_exposes_cells_data_to_the_script(self):
+        content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
+
+        self.assertIn('window.CELLS_DATA = CELLS_DATA', content)
+        self.assertIn('js/stock-updates.js', content)
+
+    def test_cells_carry_their_id(self):
+        content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
+        self.assertIn('data-cell-id=', content)

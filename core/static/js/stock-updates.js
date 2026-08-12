@@ -26,7 +26,10 @@
     }
 
     function watching() {
-        return document.querySelector('[data-stock-part]') !== null;
+        // Либо страница показывает остатки цифрами, либо это сетка кассетниц,
+        // где остаток виден цветом ячейки
+        return document.querySelector('[data-stock-part]') !== null ||
+               document.querySelector('.cell-item[data-cell-id]') !== null;
     }
 
     /* Те же три состояния, что и на сервере: дефицит, ровно на минимуме, норма. */
@@ -71,7 +74,47 @@
         setTimeout(function () { toast.remove(); }, 8000);
     }
 
+    /* Сетка кассетниц держит содержимое ячеек в CELLS_DATA и красит ячейку
+       по худшему состоянию её деталей. Обновляем и данные, и цвет: иначе
+       кладовщик смотрит на зелёную ячейку, в которой уже дефицит. */
+    function updateGrid(data) {
+        if (typeof window.CELLS_DATA !== 'object' || !window.CELLS_DATA) return;
+
+        Object.keys(window.CELLS_DATA).forEach(function (cellId) {
+            var cell = window.CELLS_DATA[cellId];
+            var touched = false;
+
+            cell.parts.forEach(function (part) {
+                if (String(part.id) === String(data.part_id)) {
+                    part.stock = data.current_stock;
+                    part.min_stock = data.min_stock;
+                    touched = true;
+                }
+            });
+            if (!touched) return;
+
+            var worst = 'normal';
+            cell.parts.forEach(function (part) {
+                var state = stockState(part.stock, part.min_stock);
+                if (state === 'below') {
+                    worst = 'low_stock';
+                } else if (state === 'at_minimum' && worst !== 'low_stock') {
+                    worst = 'at_minimum';
+                }
+            });
+
+            var element = document.querySelector('.cell-item[data-cell-id="' + cellId + '"]');
+            // Ячейку в режиме перемещения не перекрашиваем: подсветка выбора
+            // важнее сведений об остатке, пока деталь тащат
+            if (!element || element.classList.contains('selected')) return;
+            element.classList.remove('normal', 'low_stock', 'at_minimum');
+            element.classList.add(cell.parts.length ? worst : 'free');
+        });
+    }
+
     function handleUpdate(data) {
+        updateGrid(data);
+
         var elements = stockElements(data.part_id);
         if (!elements.length) return;
 
