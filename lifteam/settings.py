@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.32.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.33.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -281,6 +281,27 @@ TBANK_ACCOUNT = os.getenv('TBANK_ACCOUNT', '')
 # Адрес API вынесен в настройки: банк уже переезжал с business.tinkoff.ru
 # на business.tbank.ru, и следующий переезд должен чиниться правкой .env.
 TBANK_API_URL = os.getenv('TBANK_API_URL', 'https://business.tbank.ru/openapi')
+
+# Выставление счетов через API банка — отдельный выключатель, по умолчанию
+# выключенный. Читать выписку и отправлять заказчику счёт от лица фирмы —
+# разные по последствиям действия, и включаться они должны порознь.
+# Токену вдобавок нужно право на выставление счетов, а не только на выписку.
+TBANK_INVOICE_ENABLED = os.getenv('TBANK_INVOICE_ENABLED', 'False').lower() == 'true'
+
+# С какого номера начинать, если программа ещё не видела ни одного счёта.
+# Банк номер НЕ выдаёт: он приходит от нас и попадает в документ как есть,
+# поэтому за сквозной нумерацией с теми счетами, что выставлены руками
+# в личном кабинете, следит человек. Номер на странице открыт для правки.
+TBANK_INVOICE_NUMBER_START = int(os.getenv('TBANK_INVOICE_NUMBER_START', '1'))
+
+# Через сколько дней после выставления счёт считается просроченным к оплате.
+# Уходит в счёт полем dueDate
+TBANK_INVOICE_DUE_DAYS = int(os.getenv('TBANK_INVOICE_DUE_DAYS', '14'))
+
+# Единица измерения и ставка НДС в позициях счёта. «None» — без НДС:
+# на УСН это и нужно. Строками, потому что банк принимает их строками
+TBANK_INVOICE_UNIT = os.getenv('TBANK_INVOICE_UNIT', 'шт.')
+TBANK_INVOICE_VAT = os.getenv('TBANK_INVOICE_VAT', 'None')
 
 # За сколько последних дней тянуть выписку при каждом запуске. С запасом:
 # повторная загрузка уже известных операций ничего не портит, а пропущенный

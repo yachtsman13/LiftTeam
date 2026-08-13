@@ -1,8 +1,9 @@
 """
-Формы для LiftTeam v2.32.0.
+Формы для LiftTeam v2.33.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
+from django.core import validators
 from django.forms import inlineformset_factory
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
@@ -338,6 +339,67 @@ class PaymentForm(forms.ModelForm):
             'payment_date': 'Дата поступления',
             'note': 'Примечание',
         }
+
+
+class InvoiceSendForm(forms.Form):
+    """Подтверждение выставления счёта через API Т-Банка.
+
+    Обычная форма, а не ModelForm: часть полей уходит в банк и в заказе
+    не хранится, а номер счёта человек правит перед самой отправкой —
+    программа не знает, какие номера уже заняты счетами из личного кабинета.
+    """
+    invoice_number = forms.CharField(
+        label='Номер счёта', max_length=50,
+        widget=forms.TextInput(attrs={'class': 'form-control'}),
+        help_text='Проверьте по личному кабинету банка: программа не видит '
+                  'счета, выставленные там руками, и сквозной ряд держите вы.'
+    )
+    invoice_date = forms.DateField(
+        label='Дата счёта',
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'},
+                               format='%Y-%m-%d')
+    )
+    due_date = forms.DateField(
+        label='Оплатить до', required=False,
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'},
+                               format='%Y-%m-%d')
+    )
+    emails = forms.CharField(
+        label='Кому отправить', required=False,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control', 'placeholder': 'buh@example.ru, director@example.ru'}),
+        help_text='Через запятую. Пусто — банк счёт создаст, но никому не пошлёт.'
+    )
+
+    def clean_invoice_number(self):
+        number = self.cleaned_data['invoice_number'].strip()
+        if not number:
+            raise forms.ValidationError('Номер счёта обязателен')
+        return number
+
+    def clean_emails(self):
+        """Адреса списком, каждый проверен по отдельности.
+
+        Одна опечатка в списке не должна молча съесть весь список: счёт
+        уйдёт не туда, а человек будет уверен, что отправил.
+        """
+        raw = self.cleaned_data.get('emails', '')
+        addresses = [part.strip() for part in raw.replace(';', ',').split(',') if part.strip()]
+        validator = validators.EmailValidator()
+        for address in addresses:
+            try:
+                validator(address)
+            except forms.ValidationError:
+                raise forms.ValidationError(f'Непохоже на адрес почты: {address}')
+        return addresses
+
+    def clean(self):
+        cleaned = super().clean()
+        invoice_date = cleaned.get('invoice_date')
+        due_date = cleaned.get('due_date')
+        if invoice_date and due_date and due_date < invoice_date:
+            self.add_error('due_date', 'Срок оплаты раньше даты счёта')
+        return cleaned
 
 
 class StockMovementForm(forms.ModelForm):

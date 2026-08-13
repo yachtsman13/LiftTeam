@@ -1,10 +1,11 @@
 """
-Views для LiftTeam v2.32.0.
+Views для LiftTeam v2.33.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
 import re
 import json
+from datetime import timedelta
 from decimal import Decimal
 import openpyxl
 from django.shortcuts import render, get_object_or_404, redirect
@@ -37,7 +38,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
-    DefectActForm,
+    DefectActForm, InvoiceSendForm,
 )
 from .utils import (
     generate_qr_image,
@@ -2244,6 +2245,98 @@ def repair_order_act_defect(request, order_pk, roe_pk):
         'organization': Organization.get_solo(),
         'act_date': order_equipment.defect_act_date or timezone.localdate(),
     })
+
+
+# ==================== СЧЁТ ЧЕРЕЗ API Т-БАНКА ====================
+
+# Единственное место в программе, которое что-то создаёт в банке. Поэтому:
+# отправка только по нажатию человека, только со страницы, где он видит
+# всё, что уйдёт, и только при включённом TBANK_INVOICE_ENABLED.
+# По расписанию счета не выставляются нигде и никогда.
+
+def _invoice_payload(order, form_data):
+    """Тело запроса к банку — то самое, что показано на странице."""
+    client = order.client
+    return tbank.build_invoice(
+        number=form_data['invoice_number'],
+        items=order.invoice_items(),
+        payer={'name': client.name, 'inn': client.inn, 'kpp': client.kpp},
+        emails=form_data['emails'],
+        invoice_date=form_data['invoice_date'],
+        due_date=form_data['due_date'],
+    )
+
+
+@role_required('accountant')
+def repair_order_invoice(request, pk):
+    """Выставление счёта заказчику через API Т-Банка.
+
+    GET показывает, что именно уйдёт в банк; POST отправляет. Разделение
+    не формальность: счёт уходит заказчику, и «подтверждаю» должно означать
+    согласие с тем, что человек видел, а не с тем, что программа придумала.
+    """
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+    items = order.invoice_items()
+    default_emails = order.client.email
+
+    if request.method == 'POST':
+        form = InvoiceSendForm(request.POST)
+        if form.is_valid():
+            return _send_invoice(request, order, form)
+    else:
+        today = timezone.localdate()
+        form = InvoiceSendForm(initial={
+            'invoice_number': order.invoice_number or RepairOrder.next_invoice_number(),
+            'invoice_date': today,
+            'due_date': today + timedelta(
+                days=getattr(settings, 'TBANK_INVOICE_DUE_DAYS', 14)),
+            'emails': default_emails,
+        })
+
+    return render(request, 'core/bank/invoice.html', {
+        'order': order,
+        'form': form,
+        'items': items,
+        'items_total': sum(Decimal(str(item['price'])) for item in items),
+        'enabled': tbank.invoice_enabled(),
+        'configured': tbank.is_configured(),
+    })
+
+
+def _send_invoice(request, order, form):
+    """Отправка счёта в банк и запись следов в заказе."""
+    payload = _invoice_payload(order, form.cleaned_data)
+
+    try:
+        response = tbank.send_invoice(payload)
+    except tbank.TBankError as exc:
+        # Ошибку храним в заказе, а не только в сообщении на экране:
+        # человек уйдёт со страницы, а причина отказа понадобится потом
+        order.tbank_invoice_error = str(exc)[:500]
+        order.save(update_fields=['tbank_invoice_error'])
+        messages.error(request, f'Счёт не выставлен. {exc}')
+        return redirect('repair_order_invoice', pk=order.pk)
+
+    order.invoice_number = form.cleaned_data['invoice_number']
+    order.invoice_date = form.cleaned_data['invoice_date']
+    order.tbank_invoice_sent_at = timezone.now()
+    order.tbank_invoice_pdf_url = tbank.invoice_pdf_url(response)
+    order.tbank_invoice_error = ''
+    order.save(update_fields=[
+        'invoice_number', 'invoice_date', 'tbank_invoice_sent_at',
+        'tbank_invoice_pdf_url', 'tbank_invoice_error',
+    ])
+
+    OrderStatusHistory.objects.create(
+        order=order,
+        changed_by=request.user,
+        notes=f'Выставлен счёт № {order.invoice_number} через Т-Банк'
+              + (f', отправлен: {", ".join(form.cleaned_data["emails"])}'
+                 if form.cleaned_data['emails'] else ' (без отправки по почте)'),
+    )
+
+    messages.success(request, f'Счёт № {order.invoice_number} выставлен')
+    return redirect('repair_order_detail', pk=order.pk)
 
 
 # ==================== ПОСТУПЛЕНИЯ ИЗ БАНКА ====================

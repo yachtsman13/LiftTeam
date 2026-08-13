@@ -1611,7 +1611,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.32.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.33.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -4435,3 +4435,334 @@ class TBankStatementCommandTests(TestCase):
             call_command('tbank_statement', stdout=out, stderr=out)
 
         self.assertIn('Выписка не получена', out.getvalue())
+
+
+class TBankInvoiceBuildingTests(TestCase):
+    """Сборка счёта: что именно уходит в банк."""
+
+    def setUp(self):
+        self.customer = ClientModel.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089', kpp='772201001',
+            email='buh@liftproekt.ru')
+        self.order = RepairOrder.objects.create(client=self.customer)
+        model = EquipmentModel.objects.create(
+            name='EkoDrive-2.2-1.0', kind='Устройство управления дверьми лифта')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='13593'),
+            work_performed='Ремонт импульсного блока питания,\nзамена транзисторов',
+            repair_cost=Decimal('14000'),
+        )
+
+    def test_the_line_repeats_the_wording_used_in_hand_written_invoices(self):
+        self.assertEqual(
+            self.roe.invoice_line,
+            'Ремонт Устройство управления дверьми лифта EkoDrive-2.2-1.0 SN:13593 '
+            '(Ремонт импульсного блока питания, замена транзисторов)'
+        )
+
+    def test_line_breaks_do_not_leak_into_the_invoice(self):
+        """Перенос строки разорвал бы ячейку таблицы в PDF банка."""
+        self.assertNotIn('\n', self.roe.invoice_line)
+
+    def test_equipment_without_a_price_is_not_a_line(self):
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='Без цены'),
+                serial_number='NOPRICE'),
+        )
+
+        items = self.order.invoice_items()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['price'], 14000.0)
+
+    @override_settings(TBANK_INVOICE_UNIT='шт.', TBANK_INVOICE_VAT='None')
+    def test_items_carry_the_unit_and_the_vat_mode(self):
+        item = self.order.invoice_items()[0]
+
+        self.assertEqual(item['unit'], 'шт.')
+        self.assertEqual(item['vat'], 'None')
+        self.assertEqual(item['amount'], 1)
+
+    @override_settings(TBANK_ACCOUNT='40802810700006096146')
+    def test_the_payload_matches_the_documented_shape(self):
+        payload = tbank.build_invoice(
+            number='943',
+            items=self.order.invoice_items(),
+            payer={'name': self.customer.name, 'inn': self.customer.inn,
+                   'kpp': self.customer.kpp},
+            emails=['buh@liftproekt.ru'],
+            invoice_date=datetime.date(2026, 8, 13),
+            due_date=datetime.date(2026, 8, 27),
+        )
+
+        self.assertEqual(payload['invoiceNumber'], '943')
+        self.assertEqual(payload['invoiceDate'], '2026-08-13')
+        self.assertEqual(payload['dueDate'], '2026-08-27')
+        self.assertEqual(payload['accountNumber'], '40802810700006096146')
+        self.assertEqual(payload['payer'],
+                         {'name': 'ООО «ЛИФТПРОЕКТ»', 'inn': '9722051089',
+                          'kpp': '772201001'})
+        self.assertEqual(payload['contacts'], [{'email': 'buh@liftproekt.ru'}])
+        self.assertEqual(len(payload['items']), 1)
+
+    def test_empty_payer_fields_are_not_sent(self):
+        """Пустая строка в реквизитах счёта выглядит как ошибка."""
+        payload = tbank.build_invoice(
+            number='1', items=[{'name': 'x', 'price': 1, 'unit': 'шт.',
+                                'vat': 'None', 'amount': 1}],
+            payer={'name': 'ИП Петров', 'inn': '770000000000', 'kpp': ''},
+        )
+
+        self.assertEqual(payload['payer'], {'name': 'ИП Петров', 'inn': '770000000000'})
+
+    def test_without_recipients_there_are_no_contacts(self):
+        payload = tbank.build_invoice(
+            number='1', items=[{'name': 'x'}], emails=[])
+
+        self.assertNotIn('contacts', payload)
+
+
+class TBankInvoiceNumberTests(TestCase):
+    """Номер счёта. Банк его не выдаёт — он приходит от нас."""
+
+    def setUp(self):
+        self.customer = ClientModel.objects.create(name='ООО «Счётчик»')
+
+    def _order(self, invoice_number=''):
+        return RepairOrder.objects.create(
+            client=self.customer, invoice_number=invoice_number)
+
+    @override_settings(TBANK_INVOICE_NUMBER_START=1)
+    def test_the_next_number_follows_the_biggest_one_seen(self):
+        self._order('942')
+        self._order('906')
+
+        self.assertEqual(RepairOrder.next_invoice_number(), '943')
+
+    @override_settings(TBANK_INVOICE_NUMBER_START=1)
+    def test_non_numeric_numbers_are_not_guessed_from(self):
+        """«942-01» и «б/н» в сквозной ряд не встают."""
+        self._order('942-01')
+        self._order('б/н')
+        self._order('900')
+
+        self.assertEqual(RepairOrder.next_invoice_number(), '901')
+
+    @override_settings(TBANK_INVOICE_NUMBER_START=664)
+    def test_the_starting_number_is_respected_on_an_empty_base(self):
+        self.assertEqual(RepairOrder.next_invoice_number(), '664')
+
+    @override_settings(TBANK_INVOICE_NUMBER_START=664)
+    def test_the_start_does_not_pull_the_series_backwards(self):
+        self._order('943')
+
+        self.assertEqual(RepairOrder.next_invoice_number(), '944')
+
+
+class TBankInvoiceSendingTests(TestCase):
+    """Отправка счёта. Единственное, что программа создаёт в банке."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_inv', full_name='Бухгалтер', password='pass',
+            role='accountant')
+        self.manager = Employee.objects.create_user(
+            username='mgr_inv', full_name='Менеджер', password='pass',
+            role='repair_manager')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.customer = ClientModel.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089', email='buh@liftproekt.ru')
+        self.order = RepairOrder.objects.create(client=self.customer)
+        model = EquipmentModel.objects.create(name='Emotron-счёт')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-INV'),
+            repair_cost=Decimal('54000'),
+        )
+
+    def _url(self):
+        return f'/repair-orders/{self.order.pk}/invoice/'
+
+    def _post(self, **overrides):
+        data = {
+            'invoice_number': '943',
+            'invoice_date': '2026-08-13',
+            'due_date': '2026-08-27',
+            'emails': 'buh@liftproekt.ru',
+        }
+        data.update(overrides)
+        return self.client_http.post(self._url(), data)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_sending_records_the_number_and_the_pdf(self):
+        with patch('core.tbank.send_invoice',
+                   return_value={'pdfUrl': 'https://example.org/1.pdf'}) as send:
+            resp = self._post()
+
+        self.assertRedirects(resp, f'/repair-orders/{self.order.pk}/')
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.invoice_number, '943')
+        self.assertEqual(self.order.invoice_date, datetime.date(2026, 8, 13))
+        self.assertEqual(self.order.tbank_invoice_pdf_url, 'https://example.org/1.pdf')
+        self.assertIsNotNone(self.order.tbank_invoice_sent_at)
+        self.assertEqual(self.order.tbank_invoice_error, '')
+        self.assertEqual(send.call_count, 1)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_what_is_sent_is_what_was_shown(self):
+        with patch('core.tbank.send_invoice', return_value={}) as send:
+            self._post()
+
+        payload = send.call_args[0][0]
+        self.assertEqual(payload['invoiceNumber'], '943')
+        self.assertEqual(payload['payer']['inn'], '9722051089')
+        self.assertEqual(payload['contacts'], [{'email': 'buh@liftproekt.ru'}])
+        self.assertEqual(payload['items'][0]['price'], 54000.0)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_the_send_is_recorded_in_the_order_history(self):
+        with patch('core.tbank.send_invoice', return_value={}):
+            self._post()
+
+        last = self.order.status_history.order_by('-id').first()
+        self.assertIn('943', last.notes)
+        self.assertEqual(last.changed_by, self.accountant)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_a_refusal_is_kept_and_nothing_is_marked_as_sent(self):
+        with patch('core.tbank.send_invoice',
+                   side_effect=tbank.TBankError('Т-Банк отказал: нет прав')):
+            self._post()
+
+        self.order.refresh_from_db()
+        self.assertIn('нет прав', self.order.tbank_invoice_error)
+        self.assertIsNone(self.order.tbank_invoice_sent_at)
+        self.assertEqual(self.order.invoice_number, '')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=False)
+    def test_sending_is_off_by_default(self):
+        """Отправка документа заказчику не должна включаться сама."""
+        self.assertFalse(tbank.invoice_enabled())
+        with self.assertRaises(tbank.TBankError) as caught:
+            tbank.send_invoice({'invoiceNumber': '1', 'items': [{'name': 'x'}]})
+
+        self.assertIn('выключено', str(caught.exception))
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_an_invoice_without_lines_is_refused_before_the_network(self):
+        with self.assertRaises(tbank.TBankError) as caught:
+            tbank.send_invoice({'invoiceNumber': '1', 'items': []})
+
+        self.assertIn('ни одной позиции', str(caught.exception))
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_an_invoice_without_a_number_is_refused_before_the_network(self):
+        with self.assertRaises(tbank.TBankError) as caught:
+            tbank.send_invoice({'items': [{'name': 'x'}]})
+
+        self.assertIn('номер счёта', str(caught.exception).lower())
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_a_refusal_inside_a_200_response_is_still_a_refusal(self):
+        def _fake(req, timeout=None):
+            class _R:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *args):
+                    return False
+
+                def read(self_inner):
+                    return b'{"errorMessage": "Counterparty not found"}'
+            return _R()
+
+        with patch('core.tbank.request.urlopen', _fake):
+            with self.assertRaises(tbank.TBankError) as caught:
+                tbank.send_invoice({'invoiceNumber': '1', 'items': [{'name': 'x'}]})
+
+        self.assertIn('Counterparty not found', str(caught.exception))
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_the_request_is_a_post_with_json(self):
+        calls = []
+
+        def _fake(req, timeout=None):
+            calls.append(req)
+
+            class _R:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *args):
+                    return False
+
+                def read(self_inner):
+                    return b'{"pdfUrl": "https://example.org/x.pdf"}'
+            return _R()
+
+        with patch('core.tbank.request.urlopen', _fake):
+            tbank.send_invoice({'invoiceNumber': '943', 'items': [{'name': 'Ремонт'}]})
+
+        sent = calls[0]
+        self.assertEqual(sent.method, 'POST')
+        self.assertIn('/openapi/api/v1/invoice/send', sent.full_url)
+        self.assertEqual(sent.get_header('Content-type'), 'application/json')
+        self.assertEqual(sent.get_header('Authorization'), 'Bearer secret')
+        # Кириллица уходит как есть, а не escape-последовательностями
+        self.assertIn('Ремонт', sent.data.decode('utf-8'))
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_a_broken_recipient_stops_the_whole_send(self):
+        """Иначе счёт уйдёт не туда, а человек будет уверен, что отправил."""
+        with patch('core.tbank.send_invoice') as send:
+            resp = self._post(emails='buh@liftproekt.ru, кривой-адрес')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(send.call_count, 0)
+        self.assertContains(resp, 'Непохоже на адрес почты')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_a_due_date_before_the_invoice_date_is_refused(self):
+        with patch('core.tbank.send_invoice') as send:
+            resp = self._post(due_date='2026-08-01')
+
+        self.assertEqual(send.call_count, 0)
+        self.assertContains(resp, 'раньше даты счёта')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_the_page_shows_the_lines_and_the_total(self):
+        resp = self.client_http.get(self._url())
+
+        self.assertContains(resp, 'SN-INV')
+        # Запятая, а не точка: локаль ru-ru
+        self.assertContains(resp, '54000,00')
+        self.assertContains(resp, 'ООО «ЛИФТПРОЕКТ»')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=False)
+    def test_the_page_says_why_the_button_is_dead(self):
+        resp = self.client_http.get(self._url())
+
+        self.assertContains(resp, 'TBANK_INVOICE_ENABLED')
+        self.assertContains(resp, 'disabled')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
+    def test_a_repeat_send_is_warned_about(self):
+        self.order.tbank_invoice_sent_at = timezone.now()
+        self.order.invoice_number = '943'
+        self.order.save(update_fields=['tbank_invoice_sent_at', 'invoice_number'])
+
+        resp = self.client_http.get(self._url())
+
+        self.assertContains(resp, 'уже выставлен счёт')
+
+    def test_the_repair_manager_does_not_issue_invoices(self):
+        self.client_http.force_login(self.manager)
+
+        resp = self.client_http.get(self._url())
+
+        self.assertEqual(resp.status_code, 302)

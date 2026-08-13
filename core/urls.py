@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.32.0
+v2.33.0
 """
 from django.urls import path
 from . import views
@@ -93,6 +93,8 @@ urlpatterns = [
     path('storage-cells/labels/', views.storage_cell_labels_batch, name='storage_cell_labels_batch'),
     path('storage-cells/<int:pk>/add-part/', views.storage_cell_add_part, name='storage_cell_add_part'),
     path('storage-cells/<int:pk>/remove-part/', views.storage_cell_remove_part, name='storage_cell_remove_part'),
+
+    path('repair-orders/<int:pk>/invoice/', views.repair_order_invoice, name='repair_order_invoice'),
 
     # Поступления из банка
     path('bank/operations/', views.bank_operations, name='bank_operations'),

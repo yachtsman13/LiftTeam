@@ -1,0 +1,169 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.33.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-receipt me-2"></i>Выставить счёт через Т-Банк</h2>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К заказу {{ order.order_number }}
+    </a>
+</div>
+
+{% if not configured %}
+<div class="alert alert-warning">
+    Т-Банк не настроен: не задан <code>TBANK_TOKEN</code>. См. DEPLOY.md.
+</div>
+{% elif not enabled %}
+<div class="alert alert-warning">
+    Выставление счетов выключено: <code>TBANK_INVOICE_ENABLED=False</code>.
+    Это отправка документа заказчику от лица фирмы — включать её нужно
+    осознанно, а не «оно само после обновления». См. DEPLOY.md.
+</div>
+{% endif %}
+
+{% if order.tbank_invoice_sent_at %}
+{% comment %}
+    Счёт по этому заказу уже уходил. Повторное выставление не запрещаем —
+    бывает и нужно, — но сказать об этом обязаны: второй счёт заказчику
+    на те же работы объясняться будет долго.
+{% endcomment %}
+<div class="alert alert-info">
+    По этому заказу уже выставлен счёт <strong>№ {{ order.invoice_number }}</strong>
+    от {{ order.tbank_invoice_sent_at|date:"d.m.Y H:i" }}.
+    {% if order.tbank_invoice_pdf_url %}
+    <a href="{{ order.tbank_invoice_pdf_url }}" target="_blank" rel="noopener">Открыть PDF</a>.
+    {% endif %}
+    Отправка ещё раз создаст в банке второй счёт.
+</div>
+{% endif %}
+
+{% if order.tbank_invoice_error %}
+<div class="alert alert-danger">
+    Прошлая попытка не удалась: {{ order.tbank_invoice_error }}
+</div>
+{% endif %}
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Что уйдёт в банк</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Плательщик:</strong> {{ order.client.name }}{% if order.client.inn %}, ИНН {{ order.client.inn }}{% endif %}{% if order.client.kpp %}, КПП {{ order.client.kpp }}{% endif %}
+                </p>
+                {% if not order.client.inn %}
+                <div class="alert alert-warning py-2 small">
+                    У заказчика не заполнен ИНН. Банк может не принять такой счёт.
+                </div>
+                {% endif %}
+
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Наименование</th>
+                                <th class="text-end">Кол-во</th>
+                                <th class="text-end">Цена, ₽</th>
+                                <th>НДС</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in items %}
+                            <tr>
+                                <td class="small">{{ item.name }}</td>
+                                <td class="text-end">{{ item.amount }} {{ item.unit }}</td>
+                                <td class="text-end text-nowrap">{{ item.price|floatformat:2 }}</td>
+                                <td class="small">{{ item.vat }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="4" class="text-danger">
+                                    Ни у одной единицы не проставлена стоимость ремонта —
+                                    счёт выставлять не из чего.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                        {% if items %}
+                        <tfoot>
+                            <tr>
+                                <th colspan="2" class="text-end">Итого:</th>
+                                <th class="text-end text-nowrap">{{ items_total|floatformat:2 }} ₽</th>
+                                <th></th>
+                            </tr>
+                        </tfoot>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Подтверждение</h5>
+            </div>
+            <div class="card-body">
+                {% comment %}
+                    Подтверждение в браузере вдобавок к отдельной странице:
+                    счёт уходит заказчику, и отменить это из программы нельзя.
+                {% endcomment %}
+                <form method="post"
+                      onsubmit="return confirm('Выставить счёт в Т-Банке? Отменить это можно будет только в личном кабинете банка.');">
+                    {% csrf_token %}
+                    {% if form.non_field_errors %}
+                    <div class="alert alert-danger">
+                        {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+                    </div>
+                    {% endif %}
+                    <div class="mb-3">
+                        <label class="form-label">{{ form.invoice_number.label }}</label>
+                        {{ form.invoice_number }}
+                        <div class="form-text">{{ form.invoice_number.help_text }}</div>
+                        {% if form.invoice_number.errors %}
+                        <div class="text-danger small">{{ form.invoice_number.errors.0 }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-6">
+                            <label class="form-label">{{ form.invoice_date.label }}</label>
+                            {{ form.invoice_date }}
+                            {% if form.invoice_date.errors %}
+                            <div class="text-danger small">{{ form.invoice_date.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">{{ form.due_date.label }}</label>
+                            {{ form.due_date }}
+                            {% if form.due_date.errors %}
+                            <div class="text-danger small">{{ form.due_date.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ form.emails.label }}</label>
+                        {{ form.emails }}
+                        <div class="form-text">{{ form.emails.help_text }}</div>
+                        {% if form.emails.errors %}
+                        <div class="text-danger small">{{ form.emails.errors.0 }}</div>
+                        {% endif %}
+                    </div>
+
+                    <button type="submit" class="btn btn-success w-100"
+                            {% if not enabled or not items %}disabled{% endif %}>
+                        <i class="bi bi-send me-2"></i>Выставить счёт
+                    </button>
+                    <div class="form-text mt-2">
+                        Счёт будет создан в Т-Банке{% if form.emails.value %} и отправлен заказчику{% endif %}.
+                        Отменить это из программы нельзя — только в личном кабинете банка.
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

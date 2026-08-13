@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.32.0.
+Модели данных для LiftTeam v2.33.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -433,6 +433,18 @@ class RepairOrder(models.Model):
     payment_status = models.CharField('Статус оплаты', max_length=20, choices=PAYMENT_STATUS_CHOICES, default='unpaid')
     status = models.CharField('Статус', max_length=20, choices=STATUS_CHOICES, default='accepted')
 
+    # --- Счёт, выставленный через API Т-Банка ---
+    # Номер и дата лежат в тех же invoice_number / invoice_date, что и у счёта,
+    # выставленного руками: для долгов и напоминаний разницы нет, и заводить
+    # им отдельные поля значило бы раздвоить понятие «счёт выставлен»
+    tbank_invoice_sent_at = models.DateTimeField(
+        'Счёт выставлен через банк', null=True, blank=True
+    )
+    tbank_invoice_pdf_url = models.URLField('Ссылка на PDF счёта', max_length=500, blank=True)
+    tbank_invoice_error = models.CharField(
+        'Последняя ошибка выставления', max_length=500, blank=True
+    )
+
     objects = RepairOrderQuerySet.as_manager()
 
     class Meta:
@@ -529,6 +541,55 @@ class RepairOrder(models.Model):
             total=Sum('repair_cost')
         )['total']
         return total or 0
+
+    @classmethod
+    def next_invoice_number(cls):
+        """Какой номер счёта предложить следующим.
+
+        Считается по номерам, которые видела программа. Про счета,
+        выставленные руками в личном кабинете банка, она не знает и знать
+        не может — поэтому номер на странице выставления открыт для правки,
+        а не подставлен молча. Банк номер не выдаёт: он приходит от нас
+        и попадает в документ как есть.
+        """
+        biggest = 0
+        numbers = cls.objects.exclude(invoice_number='').values_list(
+            'invoice_number', flat=True
+        )
+        for number in numbers:
+            # Только чисто числовые: «942-01» и «б/н» в сквозной ряд не встают,
+            # и угадывать по ним следующий номер — значит угадывать неверно
+            digits = str(number).strip()
+            if digits.isdigit():
+                biggest = max(biggest, int(digits))
+
+        start = getattr(settings, 'TBANK_INVOICE_NUMBER_START', 1)
+        return str(max(biggest + 1, start))
+
+    def invoice_items(self):
+        """Позиции счёта — по единице оборудования на строку.
+
+        Формулировка повторяет ту, что стоит в счетах, выставленных руками:
+        «Ремонт <тип и модель> SN:<серийник> (<что сделали>)». Единицы
+        без стоимости пропускаются: строка счёта на ноль рублей — это
+        не строка счёта.
+        """
+        unit = getattr(settings, 'TBANK_INVOICE_UNIT', 'шт.')
+        vat = getattr(settings, 'TBANK_INVOICE_VAT', 'None')
+
+        items = []
+        for order_equipment in self.order_equipments.select_related('equipment__model'):
+            price = order_equipment.repair_cost
+            if price is None or price <= 0:
+                continue
+            items.append({
+                'name': order_equipment.invoice_line,
+                'price': float(price),
+                'unit': unit,
+                'vat': vat,
+                'amount': 1,
+            })
+        return items
 
 
 class Payment(models.Model):
@@ -757,6 +818,22 @@ class RepairOrderEquipment(models.Model):
         if self.estimated_cost is None:
             return None
         return format_amount(self.estimated_cost)
+
+    @property
+    def invoice_line(self):
+        """Наименование позиции в счёте.
+
+        «Ремонт Преобразователь частоты Emotron … SN:001272 (Замена IGBT
+        модуля)» — так эта строка написана в счетах, выставленных руками,
+        и заказчик сверяет её с актом слово в слово.
+        """
+        name = f'Ремонт {self.equipment.model.full_name} SN:{self.equipment.serial_number}'
+        work = self.work_performed.strip()
+        if work:
+            # Перевод строки в наименовании позиции банку ни к чему:
+            # он попадёт в PDF как есть и разорвёт ячейку таблицы
+            name += f' ({" ".join(work.split())})'
+        return name[:1000]
 
     @property
     def warranty_until(self):
