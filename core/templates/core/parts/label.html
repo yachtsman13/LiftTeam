@@ -1,10 +1,11 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.35.0{% endblock %}
+{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.36.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
+{% include 'core/_qr_link.html' %}
 <div class="label-container">
     {% include 'core/parts/_label.html' %}
 

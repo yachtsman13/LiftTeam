@@ -1622,7 +1622,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.35.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.36.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5109,3 +5109,64 @@ class QrLinkLengthTests(TestCase):
 
         content = resp.content.decode()
         self.assertIn('alert alert-warning no-print', content)
+
+
+class QrLinkVisibilityTests(TestCase):
+    """Куда ведёт код, должно быть видно на экране, а не только со сканером."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_qrvis', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.part = SparePart.objects.create(
+            part_number='VIS-1', name='Диод', current_stock=5)
+        self.cell = StorageCell.objects.create(
+            cabinet_number=2, row_number=1, cell_row=1)
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО «Видно»'))
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='VIS-модель'),
+                serial_number='VIS-SN'),
+        )
+
+    @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
+    def test_single_label_pages_show_the_exact_link(self):
+        pages = {
+            f'/parts/{self.part.pk}/label/':
+                f'http://lifteam.taile9b605.ts.net/p/{self.part.pk}',
+            f'/storage-cells/{self.cell.pk}/label/':
+                f'http://lifteam.taile9b605.ts.net/c/{self.cell.pk}',
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/':
+                f'http://lifteam.taile9b605.ts.net/o/{self.order.pk}',
+        }
+        for url, expected in pages.items():
+            resp = self.client_http.get(url)
+
+            self.assertContains(resp, expected, msg_prefix=url)
+
+    @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
+    def test_batch_pages_show_the_base(self):
+        for url in (f'/parts/labels/?ids={self.part.pk}',
+                    '/storage-cells/labels/?cabinet=2'):
+            resp = self.client_http.get(url)
+
+            self.assertEqual(resp.context['qr_base'],
+                             'http://lifteam.taile9b605.ts.net', url)
+            self.assertContains(resp, 'Код ведёт на', msg_prefix=url)
+
+    @override_settings(LABEL_BASE_URL='http://192.168.1.50')
+    def test_a_local_address_left_in_env_is_visible_on_the_page(self):
+        """Именно так это и ловится: настройка из .env перебивает умолчание."""
+        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertContains(resp, 'http://192.168.1.50/p/')
+
+    @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
+    def test_the_link_is_not_printed_on_the_sticker(self):
+        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertContains(resp, 'text-muted small no-print')

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.35.0.
+Views для LiftTeam v2.36.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1558,7 +1558,9 @@ def _cell_label(cell, base_url):
 def storage_cell_label(request, pk):
     """Печать этикетки одной ячейки."""
     cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
-    context = _cell_label(cell, label_base_url(request))
+    base_url = label_base_url(request)
+    context = _cell_label(cell, base_url)
+    context['qr_base'] = base_url
     context['qr_warning'] = qr_length_warning([context['qr_url']])
     return render(request, 'core/storage_cells/label.html', context)
 
@@ -1579,13 +1581,16 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
     # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому под него
     # освобождено место: у логотипа убран внутренний круг, а сам он увеличен.
-    link = qr_url(label_base_url(request), 'o', order.pk)
+    base_url = label_base_url(request)
+    link = qr_url(base_url, 'o', order.pk)
 
     return render(request, 'core/repair_orders/equipment_label.html', {
         'order': order,
         'roe': roe,
         'position': position,
         'qr_img': generate_qr_image(link),
+        'qr_url': link,
+        'qr_base': base_url,
         'qr_warning': qr_length_warning([link]),
     })
 
@@ -2655,7 +2660,9 @@ def _part_label(part, base_url):
 def part_label(request, pk):
     """Этикетка детали — для наклейки на пакет."""
     part = get_object_or_404(SparePart, pk=pk)
-    context = _part_label(part, label_base_url(request))
+    base_url = label_base_url(request)
+    context = _part_label(part, base_url)
+    context['qr_base'] = base_url
     context['qr_warning'] = qr_length_warning([context['qr_url']])
     return render(request, 'core/parts/label.html', context)
 
@@ -2694,6 +2701,7 @@ def part_labels_batch(request):
         'labels': labels,
         'layout': _batch_layout(request),
         'limit': MAX_LABELS_PER_BATCH,
+        'qr_base': base_url,
         'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
     })
 
@@ -2727,6 +2735,7 @@ def storage_cell_labels_batch(request):
 
     return render(request, 'core/storage_cells/labels_batch.html', {
         'labels': labels,
+        'qr_base': base_url,
         'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
         'layout': _batch_layout(request),
         'only_filled': only_filled,

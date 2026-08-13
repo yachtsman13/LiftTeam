@@ -1,9 +1,10 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.35.0{% endblock %}
+{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.36.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
+{% include 'core/_qr_link.html' %}
 <div class="label-container">
     <div class="label-sheet">
         <div class="label-order-number">
