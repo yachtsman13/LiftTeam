@@ -1,0 +1,125 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Акт выполненных работ {{ order.order_number }} — LiftTeam v2.29.0{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3 d-flex gap-2 align-items-center">
+    <button onclick="window.print()" class="btn btn-primary">
+        <i class="bi bi-printer me-2"></i>Печать
+    </button>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
+    {% if not order.date_completed %}
+    <span class="text-danger small">
+        Заказ ещё не завершён — в акте не будет ни даты выполнения, ни срока гарантии.
+    </span>
+    {% endif %}
+</div>
+
+<div class="act-sheet">
+    {% include 'core/repair_orders/_act_header.html' %}
+
+    <div class="act-title">Акт выполненных работ № {{ order.order_number }}</div>
+    <div class="act-subtitle">
+        от {% if order.date_completed %}{{ order.date_completed|date:"d.m.Y" }}{% else %}{{ today|date:"d.m.Y" }}{% endif %}
+    </div>
+
+    <div class="act-parties">
+        <div><strong>Исполнитель:</strong> {{ organization.name|default:"—" }}</div>
+        <div>
+            <strong>Заказчик:</strong> {{ order.client.name }}{% if order.client.inn %}, ИНН {{ order.client.inn }}{% endif %}{% if order.client.kpp %}, КПП {{ order.client.kpp }}{% endif %}
+        </div>
+        <div><strong>Оборудование принято:</strong> {{ order.date_received|date:"d.m.Y" }}</div>
+    </div>
+
+    <div class="act-note">
+        Исполнитель выполнил, а Заказчик принял следующие работы:
+    </div>
+
+    <table class="act-table">
+        <thead>
+            <tr>
+                <th class="num">№</th>
+                <th>Модель</th>
+                <th>Серийный номер</th>
+                <th>Выполненные работы</th>
+                <th class="money">Стоимость, ₽</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for oe in order_equipments %}
+            <tr>
+                <td class="num">{{ forloop.counter }}</td>
+                <td>{{ oe.equipment.model.name }}</td>
+                <td>{{ oe.equipment.serial_number }}</td>
+                {% comment %}
+                    Если выполненные работы не записали, печатаем заявленную
+                    неисправность с оговоркой: подписывать «выполнено» под
+                    описанием поломки нельзя.
+                {% endcomment %}
+                <td>
+                    {% if oe.work_performed %}{{ oe.work_performed }}
+                    {% elif oe.fault_description %}Устранена неисправность: {{ oe.fault_description }}
+                    {% else %}Ремонт{% endif %}
+                </td>
+                <td class="money">{% if oe.repair_cost %}{{ oe.repair_cost|floatformat:2 }}{% else %}—{% endif %}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5">Оборудование в заказе не указано</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="act-total">Итого: {{ order.total_repair_cost|floatformat:2 }} ₽</div>
+
+    {% if order.paid_amount %}
+    {% comment %}
+        Поступившие деньги показываем только если их вносили: строка
+        «оплачено 0» на акте выглядит как упрёк, а не как сведение.
+    {% endcomment %}
+    <div class="act-note">
+        Оплачено: {{ order.paid_amount|floatformat:2 }} ₽{% if order.debt %}, остаток к оплате: {{ order.debt|floatformat:2 }} ₽{% endif %}.
+    </div>
+    {% endif %}
+
+    {% if details %}
+    <div class="act-note">
+        <strong>Заменённые детали:</strong>
+        {% for detail in details %}{{ detail.part.name }} ({{ detail.part.part_number }}) — {{ detail.quantity_used }} шт.{% if not forloop.last %}; {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if warranty_until %}
+    <div class="act-note">
+        <strong>Гарантия на выполненные работы</strong> действует до
+        {{ warranty_until|date:"d.m.Y" }}. Гарантия не распространяется
+        на повреждения, вызванные нарушением условий эксплуатации.
+    </div>
+    {% endif %}
+
+    <div class="act-note">
+        Работы выполнены в полном объёме. Заказчик претензий по объёму,
+        качеству и срокам выполнения работ не имеет.
+    </div>
+
+    <div class="act-signatures">
+        <div class="act-signature">
+            <div class="act-signature-role">Сдал (Исполнитель)</div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">
+                {% if organization.signatory_name %}
+                {{ organization.signatory_position }} {{ organization.signatory_name }}
+                {% else %}
+                подпись, расшифровка, дата
+                {% endif %}
+            </div>
+        </div>
+        <div class="act-signature">
+            <div class="act-signature-role">Принял (Заказчик)</div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">подпись, расшифровка, дата</div>
+        </div>
+    </div>
+</div>
+
+{% include 'core/repair_orders/_act_styles.html' %}
+{% endblock %}

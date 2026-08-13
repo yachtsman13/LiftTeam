@@ -1,0 +1,25 @@
+{% comment %}
+Шапка печатного акта: логотип и реквизиты своей фирмы.
+Ожидает: organization.
+{% endcomment %}
+{% load static %}
+<div class="act-header">
+    <div>
+        {% if organization.is_filled %}
+        <div class="act-org-name">{{ organization.name }}</div>
+        {% if organization.details_line %}
+        <div class="act-org-details">{{ organization.details_line }}</div>
+        {% endif %}
+        {% if organization.email %}
+        <div class="act-org-details">{{ organization.email }}</div>
+        {% endif %}
+        {% else %}
+        <div class="act-org-name">Реквизиты не заполнены</div>
+        <div class="act-org-missing no-print">
+            Заполните их в разделе «Администрирование → Реквизиты» —
+            иначе акт уйдёт заказчику без шапки.
+        </div>
+        {% endif %}
+    </div>
+    <img src="{% static 'img/lift_team_logo.png' %}" alt="" class="act-logo">
+</div>

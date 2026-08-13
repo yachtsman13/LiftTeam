@@ -1,0 +1,93 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Акт приёма {{ order.order_number }} — LiftTeam v2.29.0{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3 d-flex gap-2">
+    <button onclick="window.print()" class="btn btn-primary">
+        <i class="bi bi-printer me-2"></i>Печать
+    </button>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="act-sheet">
+    {% include 'core/repair_orders/_act_header.html' %}
+
+    <div class="act-title">Акт приёма оборудования в ремонт № {{ order.order_number }}</div>
+    <div class="act-subtitle">от {{ order.date_received|date:"d.m.Y" }}</div>
+
+    <div class="act-parties">
+        <div><strong>Исполнитель:</strong> {{ organization.name|default:"—" }}</div>
+        <div>
+            <strong>Заказчик:</strong> {{ order.client.name }}{% if order.client.inn %}, ИНН {{ order.client.inn }}{% endif %}{% if order.client.kpp %}, КПП {{ order.client.kpp }}{% endif %}
+        </div>
+        {% if order.client.contact_person or order.client.phone %}
+        <div>
+            <strong>Контактное лицо:</strong> {{ order.client.contact_person|default:"—" }}{% if order.client.phone %}, тел. {{ order.client.phone }}{% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="act-note">
+        Заказчик передал, а Исполнитель принял в ремонт следующее оборудование:
+    </div>
+
+    <table class="act-table">
+        <thead>
+            <tr>
+                <th class="num">№</th>
+                <th>Модель</th>
+                <th>Серийный номер</th>
+                <th>Номера пломб</th>
+                <th>Состояние при приёме</th>
+                <th>Заявленная неисправность</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for oe in order_equipments %}
+            <tr>
+                <td class="num">{{ forloop.counter }}</td>
+                <td>{{ oe.equipment.model.name }}</td>
+                <td>{{ oe.equipment.serial_number }}</td>
+                <td>{{ oe.seal_numbers|default:"—" }}</td>
+                <td>{{ oe.initial_condition|default:"—" }}</td>
+                <td>{{ oe.fault_description|default:order.fault_description|default:"—" }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6">Оборудование в заказе не указано</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if order.fault_description %}
+    <div class="act-note"><strong>Со слов заказчика:</strong> {{ order.fault_description }}</div>
+    {% endif %}
+
+    <div class="act-note">
+        Стоимость и срок ремонта определяются после диагностики и согласуются
+        с Заказчиком. Оборудование принято без комплектующих и принадлежностей,
+        если иное не указано в графе «Состояние при приёме».
+    </div>
+
+    <div class="act-signatures">
+        <div class="act-signature">
+            <div class="act-signature-role">Сдал (Заказчик)</div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">подпись, расшифровка, дата</div>
+        </div>
+        <div class="act-signature">
+            <div class="act-signature-role">Принял (Исполнитель)</div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">
+                {% if organization.signatory_name %}
+                {{ organization.signatory_position }} {{ organization.signatory_name }}
+                {% else %}
+                подпись, расшифровка, дата
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% include 'core/repair_orders/_act_styles.html' %}
+{% endblock %}

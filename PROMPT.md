@@ -176,4 +176,4 @@ PostgreSQL и Redis существует в `settings_production.py` для за
 
 ## Текущая версия
 
-v2.28.0
+v2.29.0

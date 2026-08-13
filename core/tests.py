@@ -24,9 +24,9 @@ from django.utils import timezone
 
 from . import messengers, notifications
 from .models import (
-    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, Payment,
-    RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement,
-    StorageCell,
+    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification,
+    Organization, Payment, RepairOrder, RepairOrderDetail, RepairOrderEquipment,
+    SparePart, StockMovement, StorageCell,
 )
 
 
@@ -1596,7 +1596,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.28.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.29.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2656,6 +2656,167 @@ class SendNotificationsCommandTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.note.status, 'skipped')
         self.assertIn('Старше', self.note.last_error)
+
+
+class ActTests(TestCase):
+    """Печатные акты: приёма оборудования и выполненных работ."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_act', full_name='Админ', password='pass')
+        self.manager = Employee.objects.create_user(
+            username='mgr_act', full_name='Менеджер', password='pass',
+            role='repair_manager')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.organization = Organization.get_solo()
+        self.organization.name = 'ООО «Лифт Тим»'
+        self.organization.inn = '7701234567'
+        self.organization.signatory_position = 'Директор'
+        self.organization.signatory_name = 'Петров П. П.'
+        self.organization.save()
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Городские лифты»', inn='5001'),
+        )
+        model = EquipmentModel.objects.create(name='БУАД-акт')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-ACT'),
+            fault_description='Не запускается привод',
+            seal_numbers='П-0012',
+            initial_condition='Разъём окислен',
+            repair_cost=7200,
+        )
+
+    def _receive(self):
+        return self.client_http.get(f'/repair-orders/{self.order.pk}/act/receive/')
+
+    def _complete(self):
+        return self.client_http.get(f'/repair-orders/{self.order.pk}/act/complete/')
+
+    def test_receive_act_carries_seals_and_condition(self):
+        """Ради этих двух граф акт и подписывают: о них потом спорят."""
+        resp = self._receive()
+
+        self.assertContains(resp, 'П-0012')
+        self.assertContains(resp, 'Разъём окислен')
+        self.assertContains(resp, 'SN-ACT')
+
+    def test_both_acts_carry_the_company_details(self):
+        for resp in (self._receive(), self._complete()):
+            self.assertContains(resp, 'ООО «Лифт Тим»')
+            self.assertContains(resp, '7701234567')
+            self.assertContains(resp, 'Петров П. П.')
+
+    def test_acts_name_both_parties(self):
+        resp = self._receive()
+
+        self.assertContains(resp, 'МУП «Городские лифты»')
+        self.assertContains(resp, 'Исполнитель')
+        self.assertContains(resp, 'Заказчик')
+
+    def test_completion_act_prints_the_work_not_the_fault(self):
+        """Подписывать «выполнено» под описанием поломки нельзя."""
+        self.roe.work_performed = 'Заменён силовой ключ, настроен привод'
+        self.roe.save(update_fields=['work_performed'])
+
+        resp = self._complete()
+
+        self.assertContains(resp, 'Заменён силовой ключ')
+
+    def test_without_recorded_work_the_fault_is_marked_as_fixed(self):
+        resp = self._complete()
+
+        self.assertContains(resp, 'Устранена неисправность')
+
+    def test_completion_act_shows_the_total(self):
+        resp = self._complete()
+
+        self.assertContains(resp, '7200')
+
+    def test_completion_act_shows_the_warranty_date(self):
+        self.order.date_completed = timezone.now()
+        self.order.save(update_fields=['date_completed'])
+
+        resp = self._complete()
+
+        self.assertContains(resp, 'Гарантия на выполненные работы')
+
+    def test_an_unfinished_order_warns_instead_of_inventing_a_date(self):
+        self.assertIsNone(self.order.date_completed)
+
+        resp = self._complete()
+
+        self.assertNotContains(resp, 'Гарантия на выполненные работы')
+        self.assertContains(resp, 'Заказ ещё не завершён')
+
+    def test_completion_act_lists_replaced_parts(self):
+        part = SparePart.objects.create(part_number='ACT-1', name='Конденсатор',
+                                        current_stock=10)
+        RepairOrderDetail.objects.create(repair_order=self.order, part=part,
+                                         quantity_used=2)
+        resp = self._complete()
+
+        self.assertContains(resp, 'Конденсатор')
+        self.assertContains(resp, 'ACT-1')
+
+    def test_acts_print_even_without_company_details(self):
+        """Пустая шапка — не повод не напечатать: допишут от руки."""
+        Organization.objects.all().delete()
+
+        resp = self._receive()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Реквизиты не заполнены')
+
+    def test_acts_require_login(self):
+        resp = TestClient().get(f'/repair-orders/{self.order.pk}/act/receive/')
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+
+class OrganizationTests(TestCase):
+    """Реквизиты фирмы: одна запись, править может только администратор."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_org', full_name='Админ', password='pass')
+        self.accountant = Employee.objects.create_user(
+            username='buh_org', full_name='Бухгалтер', password='pass',
+            role='accountant')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def test_the_record_is_created_on_first_use(self):
+        self.assertEqual(Organization.objects.count(), 0)
+
+        Organization.get_solo()
+        Organization.get_solo()
+
+        self.assertEqual(Organization.objects.count(), 1)
+
+    def test_admin_can_save_the_details(self):
+        resp = self.client_http.post('/management/organization/', {
+            'name': 'ООО «Лифт Тим»', 'inn': '7701234567', 'kpp': '770101001',
+            'address': 'Москва', 'phone': '+7 925 282-40-31', 'email': '',
+            'signatory_position': 'Директор', 'signatory_name': 'Петров П. П.',
+        }, follow=True)
+
+        self.assertEqual(resp.status_code, 200)
+        organization = Organization.get_solo()
+        self.assertEqual(organization.name, 'ООО «Лифт Тим»')
+        self.assertIn('ИНН 7701234567', organization.details_line)
+
+    def test_others_cannot_edit_the_details(self):
+        other = TestClient()
+        other.force_login(self.accountant)
+
+        resp = other.get('/management/organization/')
+
+        self.assertEqual(resp.status_code, 302)
 
 
 class PaymentTests(TestCase):

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.28.0.
+Views для LiftTeam v2.29.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -29,13 +29,13 @@ from channels.layers import get_channel_layer
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
-    Notification, Payment, warranty_cutoff,
+    Notification, Payment, Organization, add_months, warranty_cutoff, warranty_months,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
-    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm
+    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm
 )
 from .utils import (
     generate_qr_image,
@@ -2078,6 +2078,70 @@ def admin_update(request):
 def admin_update_status(request):
     """Ход обновления для опроса со страницы."""
     return JsonResponse(updater.read_status() or {'state': 'idle', 'message': '', 'log': []})
+
+
+# ==================== ПЕЧАТНЫЕ АКТЫ ====================
+
+# Печать через браузер, а не сборка PDF на сервере: диалог печати сохраняет
+# в PDF сам, а библиотека рендеринга на Raspberry Pi — это лишние зависимости
+# и лишние мегабайты ради того, что уже умеет каждый браузер.
+
+def _act_context(pk):
+    """Общее для обоих актов: заказ, оборудование и шапка с реквизитами."""
+    order = get_object_or_404(
+        RepairOrder.objects.select_related('client'), pk=pk
+    )
+    return {
+        'order': order,
+        'organization': Organization.get_solo(),
+        'order_equipments': list(
+            order.order_equipments.select_related('equipment__model').order_by('id')
+        ),
+        'today': timezone.localdate(),
+    }
+
+
+@login_required
+def repair_order_act_receive(request, pk):
+    """Акт приёма оборудования в ремонт.
+
+    Печатается, когда оборудование привезли: в нём пломбы и состояние
+    на момент приёма — то, о чём потом спорят, если что-то не так.
+    """
+    return render(request, 'core/repair_orders/act_receive.html', _act_context(pk))
+
+
+@login_required
+def repair_order_act_complete(request, pk):
+    """Акт выполненных работ.
+
+    Печатается при выдаче: что сделали, сколько стоит, до какого числа
+    действует гарантия.
+    """
+    context = _act_context(pk)
+    order = context['order']
+    context['details'] = list(order.details.select_related('part'))
+    context['warranty_until'] = (
+        add_months(order.date_completed, warranty_months())
+        if order.date_completed and warranty_months() else None
+    )
+    return render(request, 'core/repair_orders/act_complete.html', context)
+
+
+@role_required('admin')
+def admin_organization(request):
+    """Реквизиты своей фирмы — шапка и подписи печатных актов."""
+    organization = Organization.get_solo()
+    if request.method == 'POST':
+        form = OrganizationForm(request.POST, instance=organization)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Реквизиты сохранены')
+            return redirect('admin_organization')
+        messages.error(request, 'Реквизиты не сохранены: проверьте отмеченные поля')
+    else:
+        form = OrganizationForm(instance=organization)
+    return render(request, 'core/admin/organization.html', {'form': form})
 
 
 # ==================== КОРОТКИЕ АДРЕСА ДЛЯ QR-КОДОВ ====================

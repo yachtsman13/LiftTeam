@@ -1,0 +1,138 @@
+{% comment %}
+Оформление печатных актов A4. Общее для акта приёма и акта выполненных
+работ — иначе два документа одной фирмы разъедутся по виду.
+
+PDF собирает сам браузер через диалог печати: библиотека рендеринга
+на Raspberry Pi — это лишние зависимости и мегабайты ради того, что уже
+умеет каждый браузер.
+{% endcomment %}
+<style>
+    .act-sheet {
+        max-width: 190mm;
+        margin: 0 auto;
+        background: #fff;
+        color: #000;
+        font-family: "Times New Roman", Georgia, serif;
+        font-size: 11pt;
+        line-height: 1.35;
+    }
+    .act-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8mm;
+        border-bottom: 1.5pt solid #000;
+        padding-bottom: 3mm;
+        margin-bottom: 5mm;
+    }
+    .act-org-name {
+        font-size: 13pt;
+        font-weight: bold;
+    }
+    .act-org-details {
+        font-size: 9pt;
+        margin-top: 1mm;
+    }
+    /* Пустая шапка — не повод не печатать: акт от руки допишут. Но сказать
+       об этом надо, иначе документ уйдёт заказчику без реквизитов */
+    .act-org-missing {
+        font-size: 9pt;
+        color: #666;
+        font-style: italic;
+    }
+    .act-logo {
+        width: 22mm;
+        height: 22mm;
+        flex: 0 0 22mm;
+    }
+    .act-title {
+        text-align: center;
+        font-size: 13pt;
+        font-weight: bold;
+        margin: 6mm 0 2mm;
+    }
+    .act-subtitle {
+        text-align: center;
+        font-size: 10pt;
+        margin-bottom: 6mm;
+    }
+    .act-parties {
+        margin-bottom: 5mm;
+    }
+    .act-parties div {
+        margin-bottom: 1.5mm;
+    }
+    .act-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 5mm;
+        font-size: 10pt;
+    }
+    .act-table th,
+    .act-table td {
+        border: 0.75pt solid #000;
+        padding: 1.5mm 2mm;
+        vertical-align: top;
+        text-align: left;
+    }
+    .act-table th {
+        font-weight: bold;
+        background: #f0f0f0;
+    }
+    .act-table .num {
+        width: 8mm;
+        text-align: center;
+    }
+    .act-table .money {
+        text-align: right;
+        white-space: nowrap;
+    }
+    .act-total {
+        text-align: right;
+        font-weight: bold;
+        font-size: 11pt;
+        margin-bottom: 5mm;
+    }
+    .act-note {
+        margin-bottom: 5mm;
+    }
+    /* Подписи держим вместе с последней строкой текста: акт без подписей
+       на отдельном листе выглядит как потерянная страница */
+    .act-signatures {
+        display: flex;
+        gap: 12mm;
+        margin-top: 10mm;
+        page-break-inside: avoid;
+    }
+    .act-signature {
+        flex: 1 1 0;
+    }
+    .act-signature-role {
+        font-weight: bold;
+        margin-bottom: 8mm;
+    }
+    .act-signature-line {
+        border-bottom: 0.75pt solid #000;
+        height: 6mm;
+    }
+    .act-signature-hint {
+        font-size: 8pt;
+        color: #444;
+        margin-top: 1mm;
+    }
+
+    @media screen {
+        .act-sheet {
+            padding: 12mm;
+            box-shadow: 0 0 8px rgba(0, 0, 0, .15);
+            margin-bottom: 20px;
+        }
+    }
+    @media print {
+        @page { size: A4; margin: 15mm; }
+        body { margin: 0; padding: 0; background: #fff; }
+        .sidebar, .sidebar-toggle, .no-print, nav, .btn { display: none !important; }
+        .main-content { margin-left: 0 !important; padding: 0 !important; }
+        .act-sheet { max-width: none; padding: 0; box-shadow: none; }
+    }
+</style>

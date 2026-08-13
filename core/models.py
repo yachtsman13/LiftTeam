@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.28.0.
+Модели данных для LiftTeam v2.29.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -113,6 +113,63 @@ class Employee(AbstractBaseUser, PermissionsMixin):
 
     def has_module_perms(self, app_label):
         return self.is_superuser
+
+
+class Organization(models.Model):
+    """Реквизиты своей фирмы — шапка печатных документов.
+
+    Одна запись на всю программу: фирма одна. Отдельная модель, а не строки
+    в настройках, потому что менять их приходится владельцу — переехали,
+    сменился директор, — а лазить для этого по SSH в файл настроек он не
+    должен.
+    """
+    name = models.CharField('Полное название', max_length=255,
+                            help_text='ООО «Название» — как в документах')
+    inn = models.CharField('ИНН', max_length=20, blank=True)
+    kpp = models.CharField('КПП', max_length=20, blank=True)
+    address = models.CharField('Адрес', max_length=500, blank=True)
+    phone = models.CharField('Телефон', max_length=100, blank=True)
+    email = models.EmailField('Email', blank=True)
+    # Кто подписывает акты. Должность отдельно от имени: в подписи она
+    # печатается слева от фамилии
+    signatory_position = models.CharField('Должность подписанта', max_length=100,
+                                          blank=True, default='Директор')
+    signatory_name = models.CharField('ФИО подписанта', max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = 'Реквизиты организации'
+        verbose_name_plural = 'Реквизиты организации'
+
+    def __str__(self):
+        return self.name or 'Реквизиты не заполнены'
+
+    @classmethod
+    def get_solo(cls):
+        """Единственная запись. Создаётся пустой, если её ещё нет: печатать
+        документы можно и с незаполненной шапкой — хуже, чем не напечатать
+        вовсе, это не будет."""
+        organization = cls.objects.first()
+        if organization is None:
+            organization = cls.objects.create()
+        return organization
+
+    @property
+    def is_filled(self):
+        return bool(self.name)
+
+    @property
+    def details_line(self):
+        """Реквизиты одной строкой — для шапки документа."""
+        parts = []
+        if self.inn:
+            parts.append(f'ИНН {self.inn}')
+        if self.kpp:
+            parts.append(f'КПП {self.kpp}')
+        if self.address:
+            parts.append(self.address)
+        if self.phone:
+            parts.append(f'тел. {self.phone}')
+        return ', '.join(parts)
 
 
 class Client(models.Model):
@@ -493,6 +550,10 @@ class RepairOrderEquipment(models.Model):
         Equipment, on_delete=models.CASCADE, verbose_name='Оборудование'
     )
     fault_description = models.TextField('Описание неисправности', blank=True)
+    # Что сделали — не то же самое, что было заявлено сломанным. В акте
+    # выполненных работ должно стоять именно это; пока поля не было,
+    # в акт попадала неисправность, то есть неправда в подписываемом документе
+    work_performed = models.TextField('Выполненные работы', blank=True)
     seal_numbers = models.CharField('Номера пломб', max_length=255, blank=True)
     initial_condition = models.TextField('Начальное состояние', blank=True)
     repair_cost = models.DecimalField('Стоимость ремонта', max_digits=12, decimal_places=2, null=True, blank=True)

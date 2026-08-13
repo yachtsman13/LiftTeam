@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.28.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.29.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -83,6 +83,13 @@
                                 {{ eq_form.fault_description }}
                                 {% if eq_form.fault_description.errors %}
                                 <div class="text-danger small">{{ eq_form.fault_description.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.work_performed.label }}</label>
+                                {{ eq_form.work_performed }}
+                                {% if eq_form.work_performed.errors %}
+                                <div class="text-danger small">{{ eq_form.work_performed.errors.0 }}</div>
                                 {% endif %}
                             </div>
                             <div class="col-md-2">

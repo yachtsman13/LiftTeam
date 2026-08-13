@@ -1,12 +1,12 @@
 """
-Формы для LiftTeam v2.28.0.
+Формы для LiftTeam v2.29.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
 from django.forms import inlineformset_factory
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
-    RepairOrderDetail, SparePart, StockMovement, Employee, Payment
+    RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization
 )
 
 
@@ -123,10 +123,11 @@ class RepairOrderForm(forms.ModelForm):
 class RepairOrderEquipmentForm(forms.ModelForm):
     class Meta:
         model = RepairOrderEquipment
-        fields = ['equipment', 'fault_description', 'seal_numbers', 'initial_condition', 'repair_cost', 'yandex_disk_folder']
+        fields = ['equipment', 'fault_description', 'work_performed', 'seal_numbers', 'initial_condition', 'repair_cost', 'yandex_disk_folder']
         widgets = {
             'equipment': forms.Select(attrs={'class': 'form-select'}),
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Описание неисправности'}),
+            'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Что сделали — попадёт в акт выполненных работ'}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Номера пломб'}),
             'initial_condition': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Начальное состояние'}),
             'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}),
@@ -135,6 +136,7 @@ class RepairOrderEquipmentForm(forms.ModelForm):
         labels = {
             'equipment': 'Оборудование',
             'fault_description': 'Неисправность',
+            'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'initial_condition': 'Начальное состояние',
             'repair_cost': 'Стоимость ремонта',
@@ -214,6 +216,27 @@ class SparePartForm(forms.ModelForm):
             'lead_time_days': 'Срок поставки (дней)',
             'preferred_supplier': 'Предпочтительный поставщик',
             'description': 'Описание',
+        }
+
+
+class OrganizationForm(forms.ModelForm):
+    """Реквизиты своей фирмы — шапка и подписи печатных актов."""
+
+    class Meta:
+        model = Organization
+        fields = ['name', 'inn', 'kpp', 'address', 'phone', 'email',
+                  'signatory_position', 'signatory_name']
+        widgets = {
+            'name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'ООО «Название»'}),
+            'inn': forms.TextInput(attrs={'class': 'form-control'}),
+            'kpp': forms.TextInput(attrs={'class': 'form-control'}),
+            'address': forms.TextInput(attrs={'class': 'form-control'}),
+            'phone': forms.TextInput(attrs={'class': 'form-control'}),
+            'email': forms.EmailInput(attrs={'class': 'form-control'}),
+            'signatory_position': forms.TextInput(attrs={'class': 'form-control'}),
+            'signatory_name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Иванов И. И.'}),
         }
 
 

@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.28.0
+v2.29.0
 """
 from django.urls import path
 from . import views
@@ -46,6 +46,8 @@ urlpatterns = [
     path('repair-orders/<int:pk>/payments/add/', views.repair_order_add_payment, name='repair_order_add_payment'),
     path('repair-orders/<int:pk>/payments/<int:payment_pk>/delete/', views.repair_order_delete_payment, name='repair_order_delete_payment'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/label/', views.repair_order_equipment_label, name='repair_order_equipment_label'),
+    path('repair-orders/<int:pk>/act/receive/', views.repair_order_act_receive, name='repair_order_act_receive'),
+    path('repair-orders/<int:pk>/act/complete/', views.repair_order_act_complete, name='repair_order_act_complete'),
 
     # Детали
     path('parts/', views.part_list, name='part_list'),
@@ -113,6 +115,7 @@ urlpatterns = [
     path('management/users/', views.admin_users, name='admin_users'),
     path('management/users/create/', views.admin_user_create, name='admin_user_create'),
     path('management/users/<int:pk>/edit/', views.admin_user_edit, name='admin_user_edit'),
+    path('management/organization/', views.admin_organization, name='admin_organization'),
     path('management/notifications/', views.admin_notifications, name='admin_notifications'),
     path('management/notifications/<int:pk>/retry/', views.admin_notification_retry, name='admin_notification_retry'),
     path('management/update/', views.admin_update, name='admin_update'),

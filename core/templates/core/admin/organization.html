@@ -1,0 +1,66 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Реквизиты — LiftTeam v2.29.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-building me-2"></i>Реквизиты организации</h2>
+    <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="alert alert-secondary">
+    Эти данные печатаются в шапке актов приёма и выполненных работ.
+    Пока они не заполнены, акты печатаются без реквизитов.
+</div>
+
+<div class="card" style="max-width: 760px">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <div class="col-12">
+                    <label class="form-label">{{ form.name.label }}</label>
+                    {{ form.name }}
+                    <div class="form-text">{{ form.name.help_text }}</div>
+                    {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.inn.label }}</label>
+                    {{ form.inn }}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.kpp.label }}</label>
+                    {{ form.kpp }}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">{{ form.address.label }}</label>
+                    {{ form.address }}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.phone.label }}</label>
+                    {{ form.phone }}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.email.label }}</label>
+                    {{ form.email }}
+                    {% if form.email.errors %}<div class="text-danger small">{{ form.email.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">{{ form.signatory_position.label }}</label>
+                    {{ form.signatory_position }}
+                </div>
+                <div class="col-md-7">
+                    <label class="form-label">{{ form.signatory_name.label }}</label>
+                    {{ form.signatory_name }}
+                    <div class="form-text">Печатается под подписью на актах</div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-lg me-2"></i>Сохранить
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
