@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.30.0.
+Модели данных для LiftTeam v2.31.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -37,6 +37,16 @@ def warranty_cutoff():
 def debt_overdue_days():
     """Через сколько дней после счёта долг считается просроченным."""
     return getattr(settings, 'DEBT_OVERDUE_DAYS', 14)
+
+
+def format_amount(value):
+    """Сумма с разделителями разрядов: «54 000».
+
+    Пробел неразрывный: и в письме, и в печатном акте перенос строки
+    посреди числа превращает 54 000 в «54» на одной строке и «000»
+    на другой.
+    """
+    return f'{value:,.0f}'.replace(',', ' ')
 
 
 def add_months(moment, months):
@@ -193,6 +203,16 @@ class Client(models.Model):
 class EquipmentModel(models.Model):
     """Модель оборудования."""
     name = models.CharField('Название модели', max_length=255, unique=True)
+    # Родовое название — «Преобразователь частоты», «Привод дверей». В списках
+    # и на этикетках оно только съедает место, поэтому там печатается одно
+    # name; но в акте дефектации первая строка — «Тип: <родовое> <модель>»,
+    # и без него документ выглядит как записка для своих, а не как акт.
+    kind = models.CharField(
+        'Тип оборудования', max_length=100, blank=True,
+        help_text='Родовое название для акта дефектации: «Преобразователь '
+                  'частоты», «Привод дверей». Если оно уже есть в начале '
+                  'названия модели, поле оставьте пустым.'
+    )
 
     class Meta:
         verbose_name = 'Модель оборудования'
@@ -200,6 +220,13 @@ class EquipmentModel(models.Model):
         ordering = ['name']
 
     def __str__(self):
+        return self.name
+
+    @property
+    def full_name(self):
+        """Родовое название вместе с моделью — как пишут в акте дефектации."""
+        if self.kind:
+            return f'{self.kind} {self.name}'
         return self.name
 
 
@@ -559,12 +586,61 @@ class RepairOrderEquipment(models.Model):
     repair_cost = models.DecimalField('Стоимость ремонта', max_digits=12, decimal_places=2, null=True, blank=True)
     yandex_disk_folder = models.URLField('Папка на Яндекс.Диске', blank=True)
 
+    # --- Акт дефектации ---
+    # Заполняется после диагностики, до того как заказчик решил, чинить ли.
+    # Отдельно от fault_description: там записано, с чем привезли, здесь —
+    # что нашли внутри, и подписывать эти две вещи одним текстом нельзя.
+    defect_act_date = models.DateField(
+        'Дата акта дефектации', null=True, blank=True,
+        help_text='День диагностики. Пусто — в акте встанет сегодняшнее число.'
+    )
+    diagnosis = models.TextField(
+        'Результаты диагностики', blank=True,
+        help_text='Что вышло из строя. Печатается в акте дефектации.'
+    )
+    error_codes = models.TextField(
+        'Коды ошибок', blank=True,
+        help_text='По одному в строке, вместе с расшифровкой: '
+                  '«F2340» — короткое замыкание в IGBT модуле.'
+    )
+    warranty_case = models.CharField(
+        'Гарантийный случай', max_length=20, blank=True,
+        choices=[('warranty', 'Гарантийный'), ('non_warranty', 'Не гарантийный')]
+    )
+    non_warranty_reason = models.TextField(
+        'Причина, по которой случай не гарантийный', blank=True,
+        help_text='Продолжение фразы «неисправность вызвана …».'
+    )
+    estimated_cost = models.DecimalField(
+        'Ориентировочная стоимость ремонта', max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        help_text='Оценка для заказчика по итогам дефектации. Не то же самое, '
+                  'что стоимость ремонта: та ставится по факту.'
+    )
+
     class Meta:
         verbose_name = 'Оборудование в заказе'
         verbose_name_plural = 'Оборудование в заказе'
 
     def __str__(self):
         return f"{self.equipment} в {self.repair_order.order_number}"
+
+    @property
+    def has_defect_act(self):
+        """Есть ли что печатать в акте дефектации."""
+        return bool(self.diagnosis or self.error_codes or self.warranty_case)
+
+    @property
+    def error_code_lines(self):
+        """Коды ошибок построчно — в акте это маркированный список."""
+        return [line.strip() for line in self.error_codes.splitlines() if line.strip()]
+
+    @property
+    def estimated_cost_text(self):
+        """Оценка для акта: «54 000». None — если оценки нет."""
+        if self.estimated_cost is None:
+            return None
+        return format_amount(self.estimated_cost)
 
     @property
     def warranty_until(self):

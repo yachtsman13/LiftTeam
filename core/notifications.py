@@ -11,7 +11,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import messengers
-from .models import Employee, Notification
+from .models import Employee, Notification, format_amount
 
 
 def _setting(name, default):
@@ -190,12 +190,8 @@ def notify_low_stock(part):
 
 
 def money(value):
-    """Сумма для письма: «15 000 ₽».
-
-    Неразрывный пробел между разрядами — иначе почтовый клиент переносит
-    строку посреди числа, и «15» с «000» оказываются на разных строках.
-    """
-    return f'{value:,.0f}'.replace(',', ' ') + ' ₽'
+    """Сумма для письма: «15 000 ₽». Пробел перед знаком неразрывный."""
+    return format_amount(value) + '\u00a0₽'
 
 
 def plural(count, one, few, many):

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.30.0.
+Views для LiftTeam v2.31.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -35,7 +35,8 @@ from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
-    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm
+    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
+    DefectActForm,
 )
 from .utils import (
     generate_qr_image,
@@ -459,6 +460,14 @@ def equipment_model_list(request):
     return render(request, 'core/equipment/model_list.html', {'models': models})
 
 
+def _equipment_kinds():
+    """Родовые названия, которые уже вводили — подсказка в форме модели."""
+    return list(
+        EquipmentModel.objects.exclude(kind='')
+        .order_by('kind').values_list('kind', flat=True).distinct()
+    )
+
+
 @login_required
 def equipment_model_create(request):
     if request.method == 'POST':
@@ -469,7 +478,9 @@ def equipment_model_create(request):
             return redirect('equipment_model_list')
     else:
         form = EquipmentModelForm()
-    return render(request, 'core/equipment/model_form.html', {'form': form, 'title': 'Новая модель оборудования'})
+    return render(request, 'core/equipment/model_form.html', {
+        'form': form, 'title': 'Новая модель оборудования', 'kinds': _equipment_kinds(),
+    })
 
 
 @login_required
@@ -483,7 +494,10 @@ def equipment_model_edit(request, pk):
             return redirect('equipment_model_list')
     else:
         form = EquipmentModelForm(instance=model)
-    return render(request, 'core/equipment/model_form.html', {'form': form, 'title': 'Редактирование модели', 'model': model})
+    return render(request, 'core/equipment/model_form.html', {
+        'form': form, 'title': 'Редактирование модели', 'model': model,
+        'kinds': _equipment_kinds(),
+    })
 
 
 @role_required('repair_manager', 'warehouse')
@@ -2169,6 +2183,58 @@ def repair_order_act_complete(request, pk):
         if order.date_completed and warranty_months() else None
     )
     return render(request, 'core/repair_orders/act_complete.html', context)
+
+
+def _order_equipment(order_pk, roe_pk):
+    """Единица оборудования в заказе — с проверкой, что она из этого заказа.
+
+    Иначе по подобранному адресу открылась бы чужая позиция, и акт ушёл бы
+    заказчику с серийником из другого заказа.
+    """
+    return get_object_or_404(
+        RepairOrderEquipment.objects.select_related(
+            'equipment__model', 'repair_order__client'
+        ),
+        pk=roe_pk, repair_order_id=order_pk,
+    )
+
+
+@login_required
+def repair_order_defect_act_edit(request, order_pk, roe_pk):
+    """Заполнение акта дефектации по одной единице оборудования."""
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    if request.method == 'POST':
+        form = DefectActForm(request.POST, instance=order_equipment)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Акт дефектации сохранён')
+            return redirect('repair_order_act_defect', order_pk=order_pk, roe_pk=roe_pk)
+        messages.error(request, 'Акт не сохранён: проверьте отмеченные поля')
+    else:
+        form = DefectActForm(instance=order_equipment)
+    return render(request, 'core/repair_orders/defect_act_form.html', {
+        'form': form,
+        'order': order_equipment.repair_order,
+        'order_equipment': order_equipment,
+    })
+
+
+@login_required
+def repair_order_act_defect(request, order_pk, roe_pk):
+    """Акт дефектации оборудования.
+
+    Печатается по итогам диагностики: что нашли внутри, какие коды ошибок
+    в памяти устройства, гарантийный ли случай и во сколько обойдётся
+    ремонт. Один акт на одну единицу — заказчик по нему решает, чинить ли,
+    а решает он по каждой единице отдельно.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    return render(request, 'core/repair_orders/act_defect.html', {
+        'order': order_equipment.repair_order,
+        'order_equipment': order_equipment,
+        'organization': Organization.get_solo(),
+        'act_date': order_equipment.defect_act_date or timezone.localdate(),
+    })
 
 
 @role_required('admin')

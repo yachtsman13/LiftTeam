@@ -1610,7 +1610,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.30.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.31.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2911,6 +2911,177 @@ class ActTests(TestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn('/login/', resp['Location'])
+
+
+class DefectActTests(TestCase):
+    """Акт дефектации: что нашли при диагностике и во сколько это обойдётся."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_defect', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        organization = Organization.get_solo()
+        organization.name = 'ООО «Лифт Тим»'
+        organization.signatory_position = 'Директор'
+        organization.signatory_name = 'Петров П. П.'
+        organization.save()
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО «Ремонт»'),
+        )
+        self.model = EquipmentModel.objects.create(
+            name='Emotron DSV35-40-028 Lift', kind='Преобразователь частоты')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=self.model, serial_number='SN-DEF'),
+            fault_description='Не включается',
+        )
+
+    def _act_url(self):
+        return f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/act/defect/'
+
+    def _edit_url(self):
+        return f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/defect/'
+
+    def _fill(self, **overrides):
+        data = {
+            'defect_act_date': '2026-05-06',
+            'diagnosis': 'Выявлен выход из строя IGBT модуля и его обвязки.',
+            'error_codes': '«Десат» — короткое замыкание между фазами\n'
+                           '«EOL» — переезд зоны полного открытия',
+            'warranty_case': 'non_warranty',
+            'non_warranty_reason': 'перепадами напряжения в питающей сети',
+            'estimated_cost': '14000',
+        }
+        data.update(overrides)
+        return self.client_http.post(self._edit_url(), data)
+
+    def test_the_generic_type_stands_before_the_model(self):
+        """«Тип: Преобразователь частоты Emotron …» — так набран их бланк."""
+        self.assertEqual(self.model.full_name,
+                         'Преобразователь частоты Emotron DSV35-40-028 Lift')
+
+    def test_a_model_without_a_generic_type_prints_as_is(self):
+        model = EquipmentModel.objects.create(name='БУАД-3')
+
+        self.assertEqual(model.full_name, 'БУАД-3')
+
+    def test_filling_the_act_opens_it(self):
+        resp = self._fill()
+
+        self.assertRedirects(resp, self._act_url())
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.estimated_cost, Decimal('14000'))
+        self.assertEqual(self.roe.defect_act_date, datetime.date(2026, 5, 6))
+
+    def test_the_act_carries_diagnosis_codes_and_estimate(self):
+        self._fill()
+
+        resp = self.client_http.get(self._act_url())
+
+        self.assertContains(resp, 'IGBT модуля')
+        self.assertContains(resp, '«Десат»')
+        self.assertContains(resp, '«EOL»')
+        self.assertContains(resp, 'Случай не является гарантийным')
+        self.assertContains(resp, 'перепадами напряжения')
+        # Разряды разделены неразрывным пробелом: иначе печать перенесёт
+        # строку посреди суммы
+        self.assertContains(resp, '14 000 рублей')
+        self.assertContains(resp, 'Преобразователь частоты Emotron DSV35-40-028 Lift')
+        self.assertContains(resp, 'SN-DEF')
+
+    def test_the_estimate_is_grouped_by_thousands(self):
+        self.roe.estimated_cost = Decimal('54000.00')
+
+        self.assertEqual(self.roe.estimated_cost_text, '54 000')
+
+    def test_no_estimate_means_no_text(self):
+        self.assertIsNone(self.roe.estimated_cost_text)
+
+    def test_error_codes_are_split_by_lines(self):
+        self.roe.error_codes = ' «F2340» — КЗ в модуле \n\n «EOC» — КЗ на выходе '
+        self.roe.save(update_fields=['error_codes'])
+
+        self.assertEqual(self.roe.error_code_lines,
+                         ['«F2340» — КЗ в модуле', '«EOC» — КЗ на выходе'])
+
+    def test_a_warranty_case_does_not_demand_money(self):
+        """Гарантийному случаю оценка ремонта в акте не место."""
+        self._fill(warranty_case='warranty', estimated_cost='')
+
+        resp = self.client_http.get(self._act_url())
+
+        self.assertContains(resp, 'Случай является гарантийным')
+        self.assertNotContains(resp, 'Случай не является гарантийным')
+        self.assertNotContains(resp, 'Ориентировочная стоимость')
+
+    def test_a_warranty_case_drops_the_prefilled_reason(self):
+        """Заготовка причины не должна противоречить самому акту."""
+        self._fill(warranty_case='warranty')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.non_warranty_reason, '')
+
+    def test_an_undecided_case_says_nothing_about_the_warranty(self):
+        self._fill(warranty_case='', estimated_cost='')
+
+        resp = self.client_http.get(self._act_url())
+
+        self.assertNotContains(resp, 'гарантийным')
+
+    def test_an_empty_act_warns_instead_of_printing_a_blank(self):
+        resp = self.client_http.get(self._act_url())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Результаты диагностики не заполнены')
+
+    def test_without_a_date_the_act_is_dated_today(self):
+        self._fill(defect_act_date='')
+
+        resp = self.client_http.get(self._act_url())
+
+        self.assertContains(resp, timezone.localdate().strftime('%d.%m.%Y'))
+
+    def test_the_prefilled_reason_is_the_usual_wording(self):
+        resp = self.client_http.get(self._edit_url())
+
+        self.assertContains(resp, 'естественной деградацией электронных компонентов')
+
+    def test_equipment_from_another_order_is_not_reachable(self):
+        """Иначе в акт попал бы серийник из чужого заказа."""
+        other = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО «Другой»'))
+
+        resp = self.client_http.get(
+            f'/repair-orders/{other.pk}/equipment/{self.roe.pk}/act/defect/')
+
+        self.assertEqual(resp.status_code, 404)
+
+    def test_the_act_requires_login(self):
+        resp = TestClient().get(self._act_url())
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_the_order_card_offers_to_fill_the_act(self):
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, self._edit_url())
+
+    def test_a_filled_act_is_linked_from_the_order_card(self):
+        self._fill()
+
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, self._act_url())
+
+    def test_known_generic_types_are_suggested_in_the_model_form(self):
+        resp = self.client_http.get('/equipment/models/create/')
+
+        self.assertContains(resp, 'equipment-kinds')
+        self.assertContains(resp, 'Преобразователь частоты')
 
 
 class OrganizationTests(TestCase):

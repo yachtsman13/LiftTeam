@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.30.0.
+Формы для LiftTeam v2.31.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -71,12 +71,21 @@ class ClientForm(forms.ModelForm):
 class EquipmentModelForm(forms.ModelForm):
     class Meta:
         model = EquipmentModel
-        fields = ['name']
+        fields = ['name', 'kind']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
+            'kind': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'Преобразователь частоты',
+                # Родовых названий немного, и печатаются они в акте слово
+                # в слово — подсказка из уже введённых бережёт от разнобоя
+                # «Привод дверей» / «привод дверей» / «Приводы дверей».
+                'list': 'equipment-kinds',
+            }),
         }
         labels = {
             'name': 'Название модели',
+            'kind': 'Тип оборудования',
         }
 
 
@@ -148,6 +157,72 @@ RepairOrderEquipmentFormSet = inlineformset_factory(
     RepairOrder, RepairOrderEquipment, form=RepairOrderEquipmentForm,
     extra=1, can_delete=True
 )
+
+
+# Формулировка, которая стоит почти в каждом акте дефектации. Подставляется
+# в пустое поле как заготовка, а не как значение по умолчанию в модели:
+# инженер должен её прочитать и при необходимости поправить, а не подписать
+# не глядя.
+DEFAULT_NON_WARRANTY_REASON = (
+    'перепадами напряжения в питающей сети и(или) естественной деградацией '
+    'электронных компонентов'
+)
+
+
+class DefectActForm(forms.ModelForm):
+    """Данные акта дефектации — то, что нашли при диагностике.
+
+    Отдельная форма и отдельная страница: в форме заказа этих полей было бы
+    шесть штук на каждую единицу оборудования, а заполняют их один раз
+    и не тогда, когда заводят заказ.
+    """
+    class Meta:
+        model = RepairOrderEquipment
+        fields = [
+            'defect_act_date', 'diagnosis', 'error_codes',
+            'warranty_case', 'non_warranty_reason', 'estimated_cost',
+        ]
+        widgets = {
+            'defect_act_date': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
+            ),
+            'diagnosis': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 3,
+                'placeholder': 'В результате диагностики устройства выявлен '
+                               'выход из строя IGBT модуля и его обвязки.',
+            }),
+            'error_codes': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 4,
+                'placeholder': '«F2340» — короткое замыкание в IGBT модуле',
+            }),
+            'warranty_case': forms.Select(attrs={'class': 'form-select'}),
+            'non_warranty_reason': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'estimated_cost': forms.NumberInput(
+                attrs={'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Пустой вариант ModelForm подставляет сам, но подписывает его
+        # прочерками: в акте это состояние осмысленное, а не «не выбрано».
+        self.fields['warranty_case'].choices = [
+            ('', 'Не определено') if not value else (value, label)
+            for value, label in self.fields['warranty_case'].choices
+        ]
+        # Именно self.initial, а не field.initial: у формы, связанной
+        # с объектом, значения полей берутся из initial объекта, и пустая
+        # строка оттуда перебила бы заготовку.
+        if not self.instance.non_warranty_reason:
+            self.initial['non_warranty_reason'] = DEFAULT_NON_WARRANTY_REASON
+
+    def clean(self):
+        cleaned = super().clean()
+        # Гарантийному случаю причина негарантийности не нужна, и оставленная
+        # заготовка попала бы в акт прямым противоречием самой себе.
+        if cleaned.get('warranty_case') == 'warranty':
+            cleaned['non_warranty_reason'] = ''
+        return cleaned
 
 
 class RepairOrderDetailForm(forms.ModelForm):

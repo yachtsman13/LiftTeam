@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.30.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.31.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -74,6 +74,17 @@
                                 </td>
                                 <td class="text-end">
                                     <a href="{% url 'equipment_history' oe.equipment.pk %}" class="btn btn-sm btn-outline-primary" title="История этой единицы"><i class="bi bi-clock-history"></i></a>
+                                    {% comment %}
+                                        Пока дефектации нет — ведём на заполнение,
+                                        потом на сам акт: печатать пустой бланк
+                                        незачем, а заполненный переоткрывать
+                                        приходится часто.
+                                    {% endcomment %}
+                                    {% if oe.has_defect_act %}
+                                    <a href="{% url 'repair_order_act_defect' order.pk oe.pk %}" class="btn btn-sm btn-outline-success" title="Акт дефектации" target="_blank"><i class="bi bi-clipboard2-pulse"></i></a>
+                                    {% else %}
+                                    <a href="{% url 'repair_order_defect_act_edit' order.pk oe.pk %}" class="btn btn-sm btn-outline-secondary" title="Заполнить дефектацию"><i class="bi bi-clipboard2-plus"></i></a>
+                                    {% endif %}
                                     <a href="{% url 'repair_order_equipment_label' order.pk oe.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка" target="_blank"><i class="bi bi-printer"></i></a>
                                 </td>
                             </tr>

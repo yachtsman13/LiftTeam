@@ -1,0 +1,111 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.31.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard2-pulse me-2"></i>Акт дефектации</h2>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К заказу {{ order.order_number }}
+    </a>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">{{ order_equipment.equipment.model.full_name }}</h5>
+                <div class="small text-muted">
+                    Серийный номер {{ order_equipment.equipment.serial_number }},
+                    заказ {{ order.order_number }}, {{ order.client.name }}
+                </div>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">{{ form.defect_act_date.label }}</label>
+                            {{ form.defect_act_date }}
+                            <div class="form-text">{{ form.defect_act_date.help_text }}</div>
+                            {% if form.defect_act_date.errors %}
+                            <div class="text-danger small">{{ form.defect_act_date.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">{{ form.warranty_case.label }}</label>
+                            {{ form.warranty_case }}
+                            {% if form.warranty_case.errors %}
+                            <div class="text-danger small">{{ form.warranty_case.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">{{ form.estimated_cost.label }}, ₽</label>
+                            {{ form.estimated_cost }}
+                            <div class="form-text">{{ form.estimated_cost.help_text }}</div>
+                            {% if form.estimated_cost.errors %}
+                            <div class="text-danger small">{{ form.estimated_cost.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.diagnosis.label }}</label>
+                            {{ form.diagnosis }}
+                            {% if form.diagnosis.errors %}
+                            <div class="text-danger small">{{ form.diagnosis.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.error_codes.label }}</label>
+                            {{ form.error_codes }}
+                            <div class="form-text">{{ form.error_codes.help_text }}</div>
+                            {% if form.error_codes.errors %}
+                            <div class="text-danger small">{{ form.error_codes.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.non_warranty_reason.label }}</label>
+                            {{ form.non_warranty_reason }}
+                            <div class="form-text">{{ form.non_warranty_reason.help_text }}</div>
+                            {% if form.non_warranty_reason.errors %}
+                            <div class="text-danger small">{{ form.non_warranty_reason.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="mt-4 d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Сохранить и открыть акт
+                        </button>
+                        <a href="{% url 'repair_order_act_defect' order.pk order_equipment.pk %}"
+                           class="btn btn-outline-dark" target="_blank">
+                            <i class="bi bi-printer me-2"></i>Акт без сохранения
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Что уже записано</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Заявленная неисправность:</strong><br>
+                    {{ order_equipment.fault_description|default:"—"|linebreaksbr }}
+                </p>
+                <p class="mb-2">
+                    <strong>Начальное состояние:</strong><br>
+                    {{ order_equipment.initial_condition|default:"—"|linebreaksbr }}
+                </p>
+                <p class="mb-0 text-muted small">
+                    Результаты диагностики — это не то же самое, что заявленная
+                    неисправность: заказчик пишет, как прибор себя вёл, а в акте
+                    стоит, что нашли внутри.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

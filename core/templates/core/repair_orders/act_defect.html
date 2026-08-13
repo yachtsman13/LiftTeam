@@ -1,0 +1,91 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.31.0{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
+    <button onclick="window.print()" class="btn btn-primary">
+        <i class="bi bi-printer me-2"></i>Печать
+    </button>
+    <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}" class="btn btn-outline-primary">
+        <i class="bi bi-pencil me-2"></i>Изменить
+    </a>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
+    {% if not order_equipment.has_defect_act %}
+    <span class="text-danger small">
+        Результаты диагностики не заполнены — печатать пока нечего.
+    </span>
+    {% endif %}
+</div>
+
+<div class="act-sheet">
+    {% include 'core/repair_orders/_act_header.html' %}
+
+    <div class="act-date-line">{{ act_date|date:"d.m.Y" }}</div>
+
+    <div class="act-title">АКТ</div>
+    <div class="act-subtitle">дефектации оборудования</div>
+
+    <div class="act-parties">
+        <div><strong>Тип:</strong> {{ order_equipment.equipment.model.full_name }}</div>
+        <div><strong>Серийный номер:</strong> {{ order_equipment.equipment.serial_number }}</div>
+    </div>
+
+    <div class="act-note">
+        <strong>Результаты диагностики:</strong><br>
+        {{ order_equipment.diagnosis|default:"—"|linebreaksbr }}
+    </div>
+
+    {% if order_equipment.error_code_lines %}
+    <div class="act-note">
+        Память устройства содержит следующие коды ошибок:
+        <ul class="act-list">
+            {% for line in order_equipment.error_code_lines %}
+            <li>{{ line }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% comment %}
+        Три состояния, а не два: пока инженер не решил, гарантийный случай
+        или нет, акт печатается без этого абзаца. Молчание здесь честнее
+        любой из двух формулировок.
+    {% endcomment %}
+    {% if order_equipment.warranty_case == 'non_warranty' %}
+    <div class="act-note">
+        Случай не является гарантийным{% if order_equipment.non_warranty_reason %}, т.к. неисправность вызвана {{ order_equipment.non_warranty_reason }}{% endif %}.
+        {% if order_equipment.estimated_cost %}
+        Возможен платный ремонт. Ориентировочная стоимость ремонта
+        {{ order_equipment.estimated_cost_text }} рублей.
+        {% endif %}
+    </div>
+    {% elif order_equipment.warranty_case == 'warranty' %}
+    <div class="act-note">
+        Случай является гарантийным. Ремонт выполняется за счёт Исполнителя.
+    </div>
+    {% elif order_equipment.estimated_cost %}
+    <div class="act-note">
+        Ориентировочная стоимость ремонта
+        {{ order_equipment.estimated_cost_text }} рублей.
+    </div>
+    {% endif %}
+
+    <div class="act-signatures">
+        <div class="act-signature">
+            <div class="act-signature-role">
+                {% if organization.signatory_name %}
+                {{ organization.signatory_position }} {{ organization.signatory_name }}
+                {% else %}
+                {{ organization.name|default:"Исполнитель" }}
+                {% endif %}
+            </div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">подпись</div>
+        </div>
+        <div class="act-signature act-stamp">М.П.</div>
+    </div>
+</div>
+
+{% include 'core/repair_orders/_act_styles.html' %}
+{% endblock %}
