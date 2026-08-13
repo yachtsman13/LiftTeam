@@ -1,5 +1,5 @@
 """
-Django signals для LiftTeam v2.31.0.
+Django signals для LiftTeam v2.32.0.
 Сигналы используются только для:
 - настройки параметров подключения к SQLite
 - создания начальной записи истории статуса при создании заказа
@@ -9,12 +9,12 @@ import re
 from functools import lru_cache
 
 from django.db.backends.signals import connection_created
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 from django.utils import timezone
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from .models import Payment, RepairOrder, OrderStatusHistory, SparePart
+from .models import BankOperation, Payment, RepairOrder, OrderStatusHistory, SparePart
 
 
 @lru_cache(maxsize=512)
@@ -151,3 +151,18 @@ def refresh_payment_status(sender, instance, **kwargs):
         return
     order.refresh_from_db(fields=['payment_status'])
     order.refresh_payment_status()
+
+
+@receiver(pre_delete, sender=Payment)
+def release_bank_operation(sender, instance, **kwargs):
+    """Удалили оплату — поступление снова считается неразнесённым.
+
+    Иначе оно осталось бы помеченным «разнесено» без единой оплаты за этим
+    словом: деньги в банке есть, по заказу их нет, и никто об этом не узнает.
+
+    Именно pre_delete: к post_delete Django уже обнулит ссылку по SET_NULL,
+    и найти нужное поступление будет не по чему.
+    """
+    BankOperation.objects.filter(payment_id=instance.pk).update(
+        status='new', payment=None, processed_by=None, processed_at=None
+    )

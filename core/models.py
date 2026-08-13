@@ -1,9 +1,10 @@
 """
-Модели данных для LiftTeam v2.31.0.
+Модели данных для LiftTeam v2.32.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
 import calendar
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -565,6 +566,121 @@ class Payment(models.Model):
 
     def __str__(self):
         return f'{self.amount} ₽ по заказу {self.repair_order.order_number}'
+
+
+class BankOperation(models.Model):
+    """Поступление из выписки Т-Банка.
+
+    Хранится отдельно от `Payment` и не превращается в оплату само.
+    Причин две. Первая: выписку тянут по расписанию, и разнести деньги
+    не по тому заказу автоматом — ошибка, которую потом ищут неделю.
+    Вторая: не всякий приход относится к заказу вообще — возвраты,
+    переводы между своими счетами, поступления не за ремонт.
+
+    Сотрудник видит поступление, программа подсказывает вероятный заказ,
+    решение принимает человек.
+    """
+    STATUS_CHOICES = [
+        ('new', 'Новое'),
+        ('applied', 'Разнесено'),
+        ('skipped', 'Не по заказам'),
+    ]
+
+    # Идентификатор операции в банке. Уникален — на нём держится вся защита
+    # от повторного разнесения одних и тех же денег
+    external_id = models.CharField('Идентификатор в банке', max_length=100, unique=True)
+    operation_date = models.DateField('Дата операции', null=True, blank=True)
+    amount = models.DecimalField('Сумма', max_digits=12, decimal_places=2)
+    purpose = models.TextField('Назначение платежа', blank=True)
+    counterparty = models.CharField('Плательщик', max_length=255, blank=True)
+    counterparty_inn = models.CharField('ИНН плательщика', max_length=20, blank=True, db_index=True)
+    document_number = models.CharField('Номер документа', max_length=50, blank=True)
+
+    status = models.CharField('Состояние', max_length=20, choices=STATUS_CHOICES, default='new')
+    payment = models.OneToOneField(
+        Payment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='bank_operation', verbose_name='Созданная оплата'
+    )
+    processed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        verbose_name='Кем обработано'
+    )
+    processed_at = models.DateTimeField('Когда обработано', null=True, blank=True)
+    loaded_at = models.DateTimeField('Загружено', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Поступление из банка'
+        verbose_name_plural = 'Поступления из банка'
+        ordering = ['-operation_date', '-id']
+
+    def __str__(self):
+        return f'{self.amount} ₽ от {self.counterparty or "неизвестно кого"}'
+
+    @property
+    def amount_text(self):
+        return format_amount(self.amount)
+
+    def guess_orders(self):
+        """Заказы, к которым это поступление вероятно относится.
+
+        Три признака, от надёжного к слабому: номер заказа в назначении
+        платежа, номер счёта в нём же, ИНН плательщика. Совпадения
+        не смешиваются — если нашлось по номеру заказа, ИНН уже не смотрим:
+        иначе к точному попаданию примешались бы все прочие долги заказчика.
+        """
+        text = self.purpose or ''
+
+        by_number = RepairOrder.objects.filter(
+            order_number__in=_order_numbers_in(text)
+        )
+        if by_number.exists():
+            return list(by_number.select_related('client'))
+
+        invoices = _invoice_numbers_in(text)
+        if invoices:
+            by_invoice = RepairOrder.objects.exclude(invoice_number='').filter(
+                invoice_number__in=invoices
+            ).select_related('client')
+            if by_invoice.exists():
+                return list(by_invoice)
+
+        if self.counterparty_inn:
+            return list(
+                RepairOrder.objects.with_debt()
+                .filter(client__inn=self.counterparty_inn)
+                .select_related('client').order_by('invoice_date', 'id')
+            )
+        return []
+
+
+# Номер заказа — LT-2026-08-001, регистр в платёжке бывает любой
+ORDER_NUMBER_RE = re.compile(r'\bLT-\d{4}-\d{2}-\d+\b', re.IGNORECASE)
+# Номер счёта в назначении: «счет 942», «счёт № 942-01», «по сч. №942»
+INVOICE_NUMBER_RE = re.compile(
+    r'сч[её]?т?\.?\s*(?:№|N|#)?\s*([0-9][0-9\-/]*)', re.IGNORECASE
+)
+
+
+def _order_numbers_in(text):
+    return [match.group(0).upper() for match in ORDER_NUMBER_RE.finditer(text)]
+
+
+def _invoice_numbers_in(text):
+    """Номера счетов из назначения платежа.
+
+    Возвращает и найденное целиком, и обрезанное по разделителю: в счёте
+    номер бывает «942», а в платёжке его пишут «942-01» — и наоборот.
+    """
+    found = []
+    for match in INVOICE_NUMBER_RE.finditer(text):
+        number = match.group(1).strip('-/')
+        if not number:
+            continue
+        found.append(number)
+        head = re.split(r'[-/]', number)[0]
+        if head and head != number:
+            found.append(head)
+    return found
 
 
 class RepairOrderEquipment(models.Model):

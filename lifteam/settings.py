@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.31.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.32.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -263,6 +263,29 @@ NOTIFY_TELEGRAM = os.getenv('NOTIFY_TELEGRAM', 'False').lower() == 'true'
 # Общая группа для складских оповещений. Если задана, сообщение уходит один
 # раз в неё, а не каждому кладовщику отдельно.
 TELEGRAM_GROUP_CHAT_ID = os.getenv('TELEGRAM_GROUP_CHAT_ID', '')
+
+# --- Выписка Т-Банка ----------------------------------------------------
+# Программа только читает выписку по расчётному счёту и показывает
+# поступления рядом с долгами по заказам. Разносит деньги человек кнопкой.
+#
+# Токен выдаётся в личном кабинете Т-Бизнеса (Настройки → Токены API).
+# Выдавайте его с правами ТОЛЬКО на чтение выписки: методов, двигающих
+# деньги, в программе нет, и права на них ей не нужны.
+# Пустой токен — раздел «Поступления» просто не показывается.
+TBANK_TOKEN = os.getenv('TBANK_TOKEN', '')
+
+# Номер расчётного счёта, по которому берётся выписка. Узнать его можно
+# командой `python manage.py tbank_statement --accounts`.
+TBANK_ACCOUNT = os.getenv('TBANK_ACCOUNT', '')
+
+# Адрес API вынесен в настройки: банк уже переезжал с business.tinkoff.ru
+# на business.tbank.ru, и следующий переезд должен чиниться правкой .env.
+TBANK_API_URL = os.getenv('TBANK_API_URL', 'https://business.tbank.ru/openapi')
+
+# За сколько последних дней тянуть выписку при каждом запуске. С запасом:
+# повторная загрузка уже известных операций ничего не портит, а пропущенный
+# из-за суточного простоя Pi день стоил бы потерянного поступления.
+TBANK_STATEMENT_DAYS = int(os.getenv('TBANK_STATEMENT_DAYS', '30'))
 
 # Основа ссылок в QR-кодах этикеток. Пусто — берётся адрес, по которому
 # открыта страница печати. На Raspberry Pi значение по умолчанию другое:

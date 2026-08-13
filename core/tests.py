@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from urllib import error as urllib_error
 
 import openpyxl
 from django.conf import settings
@@ -22,11 +23,11 @@ from django.test import Client as TestClient
 from django.urls import resolve
 from django.utils import timezone
 
-from . import messengers, notifications
+from . import messengers, notifications, tbank
 from .models import (
-    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification,
-    Organization, Payment, RepairOrder, RepairOrderDetail, RepairOrderEquipment,
-    SparePart, StockMovement, StorageCell,
+    BankOperation, Client as ClientModel, Employee, Equipment, EquipmentModel,
+    Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
+    RepairOrderEquipment, SparePart, StockMovement, StorageCell,
 )
 
 
@@ -1610,7 +1611,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.31.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.32.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -4068,3 +4069,369 @@ class NotificationAdminPageTests(TestCase):
         with override_settings(NOTIFICATIONS_ENABLED=False):
             resp = self.client_http.get('/management/notifications/')
         self.assertContains(resp, 'Отправка выключена')
+
+
+class TBankTransportTests(TestCase):
+    """Обращение к банку: что уходит в сеть и как разбирается ответ."""
+
+    def _fake_urlopen(self, body='{"operations": []}', calls=None):
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+            def read(self_inner):
+                return body.encode('utf-8')
+
+        def _open(req, timeout=None):
+            if calls is not None:
+                calls.append(req)
+            return _Response()
+
+        return _open
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146',
+                       TBANK_API_URL='https://business.tbank.ru/openapi')
+    def test_statement_request_carries_account_and_period(self):
+        calls = []
+        with patch('core.tbank.request.urlopen', self._fake_urlopen(calls=calls)):
+            tbank.get_statement(datetime.date(2026, 8, 1), datetime.date(2026, 8, 13))
+
+        sent = calls[0]
+        self.assertIn('/openapi/api/v1/statement?', sent.full_url)
+        self.assertIn('accountNumber=40802810700006096146', sent.full_url)
+        self.assertIn('from=2026-08-01', sent.full_url)
+        self.assertIn('till=2026-08-13', sent.full_url)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146')
+    def test_token_goes_as_bearer(self):
+        calls = []
+        with patch('core.tbank.request.urlopen', self._fake_urlopen(calls=calls)):
+            tbank.get_statement(datetime.date(2026, 8, 1), datetime.date(2026, 8, 2))
+
+        self.assertEqual(calls[0].get_header('Authorization'), 'Bearer secret')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='')
+    def test_statement_without_an_account_says_so(self):
+        with self.assertRaises(tbank.TBankError) as caught:
+            tbank.get_statement(datetime.date(2026, 8, 1), datetime.date(2026, 8, 2))
+
+        self.assertIn('TBANK_ACCOUNT', str(caught.exception))
+
+    @override_settings(TBANK_TOKEN='')
+    def test_without_a_token_the_channel_is_off(self):
+        self.assertFalse(tbank.is_configured())
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_an_expired_token_is_named_not_just_numbered(self):
+        def _fail(req, timeout=None):
+            raise urllib_error.HTTPError(req.full_url, 401, 'Unauthorized', {}, io.BytesIO(b'{}'))
+
+        with patch('core.tbank.request.urlopen', _fail):
+            with self.assertRaises(tbank.TBankError) as caught:
+                tbank.get_statement(datetime.date(2026, 8, 1), datetime.date(2026, 8, 2))
+
+        self.assertIn('TBANK_TOKEN', str(caught.exception))
+
+
+class TBankParsingTests(TestCase):
+    """Разбор выписки. Имена полей у банка не одни и те же, отсюда терпимость."""
+
+    def test_operations_are_found_under_any_known_key(self):
+        for key in ('operations', 'items', 'data', 'result', 'transactions'):
+            payload = {key: [{'id': '1'}]}
+
+            self.assertEqual(len(tbank.operation_list(payload)), 1, key)
+
+    def test_a_bare_list_is_a_list_of_operations(self):
+        self.assertEqual(len(tbank.operation_list([{'id': '1'}, {'id': '2'}])), 2)
+
+    def test_amount_is_read_from_a_number_a_string_or_an_object(self):
+        cases = [
+            {'id': '1', 'typeOfOperation': 'Credit', 'amount': 14000},
+            {'id': '1', 'typeOfOperation': 'Credit', 'amount': '14 000,00'},
+            {'id': '1', 'typeOfOperation': 'Credit', 'amount': {'value': '14000.00'}},
+        ]
+        for raw in cases:
+            self.assertEqual(tbank.parse_operation(raw)['amount'], Decimal('14000'), raw)
+
+    def test_date_is_read_with_or_without_time(self):
+        for value in ('2026-08-13', '2026-08-13T10:20:30+03:00', '13.08.2026'):
+            parsed = tbank.parse_operation({'id': '1', 'operationDate': value})
+
+            self.assertEqual(parsed['operation_date'], datetime.date(2026, 8, 13), value)
+
+    def test_counterparty_is_read_from_a_nested_object_too(self):
+        parsed = tbank.parse_operation({
+            'id': '1',
+            'counterParty': {'name': 'ООО «ЛИФТПРОЕКТ»', 'inn': '9722051089'},
+        })
+
+        self.assertEqual(parsed['counterparty'], 'ООО «ЛИФТПРОЕКТ»')
+        self.assertEqual(parsed['counterparty_inn'], '9722051089')
+
+    def test_only_incoming_money_is_taken(self):
+        payload = {'operations': [
+            {'id': 'in', 'typeOfOperation': 'Credit', 'amount': 100},
+            {'id': 'out', 'typeOfOperation': 'Debit', 'amount': 100},
+        ]}
+
+        found = tbank.incoming_operations(payload)
+
+        self.assertEqual([item['external_id'] for item in found], ['in'])
+
+    def test_without_a_direction_a_negative_amount_is_an_expense(self):
+        payload = {'operations': [
+            {'id': 'in', 'amount': 100},
+            {'id': 'out', 'amount': -100},
+        ]}
+
+        found = tbank.incoming_operations(payload)
+
+        self.assertEqual([item['external_id'] for item in found], ['in'])
+
+    def test_an_operation_without_an_id_is_dropped(self):
+        """Без идентификатора её не отличить от такой же в следующей выписке."""
+        payload = {'operations': [{'typeOfOperation': 'Credit', 'amount': 100}]}
+
+        self.assertEqual(tbank.incoming_operations(payload), [])
+
+
+class BankOperationTests(TestCase):
+    """Поступления из выписки и разнесение их по заказам."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_bank', full_name='Бухгалтер', password='pass',
+            role='accountant')
+        self.warehouse = Employee.objects.create_user(
+            username='sklad_bank', full_name='Кладовщик', password='pass',
+            role='warehouse')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.customer = ClientModel.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089')
+        self.order = RepairOrder.objects.create(
+            client=self.customer, invoice_number='942', invoice_date=datetime.date(2026, 8, 1))
+        model = EquipmentModel.objects.create(name='Emotron-банк')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-BANK'),
+            repair_cost=Decimal('14000'),
+        )
+
+    def _operation(self, **overrides):
+        data = {
+            'external_id': 'op-1',
+            'operation_date': datetime.date(2026, 8, 10),
+            'amount': Decimal('14000'),
+            'purpose': 'Оплата по счету 942 от 01.08.2026, без НДС',
+            'counterparty': 'ООО «ЛИФТПРОЕКТ»',
+            'counterparty_inn': '9722051089',
+            'document_number': '178',
+        }
+        data.update(overrides)
+        return BankOperation.objects.create(**data)
+
+    def test_the_order_is_guessed_by_the_invoice_number(self):
+        operation = self._operation()
+
+        self.assertEqual(operation.guess_orders(), [self.order])
+
+    def test_the_order_number_in_the_purpose_wins_over_the_inn(self):
+        """Точное попадание не должно тонуть среди прочих долгов заказчика."""
+        other = RepairOrder.objects.create(client=self.customer)
+        operation = self._operation(
+            purpose=f'Оплата по заказу {other.order_number}')
+
+        self.assertEqual(operation.guess_orders(), [other])
+
+    def test_an_invoice_number_with_a_suffix_still_matches(self):
+        operation = self._operation(purpose='Оплата счет № 942-01 за ремонт')
+
+        self.assertEqual(operation.guess_orders(), [self.order])
+
+    def test_without_any_hint_debts_of_the_payer_are_offered(self):
+        operation = self._operation(purpose='Оплата за услуги')
+
+        self.assertEqual(operation.guess_orders(), [self.order])
+
+    def test_a_stranger_gets_no_suggestions(self):
+        operation = self._operation(purpose='Возврат средств', counterparty_inn='7700000000')
+
+        self.assertEqual(operation.guess_orders(), [])
+
+    def test_applying_creates_a_payment_and_closes_the_debt(self):
+        operation = self._operation()
+
+        resp = self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        self.assertRedirects(resp, '/bank/operations/')
+        operation.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(operation.status, 'applied')
+        self.assertEqual(operation.payment.amount, Decimal('14000'))
+        self.assertEqual(operation.payment.payment_date, datetime.date(2026, 8, 10))
+        self.assertEqual(self.order.paid_amount, Decimal('14000'))
+        self.assertEqual(self.order.payment_status, 'paid')
+
+    def test_the_payment_note_says_where_the_money_came_from(self):
+        operation = self._operation()
+
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        operation.refresh_from_db()
+        self.assertIn('Выписка Т-Банка', operation.payment.note)
+        self.assertIn('178', operation.payment.note)
+
+    def test_the_same_money_cannot_be_applied_twice(self):
+        operation = self._operation()
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.payments.count(), 1)
+        self.assertEqual(self.order.paid_amount, Decimal('14000'))
+
+    def test_cancelling_removes_the_payment_and_returns_the_operation(self):
+        operation = self._operation()
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        self.client_http.post(f'/bank/operations/{operation.pk}/reset/')
+
+        operation.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(operation.status, 'new')
+        self.assertIsNone(operation.payment)
+        self.assertEqual(self.order.paid_amount, 0)
+
+    def test_deleting_the_payment_frees_the_operation(self):
+        """Иначе деньги в банке есть, по заказу их нет, и никто не заметит."""
+        operation = self._operation()
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+        operation.refresh_from_db()
+
+        operation.payment.delete()
+
+        operation.refresh_from_db()
+        self.assertEqual(operation.status, 'new')
+        self.assertIsNone(operation.payment)
+
+    def test_money_not_related_to_orders_can_be_put_aside(self):
+        operation = self._operation(purpose='Перевод между своими счетами')
+
+        self.client_http.post(f'/bank/operations/{operation.pk}/skip/')
+
+        operation.refresh_from_db()
+        self.assertEqual(operation.status, 'skipped')
+
+    def test_an_applied_operation_is_not_skipped_silently(self):
+        operation = self._operation()
+        self.client_http.post(
+            f'/bank/operations/{operation.pk}/apply/', {'order': self.order.pk})
+
+        self.client_http.post(f'/bank/operations/{operation.pk}/skip/')
+
+        operation.refresh_from_db()
+        self.assertEqual(operation.status, 'applied')
+
+    def test_the_list_shows_the_suggestion(self):
+        self._operation()
+
+        resp = self.client_http.get('/bank/operations/')
+
+        self.assertContains(resp, self.order.order_number)
+        self.assertContains(resp, 'ООО «ЛИФТПРОЕКТ»')
+
+    def test_the_warehouse_does_not_see_the_bank(self):
+        """Выписка по расчётному счёту — не то, что нужно кладовщику."""
+        self.client_http.force_login(self.warehouse)
+
+        resp = self.client_http.get('/bank/operations/')
+
+        self.assertEqual(resp.status_code, 302)
+
+    def test_the_dashboard_warns_about_unapplied_money(self):
+        self._operation()
+
+        resp = self.client_http.get('/')
+
+        self.assertContains(resp, 'Не разнесено поступлений')
+
+    def test_the_dashboard_stays_quiet_for_the_warehouse(self):
+        self._operation()
+        self.client_http.force_login(self.warehouse)
+
+        resp = self.client_http.get('/')
+
+        self.assertNotContains(resp, 'Не разнесено поступлений')
+
+
+class TBankStatementCommandTests(TestCase):
+    """Команда загрузки выписки."""
+
+    PAYLOAD = {'operations': [
+        {'id': 'op-1', 'typeOfOperation': 'Credit', 'amount': 14000,
+         'operationDate': '2026-08-10', 'paymentPurpose': 'Оплата по счету 942',
+         'payerName': 'ООО «ЛИФТПРОЕКТ»', 'payerInn': '9722051089',
+         'documentNumber': '178'},
+        {'id': 'op-2', 'typeOfOperation': 'Debit', 'amount': 500,
+         'operationDate': '2026-08-11', 'paymentPurpose': 'Комиссия'},
+    ]}
+
+    def _run(self, **options):
+        out = io.StringIO()
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            call_command('tbank_statement', stdout=out, stderr=out, **options)
+        return out.getvalue()
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_only_incoming_operations_are_stored(self):
+        self._run()
+
+        self.assertEqual(BankOperation.objects.count(), 1)
+        operation = BankOperation.objects.get()
+        self.assertEqual(operation.external_id, 'op-1')
+        self.assertEqual(operation.amount, Decimal('14000'))
+        self.assertEqual(operation.counterparty_inn, '9722051089')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_running_twice_does_not_duplicate_money(self):
+        self._run()
+        self._run()
+
+        self.assertEqual(BankOperation.objects.count(), 1)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_dry_run_stores_nothing(self):
+        output = self._run(dry_run=True)
+
+        self.assertEqual(BankOperation.objects.count(), 0)
+        self.assertIn('проверка', output)
+
+    @override_settings(TBANK_TOKEN='')
+    def test_without_a_token_the_command_says_so_and_stops(self):
+        out = io.StringIO()
+        call_command('tbank_statement', stdout=out)
+
+        self.assertIn('не настроен', out.getvalue())
+        self.assertEqual(BankOperation.objects.count(), 0)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_a_bank_failure_is_reported_without_a_traceback(self):
+        out = io.StringIO()
+        with patch('core.tbank.get_statement',
+                   side_effect=tbank.TBankError('Т-Банк недоступен')):
+            call_command('tbank_statement', stdout=out, stderr=out)
+
+        self.assertIn('Выписка не получена', out.getvalue())

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дашборд — LiftTeam v2.31.0{% endblock %}
+{% block title %}Дашборд — LiftTeam v2.32.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -66,6 +66,22 @@
         </div>
     </div>
 </div>
+
+{% if unapplied_operations %}
+{% comment %}
+    Деньги, которые банк уже получил, а по заказам они ещё не разнесены:
+    пока их не разнесли, заказчик числится должником, и напоминание уйдёт
+    человеку, который заплатил.
+{% endcomment %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center">
+    <div>
+        <i class="bi bi-bank me-2"></i>
+        Не разнесено поступлений: <strong>{{ unapplied_operations }}</strong>.
+        Пока они не разнесены, заказчики числятся должниками.
+    </div>
+    <a href="{% url 'bank_operations' %}" class="btn btn-sm btn-warning">Разнести</a>
+</div>
+{% endif %}
 
 {% comment %}
 Разбивка заказов по статусам. Каждая плитка ведёт в список заказов

@@ -1,0 +1,125 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Поступления — LiftTeam v2.32.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-bank me-2"></i>Поступления из банка</h2>
+</div>
+
+{% if not configured %}
+<div class="alert alert-warning">
+    Выписка Т-Банка не настроена: не задан <code>TBANK_TOKEN</code>.
+    Пока он пустой, список пополняться не будет — см. DEPLOY.md.
+</div>
+{% endif %}
+
+<ul class="nav nav-tabs mb-3">
+    {% for tab in tabs %}
+    <li class="nav-item">
+        <a class="nav-link {% if status == tab.value %}active{% endif %}"
+           href="{% querystring status=tab.value %}">
+            {{ tab.label }}
+            <span class="badge bg-secondary ms-1">{{ tab.count }}</span>
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Дата</th>
+                        <th class="text-end">Сумма</th>
+                        <th>Плательщик</th>
+                        <th>Назначение платежа</th>
+                        <th style="min-width: 18rem;">
+                            {% if status == 'new' %}Разнести на заказ{% else %}Заказ{% endif %}
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td class="text-nowrap">{{ row.operation.operation_date|date:"d.m.Y"|default:"—" }}</td>
+                        <td class="text-end fw-bold text-nowrap">{{ row.operation.amount_text }} ₽</td>
+                        <td>
+                            {{ row.operation.counterparty|default:"—" }}
+                            {% if row.operation.counterparty_inn %}
+                            <div class="small text-muted">ИНН {{ row.operation.counterparty_inn }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="small">{{ row.operation.purpose|default:"—" }}</td>
+                        <td>
+                            {% if row.operation.status == 'applied' %}
+                                {% if row.operation.payment %}
+                                <a href="{% url 'repair_order_detail' row.operation.payment.repair_order.pk %}">
+                                    {{ row.operation.payment.repair_order.order_number }}
+                                </a>
+                                <div class="small text-muted">
+                                    {{ row.operation.processed_by.full_name|default:"—" }},
+                                    {{ row.operation.processed_at|date:"d.m.Y H:i" }}
+                                </div>
+                                {% else %}
+                                <span class="text-muted">оплата удалена</span>
+                                {% endif %}
+                                <form method="post" action="{% url 'bank_operation_reset' row.operation.pk %}"
+                                      class="mt-2"
+                                      onsubmit="return confirm('Отменить разнесение? Оплата по заказу будет удалена.');">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Отменить</button>
+                                </form>
+                            {% elif row.operation.status == 'skipped' %}
+                                <span class="text-muted">не по заказам</span>
+                                <form method="post" action="{% url 'bank_operation_reset' row.operation.pk %}" class="mt-2">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Вернуть</button>
+                                </form>
+                            {% else %}
+                                {% comment %}
+                                    Подсказка, а не автоматика: разнесённое не туда
+                                    поступление ищут потом неделю. Заказ выбирает
+                                    человек, даже когда совпадение одно.
+                                {% endcomment %}
+                                <form method="post" action="{% url 'bank_operation_apply' row.operation.pk %}"
+                                      class="d-flex gap-2">
+                                    {% csrf_token %}
+                                    <select name="order" class="form-select form-select-sm" required>
+                                        <option value="">— выберите заказ —</option>
+                                        {% for order in row.suggestions %}
+                                        <option value="{{ order.pk }}">
+                                            {{ order.order_number }} — {{ order.client.name }}{% if order.debt %} (долг {{ order.debt }} ₽){% endif %}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="btn btn-sm btn-success text-nowrap">Разнести</button>
+                                </form>
+                                {% if not row.suggestions %}
+                                <div class="small text-muted mt-1">
+                                    Заказ не опознан — ни номера заказа, ни номера счёта
+                                    в назначении, ни долга у этого ИНН.
+                                </div>
+                                {% endif %}
+                                <form method="post" action="{% url 'bank_operation_skip' row.operation.pk %}" class="mt-2">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Не по заказам</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center text-muted py-4">
+                            {% if status == 'new' %}Неразнесённых поступлений нет{% else %}Пусто{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+# Разовая загрузка выписки Т-Банка. Расписание задаёт lifteam-tbank.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-tbank.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-tbank.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-tbank
+# Посмотреть логи:    journalctl -u lifteam-tbank
+# Что загрузилось бы, ничего не сохраняя:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       tbank_statement --dry-run
+# Узнать номер расчётного счёта для TBANK_ACCOUNT:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       tbank_statement --accounts
+#
+# Команда только читает выписку и складывает поступления в таблицу.
+# Деньги по заказам разносит человек на странице «Поступления».
+
+[Unit]
+Description=Загрузка выписки Т-Банка для LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+
+ExecStart=/opt/lifteam/venv/bin/python manage.py tbank_statement
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.31.0.
+Views для LiftTeam v2.32.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -29,7 +29,8 @@ from channels.layers import get_channel_layer
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
-    Notification, Payment, Organization, add_months, warranty_cutoff, warranty_months,
+    Notification, Payment, Organization, BankOperation,
+    add_months, warranty_cutoff, warranty_months,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
@@ -43,7 +44,7 @@ from .utils import (
     build_workbook, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import messengers, notifications, updater
+from . import messengers, notifications, tbank, updater
 
 
 def _send_stock_update(part):
@@ -124,6 +125,13 @@ def dashboard(request):
     ).select_related('client')
     total_debt = _total_debt(debtors)
 
+    # Неразнесённые поступления показываем только тем, кто их разносит:
+    # мастеру эта цифра ничего не говорит, а место на дашборде занимает
+    unapplied_operations = (
+        BankOperation.objects.filter(status='new').count()
+        if request.user.role in ('accountant', 'admin') else 0
+    )
+
     context = {
         'total_orders': total_orders,
         'active_orders': active_orders,
@@ -135,6 +143,7 @@ def dashboard(request):
         'status_stats': status_stats,
         'debtors': debtors[:10],
         'total_debt': total_debt,
+        'unapplied_operations': unapplied_operations,
         'now': timezone.now(),
     }
     return render(request, 'core/dashboard.html', context)
@@ -2235,6 +2244,143 @@ def repair_order_act_defect(request, order_pk, roe_pk):
         'organization': Organization.get_solo(),
         'act_date': order_equipment.defect_act_date or timezone.localdate(),
     })
+
+
+# ==================== ПОСТУПЛЕНИЯ ИЗ БАНКА ====================
+
+# Выписка только читается, деньги по заказам разносит человек. Автоматика
+# здесь ограничена подсказкой: ошибочно разнесённое поступление ищут потом
+# неделю, а нажать кнопку — секунда.
+
+@role_required('accountant')
+def bank_operations(request):
+    """Поступления из выписки Т-Банка и подсказки, к каким они заказам."""
+    status = request.GET.get('status', 'new')
+    if status not in dict(BankOperation.STATUS_CHOICES):
+        status = 'new'
+
+    operations = list(
+        BankOperation.objects.filter(status=status)
+        .select_related('payment__repair_order', 'processed_by')[:200]
+    )
+    # Подсказки считаем только для неразнесённых: у разнесённых заказ уже
+    # известен, и лишние запросы к базе там ни к чему
+    rows = [
+        {'operation': operation,
+         'suggestions': operation.guess_orders()[:5] if status == 'new' else []}
+        for operation in operations
+    ]
+
+    counts = dict(
+        BankOperation.objects.values_list('status')
+        .annotate(total=Count('id')).values_list('status', 'total')
+    )
+
+    return render(request, 'core/bank/operations.html', {
+        'rows': rows,
+        'status': status,
+        'tabs': [
+            {'value': value, 'label': label, 'count': counts.get(value, 0)}
+            for value, label in BankOperation.STATUS_CHOICES
+        ],
+        'configured': tbank.is_configured(),
+    })
+
+
+@role_required('accountant')
+@require_POST
+def bank_operation_apply(request, pk):
+    """Записать поступление оплатой по выбранному заказу."""
+    operation = get_object_or_404(BankOperation, pk=pk)
+    if operation.status == 'applied':
+        messages.warning(request, 'Это поступление уже разнесено')
+        return redirect('bank_operations')
+
+    order = get_object_or_404(RepairOrder, pk=request.POST.get('order') or 0)
+
+    with transaction.atomic():
+        payment = Payment.objects.create(
+            repair_order=order,
+            amount=operation.amount,
+            payment_date=operation.operation_date or timezone.localdate(),
+            note=_bank_payment_note(operation),
+            created_by=request.user,
+        )
+        operation.payment = payment
+        operation.status = 'applied'
+        operation.processed_by = request.user
+        operation.processed_at = timezone.now()
+        operation.save(update_fields=['payment', 'status', 'processed_by', 'processed_at'])
+
+    order.refresh_from_db()
+    OrderStatusHistory.objects.create(
+        order=order,
+        payment_status=order.payment_status,
+        changed_by=request.user,
+        notes=f'Разнесено поступление из банка {operation.amount_text} ₽'
+              + (f' от {operation.counterparty}' if operation.counterparty else ''),
+    )
+
+    messages.success(
+        request,
+        f'{operation.amount_text} ₽ разнесены на {order.order_number}. '
+        + (f'Остаток: {order.debt} ₽' if order.debt else 'Заказ оплачен полностью')
+    )
+    return redirect('bank_operations')
+
+
+@role_required('accountant')
+@require_POST
+def bank_operation_skip(request, pk):
+    """Пометить поступление как не относящееся к заказам.
+
+    Возвраты, переводы между своими счетами, поступления не за ремонт —
+    их не разносят, но и висеть в списке они не должны.
+    """
+    operation = get_object_or_404(BankOperation, pk=pk)
+    if operation.status == 'applied':
+        messages.error(request, 'Сначала отмените разнесение')
+        return redirect('bank_operations')
+
+    operation.status = 'skipped'
+    operation.processed_by = request.user
+    operation.processed_at = timezone.now()
+    operation.save(update_fields=['status', 'processed_by', 'processed_at'])
+    messages.success(request, 'Поступление убрано из списка')
+    return redirect('bank_operations')
+
+
+@role_required('accountant')
+@require_POST
+def bank_operation_reset(request, pk):
+    """Вернуть поступление в неразнесённые.
+
+    Созданная оплата при этом удаляется — иначе деньги остались бы
+    по заказу и одновременно ждали разнесения.
+    """
+    operation = get_object_or_404(BankOperation, pk=pk)
+    payment = operation.payment
+    if payment is not None:
+        # Оплата уходит — сигнал pre_delete сам вернёт поступление в «новые»
+        payment.delete()
+        messages.success(request, 'Разнесение отменено, оплата по заказу удалена')
+    else:
+        operation.status = 'new'
+        operation.processed_by = None
+        operation.processed_at = None
+        operation.save(update_fields=['status', 'processed_by', 'processed_at'])
+        messages.success(request, 'Поступление возвращено в список')
+    return redirect('bank_operations')
+
+
+def _bank_payment_note(operation):
+    """Примечание к оплате: откуда деньги. Обрезано под длину поля."""
+    parts = ['Выписка Т-Банка']
+    if operation.document_number:
+        parts.append(f'п/п {operation.document_number}')
+    if operation.counterparty:
+        parts.append(operation.counterparty)
+    return ', '.join(parts)[:255]
 
 
 @role_required('admin')
