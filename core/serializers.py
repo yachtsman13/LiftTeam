@@ -1,5 +1,5 @@
 """
-Django REST Framework serializers для LiftTeam v2.27.0.
+Django REST Framework serializers для LiftTeam v2.28.0.
 """
 from rest_framework import serializers
 from .models import (

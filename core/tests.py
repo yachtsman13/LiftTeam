@@ -6,6 +6,7 @@
 """
 import datetime
 import io
+from decimal import Decimal
 import json
 import sqlite3
 import tempfile
@@ -23,8 +24,9 @@ from django.utils import timezone
 
 from . import messengers, notifications
 from .models import (
-    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, RepairOrder,
-    RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement, StorageCell,
+    Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, Payment,
+    RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement,
+    StorageCell,
 )
 
 
@@ -1074,7 +1076,18 @@ class ReportExportTests(TestCase):
         total_row = rows[-1]
 
         self.assertEqual(total_row['№ заказа'], 'Итого')
-        self.assertEqual(float(total_row['Сумма, ₽']), 4000.0)
+        # Итог по остаткам, а не по стоимостям: часть денег могла уже прийти
+        self.assertEqual(float(total_row['Остаток, ₽']), 4000.0)
+
+    def test_debtors_export_subtracts_payments(self):
+        order = self._debtor_order(2000)
+        Payment.objects.create(repair_order=order, amount=500)
+
+        rows = self._rows(self._sheet('/reports/debtors/export/'))
+
+        self.assertEqual(float(rows[0]['Оплачено, ₽']), 500.0)
+        self.assertEqual(float(rows[0]['Остаток, ₽']), 1500.0)
+        self.assertEqual(float(rows[-1]['Остаток, ₽']), 1500.0)
 
     def test_debtors_export_is_empty_without_debts(self):
         ws = self._sheet('/reports/debtors/export/')
@@ -1583,7 +1596,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.27.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.28.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2645,6 +2658,106 @@ class SendNotificationsCommandTests(TestCase):
         self.assertIn('Старше', self.note.last_error)
 
 
+class PaymentTests(TestCase):
+    """Оплаты частями. До них «оплачено» было только статусом, и при
+    частичной оплате долгом считалась вся стоимость ремонта."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_pay', full_name='Бухгалтер', password='pass',
+            role='accountant')
+        self.manager = Employee.objects.create_user(
+            username='mgr_pay', full_name='Менеджер', password='pass',
+            role='repair_manager')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Плательщик'),
+            payment_status='unpaid',
+        )
+        model = EquipmentModel.objects.create(name='БУАД-оплата')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-PAY'),
+            repair_cost=10000,
+        )
+
+    def _pay(self, amount, client=None):
+        return (client or self.client_http).post(
+            f'/repair-orders/{self.order.pk}/payments/add/',
+            {'amount': amount, 'payment_date': datetime.date.today().isoformat(),
+             'note': 'п/п 1'},
+        )
+
+    def test_partial_payment_leaves_the_remainder_as_debt(self):
+        self._pay('4000')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.paid_amount, Decimal('4000'))
+        self.assertEqual(self.order.debt, Decimal('6000'))
+        self.assertEqual(self.order.payment_status, 'partially_paid')
+
+    def test_full_payment_closes_the_order(self):
+        """Иначе заказ висел бы в должниках после последнего платежа."""
+        self._pay('4000')
+        self._pay('6000')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.debt, 0)
+        self.assertEqual(self.order.payment_status, 'paid')
+        self.assertNotIn(self.order, RepairOrder.objects.with_debt())
+
+    def test_overpayment_still_counts_as_paid(self):
+        self._pay('12000')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.debt, 0)
+        self.assertEqual(self.order.payment_status, 'paid')
+
+    def test_deleting_a_payment_brings_the_debt_back(self):
+        """Суммы вбивают руками, опечатка в разряде — обычное дело."""
+        self._pay('10000')
+        payment = Payment.objects.get()
+
+        self.client_http.post(
+            f'/repair-orders/{self.order.pk}/payments/{payment.pk}/delete/')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.paid_amount, 0)
+        self.assertEqual(self.order.debt, Decimal('10000'))
+        self.assertEqual(self.order.payment_status, 'unpaid')
+
+    def test_a_manually_paid_order_has_no_debt(self):
+        """Статус ставит человек, видевший платёжку, — он главнее арифметики."""
+        self.order.payment_status = 'paid'
+        self.order.save(update_fields=['payment_status'])
+
+        self.assertEqual(self.order.paid_amount, 0)
+        self.assertEqual(self.order.debt, 0)
+
+    def test_payment_is_recorded_in_the_history(self):
+        self._pay('4000')
+
+        note = self.order.status_history.first().notes
+        self.assertIn('4000', note)
+        self.assertIn('п/п 1', note)
+
+    def test_a_negative_amount_is_rejected(self):
+        self._pay('-500')
+
+        self.assertEqual(Payment.objects.count(), 0)
+
+    def test_only_accounting_may_enter_payments(self):
+        manager_client = TestClient()
+        manager_client.force_login(self.manager)
+
+        resp = self._pay('1000', client=manager_client)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(Payment.objects.count(), 0)
+
+
 class DebtQuerySetTests(TestCase):
     """Что считается просроченным долгом."""
 
@@ -2715,6 +2828,26 @@ class DebtQuerySetTests(TestCase):
         self.assertEqual(order.days_overdue, 0)
         self.assertFalse(order.is_overdue)
 
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_a_fully_paid_order_leaves_the_overdue_list(self):
+        order = self._order(payment_status='unpaid',
+                            invoice_date=self.today - datetime.timedelta(days=30))
+        self.assertEqual(RepairOrder.objects.overdue().count(), 1)
+
+        Payment.objects.create(repair_order=order, amount=1000)
+
+        self.assertEqual(RepairOrder.objects.overdue().count(), 0)
+
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_a_partly_paid_order_stays_but_owes_less(self):
+        order = self._order(payment_status='unpaid',
+                            invoice_date=self.today - datetime.timedelta(days=30))
+        Payment.objects.create(repair_order=order, amount=400)
+        order.refresh_from_db()
+
+        self.assertEqual(list(RepairOrder.objects.overdue()), [order])
+        self.assertEqual(order.debt, Decimal('600'))
+
     def test_shipped_without_an_invoice_is_found_separately(self):
         """Это не долг заказчика, а свой недосмотр — но видеть его надо."""
         order = self._order(payment_status='unpaid', invoice_date=None,
@@ -2775,6 +2908,37 @@ class DebtReminderTests(TestCase):
         self.assertIn('ООО Должник', body)
         self.assertIn(notifications.money(15000), body)
         self.assertIn('просрочено 30 дней', body)
+
+    @override_settings(NOTIFY_DEBT_DIGEST=True)
+    def test_digest_counts_the_remainder_not_the_full_price(self):
+        """Регрессия: при частичной оплате требовали всю стоимость."""
+        Payment.objects.create(repair_order=self.order, amount=5000)
+
+        self._run()
+        note = self._queued('debt_digest')[0]
+
+        self.assertIn(notifications.money(10000), note.body)
+        self.assertIn(notifications.money(5000), note.body)
+        self.assertIn(notifications.money(10000), note.subject)
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True)
+    def test_the_client_is_asked_for_the_remainder_only(self):
+        Payment.objects.create(repair_order=self.order, amount=5000)
+
+        self._run()
+        body = self._queued('debt_reminder')[0].body
+
+        self.assertIn(f'Остаток к оплате: {notifications.money(10000)}', body)
+        self.assertIn(notifications.money(5000), body)
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True,
+                       NOTIFY_DEBT_DIGEST=True)
+    def test_a_settled_order_is_left_alone(self):
+        Payment.objects.create(repair_order=self.order, amount=15000)
+
+        self._run()
+
+        self.assertEqual(Notification.objects.count(), 0)
 
     @override_settings(NOTIFY_DEBT_DIGEST=True, DEBT_DIGEST_COOLDOWN_DAYS=7)
     def test_digest_is_not_repeated_every_day(self):
@@ -2889,6 +3053,23 @@ class DebtReportTests(TestCase):
 
         self.assertEqual(
             resp.context['orders'][0].last_reminder.date(), datetime.date.today())
+
+    def test_the_report_shows_the_remainder(self):
+        Payment.objects.create(repair_order=self.order, amount=1000)
+
+        resp = self.client_http.get('/reports/debtors/')
+
+        self.assertEqual(resp.context['total_debt'], Decimal('1500'))
+        self.assertEqual(resp.context['orders'][0].debt, Decimal('1500'))
+
+    def test_the_total_is_not_multiplied_by_several_payments(self):
+        """Соединение с оплатами могло посчитать заказ трижды."""
+        for _ in range(3):
+            Payment.objects.create(repair_order=self.order, amount=100)
+
+        resp = self.client_http.get('/reports/debtors/')
+
+        self.assertEqual(resp.context['total_debt'], Decimal('2200'))
 
     def test_total_is_not_doubled_by_the_reminder_join(self):
         """Регрессия: соединение с очередью могло посчитать сумму дважды."""

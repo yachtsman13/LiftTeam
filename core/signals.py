@@ -1,5 +1,5 @@
 """
-Django signals для LiftTeam v2.27.0.
+Django signals для LiftTeam v2.28.0.
 Сигналы используются только для:
 - настройки параметров подключения к SQLite
 - создания начальной записи истории статуса при создании заказа
@@ -9,12 +9,12 @@ import re
 from functools import lru_cache
 
 from django.db.backends.signals import connection_created
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from .models import RepairOrder, OrderStatusHistory, SparePart
+from .models import Payment, RepairOrder, OrderStatusHistory, SparePart
 
 
 @lru_cache(maxsize=512)
@@ -134,3 +134,20 @@ def notify_stock_update(sender, instance, created, **kwargs):
 
 
 
+
+
+@receiver(post_save, sender=Payment)
+@receiver(post_delete, sender=Payment)
+def refresh_payment_status(sender, instance, **kwargs):
+    """Статус оплаты идёт следом за деньгами.
+
+    Иначе он расходится с суммами: внесли последний платёж, а заказ
+    остался «частично оплачен» и продолжал висеть в должниках и в
+    напоминаниях.
+    """
+    order = instance.repair_order
+    # Заказ мог удаляться целиком — тогда пересчитывать нечего и незачем
+    if not RepairOrder.objects.filter(pk=order.pk).exists():
+        return
+    order.refresh_from_db(fields=['payment_status'])
+    order.refresh_payment_status()

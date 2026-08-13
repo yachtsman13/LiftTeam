@@ -219,9 +219,14 @@ def debt_line(order):
         f'счёт {order.invoice_number} от {order.invoice_date:%d.%m.%Y}'
         if order.invoice_number else f'счёт от {order.invoice_date:%d.%m.%Y}'
     )
+    # Если часть денег уже пришла, называем остаток и рядом — из чего он
+    # вышел: иначе бухгалтер сверяет сумму с платёжкой и не сходится
+    amount = money(order.debt)
+    if order.paid_amount:
+        amount += f' (из {money(order.total_repair_cost)}, внесено {money(order.paid_amount)})'
     return (
         f'{order.order_number} — {order.client.name}, {invoice}, '
-        f'{money(order.total_repair_cost)}, просрочено {order.days_overdue} '
+        f'{amount}, просрочено {order.days_overdue} '
         f'{plural(order.days_overdue, "день", "дня", "дней")}.'
     )
 
@@ -243,6 +248,9 @@ def notify_debt(order):
     if not email:
         return None
 
+    if order.debt <= 0:
+        return None
+
     cooldown = _setting('DEBT_REMINDER_COOLDOWN_DAYS', 7)
     recent = timezone.now() - timedelta(days=cooldown)
     if Notification.objects.filter(
@@ -256,7 +264,18 @@ def notify_debt(order):
         '',
         f'Напоминаем об оплате {invoice} от {order.invoice_date:%d.%m.%Y} '
         f'за ремонт по заказу {order.order_number}.',
-        f'Сумма: {money(order.total_repair_cost)}.',
+    ]
+    # Требуем остаток, а не полную стоимость: часть денег заказчик уже
+    # перевёл, и просить их повторно — верный способ испортить отношения
+    if order.paid_amount:
+        lines += [
+            f'Сумма по счёту: {money(order.total_repair_cost)}, '
+            f'из них поступило {money(order.paid_amount)}.',
+            f'Остаток к оплате: {money(order.debt)}.',
+        ]
+    else:
+        lines.append(f'Сумма: {money(order.debt)}.')
+    lines += [
         '',
         'Если оплата уже прошла, это письмо можно не учитывать — '
         'сведения о поступлении вносятся в программу вручную.',
@@ -294,7 +313,7 @@ def notify_debt_digest(orders, without_invoice=()):
     if Notification.objects.filter(event='debt_digest', created_at__gte=recent).exists():
         return []
 
-    total = sum(order.total_repair_cost for order in orders)
+    total = sum(order.debt for order in orders)
     lines = [f'Задолженности на {timezone.localdate():%d.%m.%Y}.', '']
     lines += [debt_line(order) for order in orders]
     if orders:

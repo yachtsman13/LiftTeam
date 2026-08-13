@@ -1,10 +1,11 @@
 """
-Настройка Django Admin для LiftTeam v2.27.0.
+Настройка Django Admin для LiftTeam v2.28.0.
 """
 from django.contrib import admin
 from .models import (
     Employee, Client, EquipmentModel, Equipment, RepairOrder,
-    RepairOrderEquipment, OrderStatusHistory, SparePart, StorageCell, RepairOrderDetail, StockMovement
+    RepairOrderEquipment, OrderStatusHistory, SparePart, StorageCell, RepairOrderDetail,
+    StockMovement, Payment
 )
 
 
@@ -97,5 +98,9 @@ class StockMovementAdmin(admin.ModelAdmin):
     date_hierarchy = 'movement_date'
 
 
-
-
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ['repair_order', 'amount', 'payment_date', 'note', 'created_by']
+    list_filter = ['payment_date']
+    search_fields = ['repair_order__order_number', 'note']
+    date_hierarchy = 'payment_date'

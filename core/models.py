@@ -1,14 +1,16 @@
 """
-Модели данных для LiftTeam v2.27.0.
+Модели данных для LiftTeam v2.28.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
 import calendar
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models, transaction
-from django.db.models import F, Sum
+from django.db.models import DecimalField, F, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from django.utils import timezone
@@ -269,11 +271,39 @@ class RepairOrderQuerySet(models.QuerySet):
         return (
             self.with_debt()
             .filter(invoice_date__isnull=False, invoice_date__lte=cutoff)
-            # Нулевая стоимость — не долг: письмо «оплатите 0 ₽» позорнее,
-            # чем отсутствие письма. В отчёте такой заказ остаётся видимым,
-            # потому что это недозаполненная карточка, а не оплаченный ремонт
-            .annotate(debt_total=Sum('order_equipments__repair_cost'))
-            .filter(debt_total__gt=0)
+            # Остаток после оплат — то, что реально можно требовать.
+            # Нулевой остаток не долг: письмо «оплатите 0 ₽» позорнее, чем
+            # отсутствие письма. В отчёте такой заказ остаётся видимым,
+            # потому что это недозаполненная карточка, а не оплаченный ремонт.
+            #
+            # Суммы считаются подзапросами, а не двумя Sum по соединениям:
+            # соединение с оплатами размножило бы строки стоимостей, и три
+            # платежа превратили бы ремонт на 1000 в ремонт на 3000
+            .annotate(
+                cost_total=Coalesce(
+                    Subquery(
+                        RepairOrderEquipment.objects
+                        .filter(repair_order=OuterRef('pk'))
+                        .values('repair_order')
+                        .annotate(total=Sum('repair_cost'))
+                        .values('total')[:1]
+                    ),
+                    Value(Decimal('0')),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                paid_total=Coalesce(
+                    Subquery(
+                        Payment.objects
+                        .filter(repair_order=OuterRef('pk'))
+                        .values('repair_order')
+                        .annotate(total=Sum('amount'))
+                        .values('total')[:1]
+                    ),
+                    Value(Decimal('0')),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+            )
+            .filter(cost_total__gt=F('paid_total'))
         )
 
     def shipped_without_invoice(self):
@@ -329,6 +359,43 @@ class RepairOrder(models.Model):
         return self.order_number
 
     @property
+    def paid_amount(self):
+        """Сколько денег по заказу уже поступило."""
+        return self.payments.aggregate(total=Sum('amount'))['total'] or 0
+
+    @property
+    def debt(self):
+        """Сколько осталось получить.
+
+        Заказ со статусом «оплачен» долга не имеет, даже если суммы
+        не вносили: статус ставят руками, и он главнее арифметики —
+        иначе программа спорила бы с человеком, который видел платёжку.
+        """
+        if self.payment_status == 'paid':
+            return 0
+        remaining = self.total_repair_cost - self.paid_amount
+        return remaining if remaining > 0 else 0
+
+    def payment_status_from_payments(self):
+        """Каким должен быть статус оплаты по внесённым суммам."""
+        paid = self.paid_amount
+        if paid <= 0:
+            return 'unpaid'
+        if paid >= self.total_repair_cost:
+            return 'paid'
+        return 'partially_paid'
+
+    def refresh_payment_status(self):
+        """Приводит статус в соответствие с оплатами. Возвращает новый статус,
+        если он изменился, иначе None."""
+        status = self.payment_status_from_payments()
+        if status == self.payment_status:
+            return None
+        self.payment_status = status
+        self.save(update_fields=['payment_status'])
+        return status
+
+    @property
     def days_overdue(self):
         """Сколько дней прошло с даты счёта. 0, если счёта нет."""
         if not self.invoice_date:
@@ -377,6 +444,43 @@ class RepairOrder(models.Model):
             total=Sum('repair_cost')
         )['total']
         return total or 0
+
+
+class Payment(models.Model):
+    """Поступление денег по заказу.
+
+    До этого «оплачено» было только статусом, и при частичной оплате долгом
+    считалась вся стоимость ремонта: в отчёте и в напоминании заказчику
+    стояла сумма, часть которой он уже перевёл.
+
+    Отдельные записи, а не одно поле «оплачено»: деньги приходят частями
+    и в разные дни, и при разговоре с заказчиком важно не только сколько,
+    но и когда.
+    """
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.CASCADE,
+        related_name='payments', verbose_name='Заказ'
+    )
+    amount = models.DecimalField(
+        'Сумма', max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
+    payment_date = models.DateField('Дата поступления', default=timezone.localdate)
+    note = models.CharField('Примечание', max_length=255, blank=True,
+                            help_text='Платёжное поручение, наличные и т.п.')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        verbose_name='Кем внесено'
+    )
+    created_at = models.DateTimeField('Внесено', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Оплата'
+        verbose_name_plural = 'Оплаты'
+        ordering = ['-payment_date', '-id']
+
+    def __str__(self):
+        return f'{self.amount} ₽ по заказу {self.repair_order.order_number}'
 
 
 class RepairOrderEquipment(models.Model):

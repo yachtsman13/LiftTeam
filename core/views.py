@@ -1,17 +1,21 @@
 """
-Views для LiftTeam v2.27.0.
+Views для LiftTeam v2.28.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
 import re
 import json
+from decimal import Decimal
 import openpyxl
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.contrib import messages
-from django.db.models import Q, Sum, Count, F, Max
+from django.db.models import (
+    Count, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value,
+)
+from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -25,13 +29,13 @@ from channels.layers import get_channel_layer
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
-    Notification, warranty_cutoff,
+    Notification, Payment, warranty_cutoff,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
-    RepairOrderEquipmentFormSet, PartImportForm
+    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm
 )
 from .utils import (
     generate_qr_image,
@@ -685,6 +689,8 @@ def repair_order_detail(request, pk):
         'details': details,
         'history': history,
         'order_equipments': order_equipments,
+        'payments': order.payments.select_related('created_by'),
+        'payment_form': PaymentForm(),
         'detail_form': detail_form,
         'status_form': status_form,
     })
@@ -805,6 +811,69 @@ def repair_order_change_status(request, pk):
         notifications.notify_order_status(order, changed_by=request.user)
 
         messages.success(request, f'Статус изменён на «{order.get_status_display()}»')
+    return redirect('repair_order_detail', pk=pk)
+
+
+@role_required('accountant')
+@require_POST
+def repair_order_add_payment(request, pk):
+    """Внести поступившие деньги по заказу.
+
+    Статус оплаты после этого пересчитывается сам (см. core/signals.py):
+    вручную выставленный «частично оплачен» после последнего платежа
+    оставлял бы заказ в должниках навсегда.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    form = PaymentForm(request.POST)
+    if not form.is_valid():
+        error = next(iter(form.errors.values()))[0]
+        messages.error(request, f'Оплата не внесена: {error}')
+        return redirect('repair_order_detail', pk=pk)
+
+    payment = form.save(commit=False)
+    payment.repair_order = order
+    payment.created_by = request.user
+    payment.save()
+
+    order.refresh_from_db()
+    OrderStatusHistory.objects.create(
+        order=order,
+        payment_status=order.payment_status,
+        changed_by=request.user,
+        notes=f'Внесена оплата {payment.amount} ₽'
+              + (f' — {payment.note}' if payment.note else ''),
+    )
+
+    remaining = order.debt
+    messages.success(
+        request,
+        f'Оплата {payment.amount} ₽ внесена. '
+        + (f'Остаток: {remaining} ₽' if remaining else 'Заказ оплачен полностью')
+    )
+    return redirect('repair_order_detail', pk=pk)
+
+
+@role_required('accountant')
+@require_POST
+def repair_order_delete_payment(request, pk, payment_pk):
+    """Убрать ошибочно внесённую оплату.
+
+    Суммы вбивают руками, и опечатка в разряде — обычное дело; без этой
+    кнопки чинить пришлось бы через административную часть Django.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    payment = get_object_or_404(Payment, pk=payment_pk, repair_order=order)
+    amount = payment.amount
+    payment.delete()
+
+    order.refresh_from_db()
+    OrderStatusHistory.objects.create(
+        order=order,
+        payment_status=order.payment_status,
+        changed_by=request.user,
+        notes=f'Удалена оплата {amount} ₽',
+    )
+    messages.success(request, f'Оплата {amount} ₽ удалена')
     return redirect('repair_order_detail', pk=pk)
 
 
@@ -1611,19 +1680,48 @@ def _debtor_orders():
 def _total_debt(orders):
     """Сумма долга одним запросом.
 
-    Складываем стоимости всех единиц оборудования в отобранных заказах: обход
-    заказов в цикле давал бы отдельный запрос на каждый, а должников
-    в конце месяца бывает много.
+    Складываем не стоимости, а остатки: часть денег заказчик мог уже внести,
+    и итог из полных стоимостей завышал бы задолженность.
+
+    Стоимости и оплаты берутся подзапросами, а не двумя Sum по соединениям:
+    соединение размножило бы строки, и заказ с тремя платежами попал бы
+    в итог трижды.
     """
-    return orders.aggregate(total=Sum('order_equipments__repair_cost'))['total'] or 0
+    totals = orders.aggregate(
+        cost=Sum(_order_cost_subquery()),
+        paid=Sum(_order_paid_subquery()),
+    )
+    return (totals['cost'] or 0) - (totals['paid'] or 0)
+
+
+def _order_cost_subquery():
+    return Coalesce(
+        Subquery(
+            RepairOrderEquipment.objects
+            .filter(repair_order=OuterRef('pk'))
+            .values('repair_order').annotate(total=Sum('repair_cost')).values('total')[:1]
+        ),
+        Value(Decimal('0')),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+
+
+def _order_paid_subquery():
+    return Coalesce(
+        Subquery(
+            Payment.objects
+            .filter(repair_order=OuterRef('pk'))
+            .values('repair_order').annotate(total=Sum('amount')).values('total')[:1]
+        ),
+        Value(Decimal('0')),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
 
 
 @login_required
 def report_debtors(request):
     """Задолженности по заказам."""
     orders = _debtor_orders()
-    # Сумму считаем до аннотации: annotate добавил бы второе соединение,
-    # и Sum по стоимостям посчитал бы часть строк дважды
     total_debt = _total_debt(orders)
 
     # Когда заказчику в последний раз напоминали. Без этой колонки на вопрос
@@ -1649,7 +1747,8 @@ def report_debtors_export(request):
 
     headers = [
         '№ заказа', 'Дата приёма', 'Заказчик', 'ИНН', 'Оборудование',
-        'Статус ремонта', 'Статус оплаты', '№ счёта', 'Дата счёта', 'Сумма, ₽',
+        'Статус ремонта', 'Статус оплаты', '№ счёта', 'Дата счёта',
+        'Сумма, ₽', 'Оплачено, ₽', 'Остаток, ₽',
     ]
     rows = [
         [
@@ -1663,6 +1762,8 @@ def report_debtors_export(request):
             order.invoice_number,
             order.invoice_date,
             order.total_repair_cost,
+            order.paid_amount,
+            order.debt,
         ]
         for order in orders
     ]

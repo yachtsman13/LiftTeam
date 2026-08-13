@@ -1,12 +1,12 @@
 """
-Формы для LiftTeam v2.27.0.
+Формы для LiftTeam v2.28.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
 from django.forms import inlineformset_factory
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
-    RepairOrderDetail, SparePart, StockMovement, Employee
+    RepairOrderDetail, SparePart, StockMovement, Employee, Payment
 )
 
 
@@ -214,6 +214,29 @@ class SparePartForm(forms.ModelForm):
             'lead_time_days': 'Срок поставки (дней)',
             'preferred_supplier': 'Предпочтительный поставщик',
             'description': 'Описание',
+        }
+
+
+class PaymentForm(forms.ModelForm):
+    """Внесение поступивших денег по заказу."""
+
+    class Meta:
+        model = Payment
+        fields = ['amount', 'payment_date', 'note']
+        widgets = {
+            'amount': forms.NumberInput(attrs={
+                'class': 'form-control', 'step': '0.01', 'min': '0.01',
+                'placeholder': '0.00',
+            }),
+            'payment_date': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'),
+            'note': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Платёжное поручение, наличные…'}),
+        }
+        labels = {
+            'amount': 'Сумма, ₽',
+            'payment_date': 'Дата поступления',
+            'note': 'Примечание',
         }
 
 

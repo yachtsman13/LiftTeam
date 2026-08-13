@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.27.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.28.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -24,6 +24,12 @@
                     <div class="col-md-6"><strong>Статус:</strong> <span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></div>
                     <div class="col-md-6"><strong>Оплата:</strong> <span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></div>
                     <div class="col-md-6"><strong>Общая стоимость:</strong> {{ order.total_repair_cost }} ₽</div>
+                    {% if order.paid_amount %}
+                    <div class="col-md-6"><strong>Оплачено:</strong> {{ order.paid_amount }} ₽</div>
+                    <div class="col-md-6"><strong>Остаток:</strong>
+                        <span class="fw-bold {% if order.debt %}text-danger{% else %}text-success{% endif %}">{{ order.debt }} ₽</span>
+                    </div>
+                    {% endif %}
                     <div class="col-md-6"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>
                     <div class="col-md-12"><strong>Начальное состояние:</strong><br>{{ order.initial_condition|default:"—"|linebreaks }}</div>
                 </div>
@@ -112,6 +118,88 @@
                         <div class="col-md-3"><button type="submit" class="btn btn-warning w-100"><i class="bi bi-check-lg me-2"></i>Изменить</button></div>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- Оплаты -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-cash-stack me-2"></i>Оплаты</h5>
+                <span class="small">
+                    Внесено <strong>{{ order.paid_amount }} ₽</strong>
+                    из {{ order.total_repair_cost }} ₽{% if order.debt %},
+                    остаток <strong class="text-danger">{{ order.debt }} ₽</strong>{% endif %}
+                </span>
+            </div>
+            <div class="card-body">
+                {% if payments %}
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Дата</th>
+                                <th>Сумма</th>
+                                <th>Примечание</th>
+                                <th>Внёс</th>
+                                <th class="text-end"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for payment in payments %}
+                            <tr>
+                                <td class="text-nowrap">{{ payment.payment_date|date:"d.m.Y" }}</td>
+                                <td class="fw-bold text-nowrap">{{ payment.amount }} ₽</td>
+                                <td>{{ payment.note|default:"—" }}</td>
+                                <td class="small text-muted">{{ payment.created_by.full_name|default:"—" }}</td>
+                                <td class="text-end">
+                                    {% if user.role == 'accountant' or user.role == 'admin' %}
+                                    <form method="post" action="{% url 'repair_order_delete_payment' order.pk payment.pk %}"
+                                          class="d-inline" onsubmit="return confirm('Удалить оплату {{ payment.amount }} ₽?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Удалить оплату">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted mb-3">Оплат не вносили.</p>
+                {% endif %}
+
+                {% if user.role == 'accountant' or user.role == 'admin' %}
+                {% comment %}
+                    Статус оплаты после внесения пересчитывается сам, поэтому
+                    отдельно его трогать не нужно — соседняя форма нужна лишь
+                    для случая, когда сумму вносить не хотят.
+                {% endcomment %}
+                <form method="post" action="{% url 'repair_order_add_payment' order.pk %}">
+                    {% csrf_token %}
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">{{ payment_form.amount.label }}</label>
+                            {{ payment_form.amount }}
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">{{ payment_form.payment_date.label }}</label>
+                            {{ payment_form.payment_date }}
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1">{{ payment_form.note.label }}</label>
+                            {{ payment_form.note }}
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-success w-100">
+                                <i class="bi bi-plus-lg me-1"></i>Внести
+                            </button>
+                        </div>
+                    </div>
+                </form>
+                {% endif %}
             </div>
         </div>
 
