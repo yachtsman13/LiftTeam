@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}План закупок — LiftTeam v2.29.0{% endblock %}
+{% block title %}План закупок — LiftTeam v2.30.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -23,6 +23,8 @@
                         <th>Текущий остаток</th>
                         <th>Мин. остаток</th>
                         <th>Дефицит</th>
+                        <th class="text-end">Цена</th>
+                        <th class="text-end">Сумма</th>
                         <th>Срок поставки</th>
                         <th>Поставщик</th>
                     </tr>
@@ -36,13 +38,41 @@
                         <td>{{ part.current_stock }}</td>
                         <td>{{ part.min_stock }}</td>
                         <td class="fw-bold text-danger">{{ part.stock_deficit }}</td>
+                        <td class="text-end text-nowrap">
+                            {% if part.price is not None %}{{ part.price|floatformat:2 }} ₽
+                            {% else %}<span class="text-muted" title="Цена не заполнена">—</span>{% endif %}
+                        </td>
+                        <td class="text-end text-nowrap fw-bold">
+                            {% if part.purchase_cost is not None %}{{ part.purchase_cost|floatformat:2 }} ₽
+                            {% else %}<span class="text-muted">—</span>{% endif %}
+                        </td>
                         <td>{{ part.lead_time_days }} дн.</td>
                         <td>{{ part.preferred_supplier|default:"—" }}</td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="8" class="text-center text-muted py-4">Все детали в норме</td></tr>
+                    <tr><td colspan="10" class="text-center text-muted py-4">Все детали в норме</td></tr>
                     {% endfor %}
                 </tbody>
+                {% if parts %}
+                <tfoot>
+                    <tr class="table-light">
+                        <th colspan="6" class="text-end">Итого закупить:</th>
+                        <th class="text-end text-nowrap">{{ plan_total|floatformat:2 }} ₽</th>
+                        <th colspan="3">
+                            {% if without_price %}
+                            {% comment %}
+                                Без этой оговорки итог читался бы как полная
+                                сумма закупки, а он неполон ровно на те детали,
+                                у которых цену не заполнили.
+                            {% endcomment %}
+                            <span class="text-muted small">
+                                без учёта {{ without_price }} поз. без цены
+                            </span>
+                            {% endif %}
+                        </th>
+                    </tr>
+                </tfoot>
+                {% endif %}
             </table>
         </div>
     </div>

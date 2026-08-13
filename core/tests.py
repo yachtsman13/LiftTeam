@@ -983,8 +983,22 @@ class ReportExportTests(TestCase):
 
         rows = self._rows(self._sheet('/reports/purchase-plan/export/'))
 
-        self.assertEqual([r['Артикул'] for r in rows], ['LOW-1'])
+        # Последняя строка — «Итого»: файл уходит поставщику и начальству,
+        # и сумму из него достают в первую очередь
+        self.assertEqual([r['Артикул'] for r in rows], ['LOW-1', 'Итого'])
         self.assertEqual(rows[0]['Не хватает'], 4)
+
+    def test_purchase_plan_export_totals_the_prices(self):
+        SparePart.objects.create(part_number='LOW-P1', name='С ценой',
+                                 current_stock=0, min_stock=4, price=Decimal('25.00'))
+        SparePart.objects.create(part_number='LOW-P2', name='Без цены',
+                                 current_stock=0, min_stock=3)
+
+        rows = self._rows(self._sheet('/reports/purchase-plan/export/'))
+
+        self.assertEqual(float(rows[0]['Сумма, ₽']), 100.0)
+        self.assertIsNone(rows[1]['Сумма, ₽'])  # цену не заполняли — и суммы нет
+        self.assertEqual(float(rows[-1]['Сумма, ₽']), 100.0)
 
     def test_purchase_plan_export_shows_cell_address(self):
         part = SparePart.objects.create(part_number='LOW-2', name='Деталь', current_stock=0, min_stock=3)
@@ -1596,7 +1610,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.29.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.30.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2656,6 +2670,127 @@ class SendNotificationsCommandTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.note.status, 'skipped')
         self.assertIn('Старше', self.note.last_error)
+
+
+class PartPriceTests(TestCase):
+    """Закупочные цены: план закупок, стоимость запаса, себестоимость ремонта."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_price', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.part = SparePart.objects.create(
+            part_number='PR-1', name='Конденсатор', current_stock=2, min_stock=10,
+            price=Decimal('150.00'))
+        self.no_price = SparePart.objects.create(
+            part_number='PR-2', name='Без цены', current_stock=0, min_stock=5)
+
+    def test_purchase_cost_covers_only_the_shortage(self):
+        """Закупать надо недостающее, а не весь минимум."""
+        self.assertEqual(self.part.stock_deficit, 8)
+        self.assertEqual(self.part.purchase_cost, Decimal('1200.00'))
+
+    def test_stock_value_uses_what_is_on_the_shelf(self):
+        self.assertEqual(self.part.stock_value, Decimal('300.00'))
+
+    def test_a_part_without_a_price_has_no_sums(self):
+        """Пустая цена — не ноль: «неизвестно» и «бесплатно» разные вещи."""
+        self.assertIsNone(self.no_price.price)
+        self.assertIsNone(self.no_price.purchase_cost)
+        self.assertIsNone(self.no_price.stock_value)
+
+    def test_the_plan_totals_what_it_can_and_names_the_rest(self):
+        resp = self.client_http.get('/reports/purchase-plan/')
+
+        self.assertEqual(resp.context['plan_total'], Decimal('1200.00'))
+        self.assertEqual(resp.context['without_price'], 1)
+        self.assertContains(resp, 'без учёта 1 поз. без цены')
+
+    def test_the_plan_export_carries_price_and_total(self):
+        resp = self.client_http.get('/reports/purchase-plan/export/')
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        rows = [[c.value for c in row] for row in ws.iter_rows()]
+        headers = rows[0]
+
+        self.assertIn('Цена, ₽', headers)
+        self.assertIn('Сумма, ₽', headers)
+        self.assertEqual(rows[-1][0], 'Итого')
+        self.assertEqual(float(rows[-1][headers.index('Сумма, ₽')]), 1200.0)
+
+    def test_incoming_with_a_price_updates_the_part(self):
+        """Вводить цену дважды — в приходе и в карточке — никто не будет."""
+        self.client_http.post(f'/parts/{self.part.pk}/stock-incoming/', {
+            'quantity': 5, 'unit_price': '175.50', 'document_number': 'ТН-7', 'notes': '',
+        })
+        self.part.refresh_from_db()
+
+        self.assertEqual(self.part.price, Decimal('175.50'))
+        self.assertEqual(self.part.current_stock, 7)
+
+    def test_incoming_without_a_price_keeps_the_old_one(self):
+        self.client_http.post(f'/parts/{self.part.pk}/stock-incoming/', {
+            'quantity': 5, 'unit_price': '', 'document_number': '', 'notes': '',
+        })
+        self.part.refresh_from_db()
+
+        self.assertEqual(self.part.price, Decimal('150.00'))
+
+    def test_the_delivery_price_stays_in_the_history(self):
+        """На вопрос «почему деталь подорожала вдвое» отвечает история приходов."""
+        self.client_http.post(f'/parts/{self.part.pk}/stock-incoming/', {
+            'quantity': 4, 'unit_price': '200.00', 'document_number': '', 'notes': '',
+        })
+        movement = StockMovement.objects.get(part=self.part, movement_type='incoming')
+
+        self.assertEqual(movement.unit_price, Decimal('200.00'))
+        self.assertEqual(movement.total_price, Decimal('800.00'))
+
+    def test_parts_used_in_an_order_show_their_cost(self):
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Цена'))
+        detail = RepairOrderDetail.objects.create(
+            repair_order=order, part=self.part, quantity_used=3)
+        RepairOrderDetail.objects.create(
+            repair_order=order, part=self.no_price, quantity_used=1)
+
+        self.assertEqual(detail.cost, Decimal('450.00'))
+
+        resp = self.client_http.get(f'/repair-orders/{order.pk}/')
+        self.assertEqual(resp.context['details_cost'], Decimal('450.00'))
+
+    def test_the_cost_price_never_reaches_the_client_act(self):
+        """Себестоимость — внутренняя цифра; заказчику идёт стоимость работ."""
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Акт-цена'))
+        RepairOrderDetail.objects.create(
+            repair_order=order, part=self.part, quantity_used=3)
+
+        resp = self.client_http.get(f'/repair-orders/{order.pk}/act/complete/')
+
+        self.assertContains(resp, 'Конденсатор')      # деталь названа
+        self.assertNotContains(resp, '450')            # а цена — нет
+        self.assertNotContains(resp, 'Себестоимость')
+
+    def test_price_survives_import_and_export(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['part_number', 'name', 'component_type', 'price'])
+        ws.append(['PR-IMP', 'Импортированная', 'Резистор', '99.90'])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'import.xlsx'
+
+        self.client_http.post('/parts/import/', {'file': buf, 'update_existing': False})
+        self.assertEqual(SparePart.objects.get(part_number='PR-IMP').price,
+                         Decimal('99.90'))
+
+        resp = self.client_http.get('/parts/export/?q=PR-IMP')
+        exported = openpyxl.load_workbook(io.BytesIO(resp.content)).active
+        row = dict(zip([c.value for c in exported[1]], [c.value for c in exported[2]]))
+        self.assertEqual(float(row['price']), 99.90)
 
 
 class ActTests(TestCase):

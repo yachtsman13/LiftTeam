@@ -1,5 +1,5 @@
 """
-Настройка Django Admin для LiftTeam v2.29.0.
+Настройка Django Admin для LiftTeam v2.30.0.
 """
 from django.contrib import admin
 from .models import (
@@ -72,7 +72,7 @@ class RepairOrderAdmin(admin.ModelAdmin):
 
 @admin.register(SparePart)
 class SparePartAdmin(admin.ModelAdmin):
-    list_display = ['part_number', 'name', 'component_type', 'package', 'current_stock', 'min_stock', 'lead_time_days']
+    list_display = ['part_number', 'name', 'component_type', 'package', 'current_stock', 'min_stock', 'price', 'lead_time_days']
     list_filter = ['component_type', 'package']
     search_fields = ['part_number', 'name', 'component_type', 'package']
     readonly_fields = ['current_stock']
@@ -92,7 +92,7 @@ class StorageCellAdmin(admin.ModelAdmin):
 
 @admin.register(StockMovement)
 class StockMovementAdmin(admin.ModelAdmin):
-    list_display = ['part', 'movement_type', 'quantity', 'movement_date', 'document_number', 'created_by']
+    list_display = ['part', 'movement_type', 'quantity', 'unit_price', 'movement_date', 'document_number', 'created_by']
     list_filter = ['movement_type', 'movement_date']
     search_fields = ['part__part_number', 'document_number']
     date_hierarchy = 'movement_date'

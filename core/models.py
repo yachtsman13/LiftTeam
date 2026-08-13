@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.29.0.
+Модели данных для LiftTeam v2.30.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -656,6 +656,14 @@ class SparePart(models.Model):
     current_stock = models.IntegerField('Текущий остаток', default=0, validators=[MinValueValidator(0)])
     min_stock = models.IntegerField('Минимальный остаток', default=0, validators=[MinValueValidator(0)])
     lead_time_days = models.IntegerField('Срок поставки (дней)', default=0, validators=[MinValueValidator(0)])
+    # Закупочная цена за штуку. Пустая — не то же самое, что ноль: у детали,
+    # цену которой ни разу не вносили, стоимость запаса неизвестна, и в план
+    # закупок она попадает без суммы, а не с нулевой
+    price = models.DecimalField(
+        'Цена закупки, ₽', max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text='За штуку. Обновляется сама при приходе с указанной ценой'
+    )
     preferred_supplier = models.CharField('Предпочтительный поставщик', max_length=255, blank=True)
     description = models.TextField('Описание', blank=True)
 
@@ -685,6 +693,20 @@ class SparePart(models.Model):
 
     def is_below_min_stock(self):
         return self.stock_state == self.STOCK_BELOW
+
+    @property
+    def purchase_cost(self):
+        """Во сколько обойдётся закупка недостающего. None — цена неизвестна."""
+        if self.price is None:
+            return None
+        return self.price * self.stock_deficit
+
+    @property
+    def stock_value(self):
+        """Стоимость того, что лежит на складе. None — цена неизвестна."""
+        if self.price is None:
+            return None
+        return self.price * self.current_stock
 
     @property
     def stock_deficit(self):
@@ -779,6 +801,17 @@ class RepairOrderDetail(models.Model):
 
     def __str__(self):
         return f"{self.part.name} x{self.quantity_used} в {self.repair_order.order_number}"
+
+    @property
+    def cost(self):
+        """Во что обошлись эти детали. None — цена детали не заполнена.
+
+        Это себестоимость, внутренняя цифра: в акт заказчику она
+        не попадает, там только стоимость работ.
+        """
+        if self.part.price is None:
+            return None
+        return self.part.price * self.quantity_used
 
 
 class Notification(models.Model):
@@ -897,6 +930,13 @@ class StockMovement(models.Model):
     quantity = models.IntegerField('Количество', validators=[MinValueValidator(1)])
     movement_type = models.CharField('Тип движения', max_length=10, choices=MOVEMENT_TYPE_CHOICES)
     document_number = models.CharField('Номер документа', max_length=100, blank=True)
+    # Цена этой поставки. Хранится у движения, а не только у детали: цены
+    # меняются, и на вопрос «почему деталь подорожала вдвое» отвечает
+    # именно история приходов
+    unit_price = models.DecimalField(
+        'Цена за штуку, ₽', max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal('0'))]
+    )
     repair_order = models.ForeignKey(
         RepairOrder, on_delete=models.SET_NULL, null=True, blank=True,
         verbose_name='Заказ на ремонт'
@@ -915,6 +955,13 @@ class StockMovement(models.Model):
     def __str__(self):
         sign = '+' if self.movement_type == 'incoming' else '-'
         return f"{self.part.part_number} {sign}{self.quantity} ({self.get_movement_type_display()})"
+
+    @property
+    def total_price(self):
+        """Сумма движения. None, если цену не вносили."""
+        if self.unit_price is None:
+            return None
+        return self.unit_price * self.quantity
 
 
 

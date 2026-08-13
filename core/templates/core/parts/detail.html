@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.29.0{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.30.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -28,6 +28,12 @@
                     <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|floatformat:"-6" }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
                     <div class="col-6"><strong>Остаток:</strong> <span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span>{% if part.stock_state == 'at_minimum' %} <small class="text-muted">ровно на минимуме</small>{% endif %}</div>
                     <div class="col-6"><strong>Мин. остаток:</strong> {{ part.min_stock }}</div>
+                    <div class="col-6"><strong>Цена закупки:</strong>
+                        {% if part.price is not None %}{{ part.price|floatformat:2 }} ₽{% else %}<span class="text-muted">не заполнена</span>{% endif %}
+                    </div>
+                    <div class="col-6"><strong>Стоимость запаса:</strong>
+                        {% if part.stock_value is not None %}{{ part.stock_value|floatformat:2 }} ₽{% else %}<span class="text-muted">—</span>{% endif %}
+                    </div>
                     <div class="col-12"><strong>Поставщик:</strong> {{ part.preferred_supplier|default:"—" }}</div>
                     <div class="col-12"><strong>Описание:</strong><br>{{ part.description|default:"—"|linebreaks }}</div>
                 </div>
@@ -85,11 +91,15 @@
                             <label class="form-label small text-muted">Кол-во</label>
                             {{ stock_form.quantity }}
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">Цена за шт.</label>
+                            {{ stock_form.unit_price }}
+                        </div>
+                        <div class="col-md-3">
                             <label class="form-label small text-muted">Документ</label>
                             {{ stock_form.document_number }}
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <label class="form-label small text-muted">Примечание</label>
                             {{ stock_form.notes }}
                         </div>
@@ -143,18 +153,20 @@
             <div class="card-body p-0" style="max-height: 320px; overflow-y: auto;">
                 <div class="table-responsive">
                     <table class="table table-sm mb-0">
-                        <thead class="table-light sticky-top"><tr><th>Дата</th><th>Тип</th><th>Кол-во</th><th>Документ</th><th>Пользователь</th></tr></thead>
+                        <thead class="table-light sticky-top"><tr><th>Дата</th><th>Тип</th><th>Кол-во</th><th class="text-end">Цена</th><th class="text-end">Сумма</th><th>Документ</th><th>Пользователь</th></tr></thead>
                         <tbody>
                             {% for m in movements %}
                             <tr>
                                 <td>{{ m.movement_date|date:"d.m.Y H:i" }}</td>
                                 <td><span class="badge bg-{% if m.movement_type == 'incoming' %}success{% else %}danger{% endif %}">{{ m.get_movement_type_display }}</span></td>
                                 <td>{{ m.quantity }}</td>
+                                <td class="text-end text-nowrap">{% if m.unit_price is not None %}{{ m.unit_price|floatformat:2 }}{% else %}—{% endif %}</td>
+                                <td class="text-end text-nowrap">{% if m.total_price is not None %}{{ m.total_price|floatformat:2 }}{% else %}—{% endif %}</td>
                                 <td>{{ m.document_number|default:"—" }}</td>
                                 <td>{{ m.created_by.full_name|default:"—" }}</td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="5" class="text-center text-muted py-4">Движений нет</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted py-4">Движений нет</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>

@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.29.0.
+Формы для LiftTeam v2.30.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -175,7 +175,7 @@ class SparePartForm(forms.ModelForm):
             'current', 'current_unit',
             'capacitance', 'capacitance_unit',
             'min_stock', 'lead_time_days',
-            'preferred_supplier', 'description'
+            'price', 'preferred_supplier', 'description'
         ]
         widgets = {
             'part_number': forms.TextInput(attrs={'class': 'form-control'}),
@@ -194,6 +194,8 @@ class SparePartForm(forms.ModelForm):
             'capacitance_unit': forms.TextInput(attrs={'class': 'form-control', 'style': 'max-width: 90px', 'list': 'capacitance-units', 'placeholder': 'Ф'}),
             'min_stock': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
             'lead_time_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+            'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01',
+                                              'min': '0', 'placeholder': '0.00'}),
             'preferred_supplier': forms.TextInput(attrs={'class': 'form-control'}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
         }
@@ -267,14 +269,17 @@ class StockMovementForm(forms.ModelForm):
     """Форма для прихода на складе."""
     class Meta:
         model = StockMovement
-        fields = ['quantity', 'document_number', 'notes']
+        fields = ['quantity', 'unit_price', 'document_number', 'notes']
         widgets = {
             'quantity': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+            'unit_price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01',
+                                                   'min': '0', 'placeholder': '0.00'}),
             'document_number': forms.TextInput(attrs={'class': 'form-control'}),
             'notes': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Примечание'}),
         }
         labels = {
             'quantity': 'Количество',
+            'unit_price': 'Цена за штуку, ₽',
             'document_number': 'Номер документа',
             'notes': 'Примечания',
         }

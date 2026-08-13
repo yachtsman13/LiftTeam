@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.29.0.
+Views для LiftTeam v2.30.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -684,11 +684,17 @@ def repair_order_detail(request, pk):
 
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
+    # Себестоимость деталей: детали без цены в сумму не входят, поэтому
+    # складываем то, что известно, а не подставляем ноль
+    details_cost = sum(
+        detail.cost for detail in details if detail.cost is not None
+    )
     return render(request, 'core/repair_orders/detail.html', {
         'order': order,
         'details': details,
         'history': history,
         'order_equipments': order_equipments,
+        'details_cost': details_cost,
         'payments': order.payments.select_related('created_by'),
         'payment_form': PaymentForm(),
         'detail_form': detail_form,
@@ -1037,7 +1043,7 @@ def part_export(request):
         'current', 'current_unit',
         'capacitance', 'capacitance_unit',
         'min_stock', 'current_stock', 'lead_time_days',
-        'preferred_supplier', 'description',
+        'price', 'preferred_supplier', 'description',
     ]
     rows = [
         [getattr(part, field) for field in headers]
@@ -1158,9 +1164,19 @@ def part_stock_incoming(request, pk):
             movement.movement_type = 'incoming'
             movement.created_by = request.user
             part.current_stock += movement.quantity
-            part.save(update_fields=['current_stock'])
+            updated = ['current_stock']
+            # Цена детали идёт следом за последней поставкой: вводить её
+            # дважды — в приходе и в карточке — никто не будет, а расходится
+            # она молча
+            if movement.unit_price is not None:
+                part.price = movement.unit_price
+                updated.append('price')
+            part.save(update_fields=updated)
             movement.save()
-        messages.success(request, f'Приход +{movement.quantity} {part.name} оформлен')
+        message = f'Приход +{movement.quantity} {part.name} оформлен'
+        if movement.unit_price is not None:
+            message += f'. Цена детали обновлена: {movement.unit_price} ₽'
+        messages.success(request, message)
     else:
         messages.error(request, 'Ошибка при оформлении прихода')
     return redirect('part_detail', pk=pk)
@@ -1300,6 +1316,7 @@ def part_import(request):
                         'min_stock': _parse_int(data.get('min_stock'), 5),
                         'current_stock': _parse_int(data.get('current_stock'), 0),
                         'lead_time_days': _parse_int(data.get('lead_time_days'), 14),
+                        'price': _parse_decimal(data.get('price')),
                         'description': _get_str(data.get('description')),
                     }
 
@@ -1566,9 +1583,25 @@ def _purchase_plan_parts():
 @login_required
 def report_purchase_plan(request):
     """План закупок — детали ниже минимального остатка."""
+    parts = list(_purchase_plan_parts())
     return render(request, 'core/reports/purchase_plan.html', {
-        'parts': _purchase_plan_parts(),
+        'parts': parts,
+        **_purchase_plan_totals(parts),
     })
+
+
+def _purchase_plan_totals(parts):
+    """Во что обойдётся закупка и по скольким деталям цена неизвестна.
+
+    Считаем в Python, а не запросом: список короткий, а цена может быть
+    пустой, и складывать её с нулём нельзя — «ноль» и «неизвестно» это
+    разные вещи, и вторую надо назвать вслух.
+    """
+    priced = [part for part in parts if part.price is not None]
+    return {
+        'plan_total': sum(part.purchase_cost for part in priced),
+        'without_price': len(parts) - len(priced),
+    }
 
 
 @login_required
@@ -1577,17 +1610,25 @@ def report_purchase_plan_export(request):
     headers = [
         'Артикул', 'Название', 'Тип', 'Характеристики',
         'Остаток', 'Мин. остаток', 'Не хватает',
+        'Цена, ₽', 'Сумма, ₽',
         'Срок поставки, дней', 'Поставщик', 'Ячейка',
     ]
+    parts = list(_purchase_plan_parts())
     rows = [
         [
             part.part_number, part.name, part.component_type, part.specs_display,
             part.current_stock, part.min_stock, part.stock_deficit,
+            part.price, part.purchase_cost,
             part.lead_time_days, part.preferred_supplier,
             part.current_cell.address if part.current_cell else '',
         ]
-        for part in _purchase_plan_parts()
+        for part in parts
     ]
+    # Итог в самой книге: файл уходит поставщику и начальству, и сумму
+    # из него достают в первую очередь
+    if rows:
+        totals = _purchase_plan_totals(parts)
+        rows.append(['Итого'] + [''] * 7 + [totals['plan_total']] + [''] * 3)
     wb = build_workbook('План закупок', headers, rows)
     return xlsx_response(wb, f'План закупок {timezone.localdate():%Y-%m-%d}.xlsx')
 
@@ -1645,6 +1686,7 @@ def report_stock_movements_export(request):
 
     headers = [
         'Дата', 'Артикул', 'Название', 'Тип', 'Количество',
+        'Цена, ₽', 'Сумма, ₽',
         'Документ', 'Заказ', 'Сотрудник', 'Примечания',
     ]
     rows = [
@@ -1652,6 +1694,7 @@ def report_stock_movements_export(request):
             excel_datetime(m.movement_date),
             m.part.part_number, m.part.name,
             m.get_movement_type_display(), m.quantity,
+            m.unit_price, m.total_price,
             m.document_number,
             m.repair_order.order_number if m.repair_order else '',
             m.created_by.full_name if m.created_by else '',
