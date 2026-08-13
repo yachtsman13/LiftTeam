@@ -1,9 +1,10 @@
 """
-Модели данных для LiftTeam v2.26.0.
+Модели данных для LiftTeam v2.27.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
 import calendar
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models, transaction
@@ -29,6 +30,11 @@ def warranty_cutoff():
     if not months:
         return None
     return add_months(timezone.now(), -months)
+
+
+def debt_overdue_days():
+    """Через сколько дней после счёта долг считается просроченным."""
+    return getattr(settings, 'DEBT_OVERDUE_DAYS', 14)
 
 
 def add_months(moment, months):
@@ -242,6 +248,44 @@ class Equipment(models.Model):
         return {visit.equipment_id: visit for visit in visits}
 
 
+class RepairOrderQuerySet(models.QuerySet):
+    """Отбор по долгам. Условия записаны здесь, а не в каждом отчёте:
+    «должник» встречается на дашборде, в отчёте, в выгрузке и в напоминаниях,
+    и расходиться эти четыре определения не должны."""
+
+    def with_debt(self):
+        """Заказы, по которым остались деньги."""
+        return self.filter(payment_status__in=['unpaid', 'partially_paid'])
+
+    def overdue(self, days=None):
+        """Долги, по которым уже можно напоминать.
+
+        Отсчёт от даты счёта, а не от приёма заказа: пока счёт не выставлен,
+        требовать оплату не за что, и напоминание выглядело бы нелепо.
+        """
+        if days is None:
+            days = debt_overdue_days()
+        cutoff = timezone.localdate() - timedelta(days=days)
+        return (
+            self.with_debt()
+            .filter(invoice_date__isnull=False, invoice_date__lte=cutoff)
+            # Нулевая стоимость — не долг: письмо «оплатите 0 ₽» позорнее,
+            # чем отсутствие письма. В отчёте такой заказ остаётся видимым,
+            # потому что это недозаполненная карточка, а не оплаченный ремонт
+            .annotate(debt_total=Sum('order_equipments__repair_cost'))
+            .filter(debt_total__gt=0)
+        )
+
+    def shipped_without_invoice(self):
+        """Оборудование уехало, а счёт не выставлен.
+
+        Это не долг заказчика, а недоделка своей же конторы, и попадает она
+        в сводку именно поэтому: иначе такой заказ не виден нигде — в отчёте
+        о задолженностях он есть, но ничем не выделен.
+        """
+        return self.with_debt().filter(invoice_date__isnull=True, status='shipped')
+
+
 class RepairOrder(models.Model):
     """Заказ на ремонт."""
     STATUS_CHOICES = [
@@ -274,6 +318,8 @@ class RepairOrder(models.Model):
     payment_status = models.CharField('Статус оплаты', max_length=20, choices=PAYMENT_STATUS_CHOICES, default='unpaid')
     status = models.CharField('Статус', max_length=20, choices=STATUS_CHOICES, default='accepted')
 
+    objects = RepairOrderQuerySet.as_manager()
+
     class Meta:
         verbose_name = 'Заказ на ремонт'
         verbose_name_plural = 'Заказы на ремонт'
@@ -281,6 +327,19 @@ class RepairOrder(models.Model):
 
     def __str__(self):
         return self.order_number
+
+    @property
+    def days_overdue(self):
+        """Сколько дней прошло с даты счёта. 0, если счёта нет."""
+        if not self.invoice_date:
+            return 0
+        return max((timezone.localdate() - self.invoice_date).days, 0)
+
+    @property
+    def is_overdue(self):
+        """Пора ли напоминать об оплате. То же условие, что в `overdue()`,
+        но для одного заказа — в отчёте оно нужно построчно."""
+        return bool(self.invoice_date) and self.days_overdue >= debt_overdue_days()
 
     def save(self, *args, **kwargs):
         if not self.order_number:
@@ -573,6 +632,8 @@ class Notification(models.Model):
     EVENT_CHOICES = [
         ('order_status', 'Смена статуса заказа'),
         ('low_stock', 'Деталь ушла в дефицит'),
+        ('debt_reminder', 'Напоминание об оплате'),
+        ('debt_digest', 'Сводка по задолженностям'),
     ]
     STATUS_CHOICES = [
         ('pending', 'В очереди'),

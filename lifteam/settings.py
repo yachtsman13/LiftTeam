@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.26.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.27.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -210,6 +210,23 @@ NOTIFICATIONS_MAX_ATTEMPTS = int(os.getenv('NOTIFICATIONS_MAX_ATTEMPTS', '5'))
 # Оповещения старше этого срока не отправляются: иначе после включения
 # отправки заказчику придёт месячная пачка новостей о давно закрытых заказах
 NOTIFICATIONS_MAX_AGE_HOURS = int(os.getenv('NOTIFICATIONS_MAX_AGE_HOURS', '24'))
+
+# --- Задолженности ------------------------------------------------------
+# Через сколько дней после даты счёта долг считается просроченным.
+# Отсчёт от счёта, а не от приёма заказа: пока счёт не выставлен,
+# требовать оплату не за что.
+DEBT_OVERDUE_DAYS = int(os.getenv('DEBT_OVERDUE_DAYS', '14'))
+
+# Сводка по должникам бухгалтерии и администратору. Внутреннее письмо,
+# поэтому включено сразу.
+NOTIFY_DEBT_DIGEST = os.getenv('NOTIFY_DEBT_DIGEST', 'True').lower() == 'true'
+DEBT_DIGEST_COOLDOWN_DAYS = int(os.getenv('DEBT_DIGEST_COOLDOWN_DAYS', '7'))
+
+# Напоминания об оплате самим заказчикам. Выключено, и вдобавок требует
+# включённого NOTIFY_CLIENTS: это требование денег от лица фирмы, и
+# начинаться само собой после обновления оно не должно.
+NOTIFY_DEBTS = os.getenv('NOTIFY_DEBTS', 'False').lower() == 'true'
+DEBT_REMINDER_COOLDOWN_DAYS = int(os.getenv('DEBT_REMINDER_COOLDOWN_DAYS', '7'))
 
 # --- Мессенджер MAX -----------------------------------------------------
 # Второй канал складских оповещений. Почта на телефоне часто молчит до

@@ -1,5 +1,5 @@
 """
-Настройка Django Admin для LiftTeam v2.26.0.
+Настройка Django Admin для LiftTeam v2.27.0.
 """
 from django.contrib import admin
 from .models import (

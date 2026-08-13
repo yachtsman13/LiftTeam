@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.26.0.
+Views для LiftTeam v2.27.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -11,7 +11,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.contrib import messages
-from django.db.models import Q, Sum, Count, F
+from django.db.models import Q, Sum, Count, F, Max
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -1595,10 +1595,13 @@ def report_stock_movements_export(request):
 
 
 def _debtor_orders():
-    """Неоплаченные и частично оплаченные заказы — общее для отчёта и выгрузки."""
+    """Неоплаченные и частично оплаченные заказы — общее для отчёта и выгрузки.
+
+    Условие «должник» живёт в `RepairOrderQuerySet`: то же самое нужно
+    напоминаниям, и расходиться эти определения не должны.
+    """
     return (
-        RepairOrder.objects
-        .filter(payment_status__in=['unpaid', 'partially_paid'])
+        RepairOrder.objects.with_debt()
         .select_related('client')
         .prefetch_related('order_equipments__equipment__model')
         .order_by('-date_received')
@@ -1619,9 +1622,23 @@ def _total_debt(orders):
 def report_debtors(request):
     """Задолженности по заказам."""
     orders = _debtor_orders()
+    # Сумму считаем до аннотации: annotate добавил бы второе соединение,
+    # и Sum по стоимостям посчитал бы часть строк дважды
+    total_debt = _total_debt(orders)
+
+    # Когда заказчику в последний раз напоминали. Без этой колонки на вопрос
+    # «мы им вообще писали?» отвечать нечем, кроме как листать очередь
+    orders = orders.annotate(
+        last_reminder=Max(
+            'notifications__created_at',
+            filter=Q(notifications__event='debt_reminder'),
+        )
+    )
+
     return render(request, 'core/reports/debtors.html', {
         'orders': orders,
-        'total_debt': _total_debt(orders),
+        'total_debt': total_debt,
+        'overdue_days': getattr(settings, 'DEBT_OVERDUE_DAYS', 14),
     })
 
 

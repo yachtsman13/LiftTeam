@@ -21,7 +21,7 @@ from django.test import Client as TestClient
 from django.urls import resolve
 from django.utils import timezone
 
-from . import messengers
+from . import messengers, notifications
 from .models import (
     Client as ClientModel, Employee, Equipment, EquipmentModel, Notification, RepairOrder,
     RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement, StorageCell,
@@ -1583,7 +1583,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.26.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.27.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2643,6 +2643,264 @@ class SendNotificationsCommandTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.note.status, 'skipped')
         self.assertIn('Старше', self.note.last_error)
+
+
+class DebtQuerySetTests(TestCase):
+    """Что считается просроченным долгом."""
+
+    def setUp(self):
+        self.client_obj = ClientModel.objects.create(name='ООО Должник')
+        self.today = datetime.date.today()
+
+    def _order(self, **kwargs):
+        order = RepairOrder.objects.create(client=self.client_obj, **kwargs)
+        model, _ = EquipmentModel.objects.get_or_create(name='БУАД-долг')
+        RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number=f'SN-{order.pk}'),
+            repair_cost=1000,
+        )
+        return order
+
+    def test_paid_orders_are_not_debts(self):
+        self._order(payment_status='paid',
+                    invoice_date=self.today - datetime.timedelta(days=90))
+
+        self.assertEqual(RepairOrder.objects.with_debt().count(), 0)
+
+    def test_partially_paid_is_a_debt(self):
+        self._order(payment_status='partially_paid')
+
+        self.assertEqual(RepairOrder.objects.with_debt().count(), 1)
+
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_fresh_invoice_is_not_overdue_yet(self):
+        self._order(payment_status='unpaid',
+                    invoice_date=self.today - datetime.timedelta(days=3))
+
+        self.assertEqual(RepairOrder.objects.overdue().count(), 0)
+
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_old_invoice_is_overdue(self):
+        order = self._order(payment_status='unpaid',
+                            invoice_date=self.today - datetime.timedelta(days=20))
+
+        self.assertEqual(list(RepairOrder.objects.overdue()), [order])
+        self.assertEqual(order.days_overdue, 20)
+        self.assertTrue(order.is_overdue)
+
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_a_zero_sum_order_is_not_chased(self):
+        """Письмо «оплатите 0 ₽» позорнее, чем отсутствие письма."""
+        order = RepairOrder.objects.create(
+            client=self.client_obj, payment_status='unpaid',
+            invoice_date=self.today - datetime.timedelta(days=30))
+        model, _ = EquipmentModel.objects.get_or_create(name='БУАД-ноль')
+        RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-ZERO'),
+            repair_cost=0,
+        )
+
+        self.assertEqual(RepairOrder.objects.overdue().count(), 0)
+        # В отчёте он при этом остаётся: это недозаполненная карточка
+        self.assertIn(order, RepairOrder.objects.with_debt())
+
+    def test_without_an_invoice_nothing_is_overdue(self):
+        """Пока счёт не выставлен, требовать оплату не за что."""
+        order = self._order(payment_status='unpaid', invoice_date=None)
+
+        self.assertEqual(RepairOrder.objects.overdue().count(), 0)
+        self.assertEqual(order.days_overdue, 0)
+        self.assertFalse(order.is_overdue)
+
+    def test_shipped_without_an_invoice_is_found_separately(self):
+        """Это не долг заказчика, а свой недосмотр — но видеть его надо."""
+        order = self._order(payment_status='unpaid', invoice_date=None,
+                            status='shipped')
+        self._order(payment_status='unpaid', invoice_date=None, status='repair')
+
+        self.assertEqual(list(RepairOrder.objects.shipped_without_invoice()), [order])
+
+
+class DebtReminderTests(TestCase):
+    """Напоминания заказчику и сводка бухгалтерии."""
+
+    def setUp(self):
+        Employee.objects.create_user(
+            username='buh', full_name='Бухгалтер', password='pass',
+            role='accountant', email='buh@example.com',
+        )
+        Employee.objects.create_user(
+            username='sklad_d', full_name='Кладовщик', password='pass',
+            role='warehouse', email='sklad@example.com',
+        )
+        self.client_obj = ClientModel.objects.create(
+            name='ООО Должник', email='debtor@example.com')
+        self.order = RepairOrder.objects.create(
+            client=self.client_obj, payment_status='unpaid',
+            invoice_number='42',
+            invoice_date=datetime.date.today() - datetime.timedelta(days=30),
+        )
+        model = EquipmentModel.objects.create(name='БУАД-напоминание')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-D1'),
+            repair_cost=15000,
+        )
+
+    def _run(self, **options):
+        out = io.StringIO()
+        call_command('debt_reminders', stdout=out, stderr=io.StringIO(), **options)
+        return out.getvalue()
+
+    def _queued(self, event):
+        return list(Notification.objects.filter(event=event))
+
+    @override_settings(NOTIFY_DEBT_DIGEST=True)
+    def test_digest_goes_to_accounting_not_to_the_warehouse(self):
+        """Долги — дело бухгалтерии; кладовщику этот список ни к чему."""
+        self._run()
+
+        recipients = {n.recipient for n in self._queued('debt_digest')}
+        self.assertEqual(recipients, {'buh@example.com'})
+
+    @override_settings(NOTIFY_DEBT_DIGEST=True)
+    def test_digest_lists_the_order_and_the_total(self):
+        self._run()
+
+        body = self._queued('debt_digest')[0].body
+        self.assertIn(self.order.order_number, body)
+        self.assertIn('ООО Должник', body)
+        self.assertIn(notifications.money(15000), body)
+        self.assertIn('просрочено 30 дней', body)
+
+    @override_settings(NOTIFY_DEBT_DIGEST=True, DEBT_DIGEST_COOLDOWN_DAYS=7)
+    def test_digest_is_not_repeated_every_day(self):
+        """Команда запускается ежедневно, сводка каждый день не нужна."""
+        self._run()
+        self._run()
+
+        self.assertEqual(len(self._queued('debt_digest')), 1)
+
+    @override_settings(NOTIFY_DEBT_DIGEST=True)
+    def test_shipped_without_an_invoice_gets_into_the_digest(self):
+        without = RepairOrder.objects.create(
+            client=self.client_obj, payment_status='unpaid', status='shipped')
+        self._run()
+
+        body = self._queued('debt_digest')[0].body
+        self.assertIn('счёт не выставлен', body)
+        self.assertIn(without.order_number, body)
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True)
+    def test_client_reminder_carries_the_invoice_and_the_sum(self):
+        self._run()
+
+        reminders = self._queued('debt_reminder')
+        self.assertEqual([n.recipient for n in reminders], ['debtor@example.com'])
+        self.assertIn('42', reminders[0].body)
+        self.assertIn(notifications.money(15000), reminders[0].body)
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=False)
+    def test_client_reminders_are_off_by_default(self):
+        """Требование денег от лица фирмы не должно начаться само собой."""
+        self._run()
+
+        self.assertEqual(self._queued('debt_reminder'), [])
+
+    @override_settings(NOTIFY_CLIENTS=False, NOTIFY_DEBTS=True)
+    def test_the_general_client_switch_also_holds_them(self):
+        self._run()
+
+        self.assertEqual(self._queued('debt_reminder'), [])
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True,
+                       DEBT_REMINDER_COOLDOWN_DAYS=7)
+    def test_the_same_client_is_not_pestered_daily(self):
+        self._run()
+        self._run()
+
+        self.assertEqual(len(self._queued('debt_reminder')), 1)
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True)
+    def test_a_client_without_an_email_is_skipped_quietly(self):
+        self.client_obj.email = ''
+        self.client_obj.save(update_fields=['email'])
+
+        self._run()
+
+        self.assertEqual(self._queued('debt_reminder'), [])
+
+    @override_settings(NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True,
+                       NOTIFY_DEBT_DIGEST=True)
+    def test_dry_run_queues_nothing(self):
+        output = self._run(dry_run=True)
+
+        self.assertEqual(Notification.objects.count(), 0)
+        self.assertIn('проверка', output)
+        self.assertIn(self.order.order_number, output)
+
+    @override_settings(DEBT_OVERDUE_DAYS=14, NOTIFY_CLIENTS=True, NOTIFY_DEBTS=True,
+                       NOTIFY_DEBT_DIGEST=True)
+    def test_a_fresh_invoice_is_left_alone(self):
+        RepairOrder.objects.filter(pk=self.order.pk).update(
+            invoice_date=datetime.date.today())
+
+        self._run()
+
+        self.assertEqual(Notification.objects.count(), 0)
+
+
+class DebtReportTests(TestCase):
+    """Отчёт «Задолженности»: просрочка и след от напоминаний."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_debt', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='ООО Должник')
+        self.order = RepairOrder.objects.create(
+            client=client_obj, payment_status='unpaid',
+            invoice_date=datetime.date.today() - datetime.timedelta(days=30))
+        model = EquipmentModel.objects.create(name='БУАД-отчёт')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-R1'),
+            repair_cost=2500,
+        )
+
+    @override_settings(DEBT_OVERDUE_DAYS=14)
+    def test_overdue_is_marked(self):
+        resp = self.client_http.get('/reports/debtors/')
+
+        self.assertContains(resp, 'просрочен 30 дн.')
+
+    def test_last_reminder_is_shown(self):
+        """Иначе на вопрос «мы им вообще писали?» отвечать нечем."""
+        Notification.objects.create(
+            event='debt_reminder', recipient='debtor@example.com',
+            subject='Оплата', body='Текст', repair_order=self.order,
+        )
+        resp = self.client_http.get('/reports/debtors/')
+
+        self.assertEqual(
+            resp.context['orders'][0].last_reminder.date(), datetime.date.today())
+
+    def test_total_is_not_doubled_by_the_reminder_join(self):
+        """Регрессия: соединение с очередью могло посчитать сумму дважды."""
+        for _ in range(3):
+            Notification.objects.create(
+                event='debt_reminder', recipient='debtor@example.com',
+                subject='Оплата', body='Текст', repair_order=self.order,
+            )
+        resp = self.client_http.get('/reports/debtors/')
+
+        self.assertEqual(resp.context['total_debt'], 2500)
+        self.assertEqual(len(resp.context['orders']), 1)
 
 
 class MaxTransportTests(TestCase):

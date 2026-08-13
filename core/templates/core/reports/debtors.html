@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Задолженности — LiftTeam v2.26.0{% endblock %}
+{% block title %}Задолженности — LiftTeam v2.27.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -22,6 +22,8 @@
                         <th>Заказчик</th>
                         <th>Сумма</th>
                         <th>Статус оплаты</th>
+                        <th>Счёт</th>
+                        <th>Напоминание</th>
                         <th>Дата</th>
                     </tr>
                 </thead>
@@ -32,10 +34,26 @@
                         <td>{{ order.client.name }}</td>
                         <td class="fw-bold">{{ order.total_repair_cost }} ₽</td>
                         <td><span class="badge bg-{% if order.payment_status == 'unpaid' %}danger{% else %}warning{% endif %}">{{ order.get_payment_status_display }}</span></td>
+                        <td class="text-nowrap">
+                            {% if order.invoice_date %}
+                            {{ order.invoice_date|date:"d.m.Y" }}
+                            {% if order.is_overdue %}<span class="badge bg-danger">просрочен {{ order.days_overdue }} дн.</span>{% endif %}
+                            {% else %}
+                            {# Отгружено без счёта — это не долг заказчика, а свой недосмотр #}
+                            <span class="badge bg-secondary">не выставлен</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap small">
+                            {% if order.last_reminder %}
+                            {{ order.last_reminder|date:"d.m.Y" }}
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                         <td>{{ order.date_received|date:"d.m.Y" }}</td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="5" class="text-center text-muted py-4">Задолженностей нет</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted py-4">Задолженностей нет</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

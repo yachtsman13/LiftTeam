@@ -1,0 +1,33 @@
+# Разовая проверка задолженностей. Расписание задаёт lifteam-debts.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-debts.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-debts.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-debts
+# Посмотреть логи:    journalctl -u lifteam-debts
+# Что попало бы в очередь, ничего не ставя:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       debt_reminders --dry-run
+#
+# Команда только наполняет очередь; отправляет её lifteam-notify.timer.
+
+[Unit]
+Description=Проверка задолженностей LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+
+ExecStart=/opt/lifteam/venv/bin/python manage.py debt_reminders
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

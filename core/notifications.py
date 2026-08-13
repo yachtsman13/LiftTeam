@@ -18,21 +18,26 @@ def _setting(name, default):
     return getattr(settings, name, default)
 
 
-def _staff():
-    """Кладовщики и администраторы: заказывать детали — их дело."""
-    return Employee.objects.filter(is_active=True, role__in=['warehouse', 'admin'])
+# Кому какие оповещения. Роли разные: детали заказывает склад, за деньгами
+# следит бухгалтерия, администратор нужен и там и там
+STOCK_ROLES = ('warehouse', 'admin')
+DEBT_ROLES = ('accountant', 'admin')
 
 
-def staff_recipients():
-    """Почтовые адреса сотрудников для складских оповещений.
+def _staff(roles=STOCK_ROLES):
+    return Employee.objects.filter(is_active=True, role__in=roles)
+
+
+def staff_recipients(roles=STOCK_ROLES):
+    """Почтовые адреса сотрудников.
 
     У кого не заполнена почта, тот и не получит, — это нормально и не ошибка.
     """
-    return list(_staff().exclude(email='').values_list('email', flat=True))
+    return list(_staff(roles).exclude(email='').values_list('email', flat=True))
 
 
 def _messenger_recipients(enabled, configured, group_chat, id_field,
-                          personal=str, group=str):
+                          personal=str, group=str, roles=STOCK_ROLES):
     """Получатели складских оповещений в одном из мессенджеров.
 
     Если задан общий чат, пишем один раз в него: в маленькой конторе всем
@@ -48,11 +53,11 @@ def _messenger_recipients(enabled, configured, group_chat, id_field,
 
     return [
         personal(value)
-        for value in _staff().exclude(**{id_field: ''}).values_list(id_field, flat=True)
+        for value in _staff(roles).exclude(**{id_field: ''}).values_list(id_field, flat=True)
     ]
 
 
-def staff_max_recipients():
+def staff_max_recipients(roles=STOCK_ROLES):
     return _messenger_recipients(
         _setting('NOTIFY_MAX', False),
         messengers.max_is_configured(),
@@ -60,10 +65,11 @@ def staff_max_recipients():
         'max_user_id',
         personal=lambda value: messengers.format_recipient('user', value),
         group=lambda value: messengers.format_recipient('chat', value),
+        roles=roles,
     )
 
 
-def staff_telegram_recipients():
+def staff_telegram_recipients(roles=STOCK_ROLES):
     # Приставок «user:»/«chat:» здесь нет: в Telegram и человек, и группа —
     # это chat_id, и различать их в получателе незачем
     return _messenger_recipients(
@@ -71,6 +77,7 @@ def staff_telegram_recipients():
         messengers.telegram_is_configured(),
         _setting('TELEGRAM_GROUP_CHAT_ID', ''),
         'telegram_chat_id',
+        roles=roles,
     )
 
 
@@ -88,6 +95,28 @@ def queue(event, recipient, subject, body, repair_order=None, part=None,
         repair_order=repair_order,
         part=part,
     )
+
+
+def queue_for_staff(event, subject, body, roles=STOCK_ROLES, **extra):
+    """Одно и то же сообщение сотрудникам — почтой и в мессенджеры.
+
+    В мессенджер тема уходит первой строкой текста: отдельного поля темы
+    там нет, а без неё сообщение начинается с середины мысли.
+    """
+    queued = [
+        queue(event, email, subject, body, **extra)
+        for email in staff_recipients(roles)
+    ]
+    for channel, recipients in (
+        (Notification.CHANNEL_MAX, staff_max_recipients(roles)),
+        (Notification.CHANNEL_TELEGRAM, staff_telegram_recipients(roles)),
+    ):
+        queued += [
+            queue(event, recipient, subject, f'{subject}\n\n{body}',
+                  channel=channel, **extra)
+            for recipient in recipients
+        ]
+    return [item for item in queued if item is not None]
 
 
 def notify_order_status(order, changed_by=None):
@@ -157,19 +186,136 @@ def notify_low_stock(part):
         'Деталь попала в план закупок.',
     ])
 
-    queued = [
-        queue('low_stock', email, subject, body, part=part)
-        for email in staff_recipients()
+    return queue_for_staff('low_stock', subject, body, part=part)
+
+
+def money(value):
+    """Сумма для письма: «15 000 ₽».
+
+    Неразрывный пробел между разрядами — иначе почтовый клиент переносит
+    строку посреди числа, и «15» с «000» оказываются на разных строках.
+    """
+    return f'{value:,.0f}'.replace(',', ' ') + ' ₽'
+
+
+def plural(count, one, few, many):
+    """Русское склонение по числу: 1 заказ, 2 заказа, 5 заказов.
+
+    Сводку читает человек, и «по 1 заказам» в ней выглядит так, будто
+    программу писали второпях.
+    """
+    if 11 <= count % 100 <= 14:
+        return many
+    last = count % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def debt_line(order):
+    invoice = (
+        f'счёт {order.invoice_number} от {order.invoice_date:%d.%m.%Y}'
+        if order.invoice_number else f'счёт от {order.invoice_date:%d.%m.%Y}'
+    )
+    return (
+        f'{order.order_number} — {order.client.name}, {invoice}, '
+        f'{money(order.total_repair_cost)}, просрочено {order.days_overdue} '
+        f'{plural(order.days_overdue, "день", "дня", "дней")}.'
+    )
+
+
+def notify_debt(order):
+    """Заказчику — напоминание об оплате.
+
+    Выключено по умолчанию и вдобавок к общему выключателю писем заказчикам:
+    это требование денег от лица фирмы, и начинаться само собой после
+    обновления оно не должно ни при каких обстоятельствах.
+
+    Повторно по одному заказу не пишем, пока не пройдёт пауза: иначе
+    ежедневная проверка превратилась бы в ежедневное письмо.
+    """
+    if not _setting('NOTIFY_CLIENTS', False) or not _setting('NOTIFY_DEBTS', False):
+        return None
+
+    email = (order.client.email or '').strip()
+    if not email:
+        return None
+
+    cooldown = _setting('DEBT_REMINDER_COOLDOWN_DAYS', 7)
+    recent = timezone.now() - timedelta(days=cooldown)
+    if Notification.objects.filter(
+        event='debt_reminder', repair_order=order, created_at__gte=recent
+    ).exists():
+        return None
+
+    invoice = f'по счёту {order.invoice_number}' if order.invoice_number else 'по счёту'
+    lines = [
+        f'Здравствуйте, {order.client.name}.',
+        '',
+        f'Напоминаем об оплате {invoice} от {order.invoice_date:%d.%m.%Y} '
+        f'за ремонт по заказу {order.order_number}.',
+        f'Сумма: {money(order.total_repair_cost)}.',
+        '',
+        'Если оплата уже прошла, это письмо можно не учитывать — '
+        'сведения о поступлении вносятся в программу вручную.',
+        '',
+        'Это письмо отправлено программой учёта LiftTeam.',
     ]
-    # В мессенджеры уходит то же самое, но темой первой строкой: у сообщения
-    # там нет отдельного поля темы
-    for channel, recipients in (
-        (Notification.CHANNEL_MAX, staff_max_recipients()),
-        (Notification.CHANNEL_TELEGRAM, staff_telegram_recipients()),
-    ):
-        queued += [
-            queue('low_stock', recipient, subject, f'{subject}\n\n{body}',
-                  part=part, channel=channel)
-            for recipient in recipients
+
+    return queue(
+        'debt_reminder', email,
+        f'Оплата по заказу {order.order_number}',
+        '\n'.join(lines),
+        repair_order=order,
+    )
+
+
+def notify_debt_digest(orders, without_invoice=()):
+    """Бухгалтерии — сводка по долгам.
+
+    Одним письмом на всех должников, а не письмом на каждого: список нужен,
+    чтобы обзвонить, и в таком виде он и нужен.
+
+    Повторно не чаще, чем раз в паузу, — команда может запускаться ежедневно,
+    а сводка каждый день никому не нужна.
+    """
+    if not _setting('NOTIFY_DEBT_DIGEST', True):
+        return []
+
+    orders = list(orders)
+    without_invoice = list(without_invoice)
+    if not orders and not without_invoice:
+        return []
+
+    cooldown = _setting('DEBT_DIGEST_COOLDOWN_DAYS', 7)
+    recent = timezone.now() - timedelta(days=cooldown)
+    if Notification.objects.filter(event='debt_digest', created_at__gte=recent).exists():
+        return []
+
+    total = sum(order.total_repair_cost for order in orders)
+    lines = [f'Задолженности на {timezone.localdate():%d.%m.%Y}.', '']
+    lines += [debt_line(order) for order in orders]
+    if orders:
+        lines += [
+            '',
+            f'Итого: {money(total)} по {len(orders)} '
+            f'{plural(len(orders), "заказу", "заказам", "заказам")}.',
         ]
-    return [item for item in queued if item is not None]
+
+    if without_invoice:
+        # Это не долг заказчика, а свой недосмотр, и лечится он не звонком,
+        # а выставленным счётом
+        lines += ['', 'Отгружено, но счёт не выставлен:']
+        lines += [
+            f'{order.order_number} — {order.client.name}'
+            for order in without_invoice
+        ]
+
+    subject = (
+        f'Задолженности: {len(orders)} '
+        f'{plural(len(orders), "заказ", "заказа", "заказов")} на {money(total)}'
+        if orders else 'Задолженности: отгрузки без счёта'
+    )
+    return queue_for_staff('debt_digest', subject, '\n'.join(lines), roles=DEBT_ROLES)
