@@ -1,0 +1,140 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.34.0{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
+    <button onclick="window.print()" class="btn btn-primary">
+        <i class="bi bi-printer me-2"></i>Печать
+    </button>
+    <a href="{% url 'repair_order_quote_edit' order.pk %}" class="btn btn-outline-primary">
+        <i class="bi bi-pencil me-2"></i>Изменить
+    </a>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
+    {% if not order.has_quote %}
+    <span class="text-danger small">
+        Условия предложения не заполнены — печатается пустой бланк.
+    </span>
+    {% endif %}
+</div>
+
+<div class="act-sheet">
+    {% comment %}
+        Шапка у предложения своя, не общая с актами: здесь нужны банковские
+        реквизиты и ОГРН — по ним заказчик заводит вас в своей бухгалтерии,
+        а в акте приёма они только занимали бы место.
+    {% endcomment %}
+    <div class="quote-letterhead">
+        <div class="act-org-name">{{ organization.name|default:"Реквизиты не заполнены" }}</div>
+        {% if organization.address %}<div>{{ organization.address }}</div>{% endif %}
+        {% if organization.registration_line %}<div>{{ organization.registration_line }}</div>{% endif %}
+        {% for line in organization.bank_lines %}<div>{{ line }}</div>{% endfor %}
+        {% if not organization.is_filled %}
+        <div class="act-org-missing no-print">
+            Заполните их в разделе «Администрирование → Реквизиты» —
+            иначе предложение уйдёт заказчику без шапки.
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="quote-to">
+        <div><strong>Кому:</strong> {{ order.client.name }}</div>
+        {% if order.client.address %}<div>{{ order.client.address }}</div>{% endif %}
+    </div>
+
+    <div class="act-title">
+        Коммерческое предложение{% if order.quote_subject %} {{ order.quote_subject }}{% endif %}
+    </div>
+
+    <div class="quote-place-date">
+        <span>{% if organization.city %}г. {{ organization.city }}{% endif %}</span>
+        <span>{{ quote_date|date:"d E Y" }} г.</span>
+    </div>
+
+    <table class="act-table">
+        <thead>
+            <tr>
+                <th class="num">№ п/п</th>
+                <th>Наименование оборудования / работ</th>
+                <th class="num">Кол-во</th>
+                <th>Серийный номер</th>
+                <th>Сложность ремонта</th>
+                <th>Сроки, дней</th>
+                <th class="money">Стоимость, руб.</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td class="num">{{ forloop.counter }}</td>
+                <td>{{ row.name }}</td>
+                <td class="num">1</td>
+                <td>{{ row.serial_number|default:"—" }}</td>
+                <td>{{ row.complexity|default:"—" }}</td>
+                <td>{{ order.quote_lead_time|default:"—" }}</td>
+                {% comment %}
+                    Позиция без цены печатается с прочерком, а не пропускается:
+                    предложение нередко составляют, когда оценена ещё не вся
+                    работа, и потерять строку молча хуже.
+                {% endcomment %}
+                <td class="money">
+                    {% if row.price is not None %}{{ row.price|floatformat:2 }}{% else %}—{% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="7">Оборудование в заказе не указано</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="act-note">
+        {% if order.quote_payment_terms %}
+        <div><strong>Условия оплаты:</strong> {{ order.quote_payment_terms }}</div>
+        {% endif %}
+        {% if order.quote_delivery_terms %}
+        <div><strong>Доставка:</strong> {{ order.quote_delivery_terms }}</div>
+        {% endif %}
+        {% if order.quote_valid_until %}
+        <div>Коммерческое предложение действительно до {{ order.quote_valid_until|date:"d.m.Y" }} г.</div>
+        {% endif %}
+    </div>
+
+    <div class="act-total">Итого стоимость {{ total|floatformat:2 }} руб.</div>
+
+    {% if organization.tax_note %}
+    <div class="act-note">{{ organization.tax_note }}</div>
+    {% endif %}
+
+    <div class="act-signatures">
+        <div class="act-signature">
+            <div class="act-signature-role">
+                {{ organization.signatory_position|default:"Руководитель" }}
+            </div>
+            <div class="act-signature-line"></div>
+            <div class="act-signature-hint">
+                {{ organization.signatory_name|default:"подпись, расшифровка" }}
+            </div>
+        </div>
+        <div class="act-signature act-stamp">М.П.</div>
+    </div>
+</div>
+
+{% include 'core/repair_orders/_act_styles.html' %}
+<style>
+    .quote-letterhead {
+        font-size: 10pt;
+        border-bottom: 1.5pt solid #000;
+        padding-bottom: 3mm;
+        margin-bottom: 5mm;
+    }
+    .quote-to {
+        margin-bottom: 5mm;
+    }
+    /* Место слева, дата справа — так набран их бланк */
+    .quote-place-date {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5mm;
+    }
+</style>
+{% endblock %}

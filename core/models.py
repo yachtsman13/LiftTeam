@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.33.0.
+Модели данных для LiftTeam v2.34.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -147,6 +147,27 @@ class Organization(models.Model):
                                           blank=True, default='Директор')
     signatory_name = models.CharField('ФИО подписанта', max_length=255, blank=True)
 
+    # Банковские реквизиты и ОГРН нужны шапке коммерческого предложения:
+    # там они стоят по требованию делового обычая, а не для красоты —
+    # по ним заказчик заводит вас в своей бухгалтерии
+    ogrn = models.CharField('ОГРН / ОГРНИП', max_length=20, blank=True)
+    # Город подписания документа. Отдельно от адреса: в бланке он стоит
+    # слева от даты одним словом, а адрес — строкой в шапке
+    city = models.CharField(
+        'Город подписания', max_length=100, blank=True, default='Москва',
+        help_text='Печатается слева от даты в коммерческом предложении'
+    )
+    bank_name = models.CharField('Банк', max_length=255, blank=True)
+    bank_bik = models.CharField('БИК', max_length=20, blank=True)
+    bank_account = models.CharField('Расчётный счёт', max_length=30, blank=True)
+    corr_account = models.CharField('Корреспондентский счёт', max_length=30, blank=True)
+    # «Без НДС, применяется УСН, ПСН» — строка налогового режима. Свободный
+    # текст, а не выбор из списка: режимы совмещают, и формулировка своя
+    tax_note = models.CharField(
+        'Налоговый режим', max_length=255, blank=True, default='Без НДС, применяется УСН',
+        help_text='Печатается под итогом коммерческого предложения'
+    )
+
     class Meta:
         verbose_name = 'Реквизиты организации'
         verbose_name_plural = 'Реквизиты организации'
@@ -182,6 +203,43 @@ class Organization(models.Model):
             parts.append(f'тел. {self.phone}')
         return ', '.join(parts)
 
+    @property
+    def registration_line(self):
+        """ИНН и ОГРН одной строкой — вторая строка шапки предложения."""
+        parts = []
+        if self.inn:
+            parts.append(f'ИНН {self.inn}')
+        if self.kpp:
+            parts.append(f'КПП {self.kpp}')
+        if self.ogrn:
+            parts.append(f'ОГРН/ОГРНИП {self.ogrn}')
+        return ' '.join(parts)
+
+    @property
+    def bank_lines(self):
+        """Банковские реквизиты — по строке на печатную строку.
+
+        Список, а не одна строка: в шапке они стоят двумя строками,
+        и склеивать их, чтобы потом резать в шаблоне, незачем.
+        """
+        lines = []
+        first = []
+        if self.bank_name:
+            first.append(self.bank_name)
+        if self.bank_bik:
+            first.append(f'БИК {self.bank_bik}')
+        if first:
+            lines.append(' '.join(first))
+
+        second = []
+        if self.bank_account:
+            second.append(f'Р/с {self.bank_account}')
+        if self.corr_account:
+            second.append(f'К/с {self.corr_account}')
+        if second:
+            lines.append('  '.join(second))
+        return lines
+
 
 class Client(models.Model):
     """Заказчик."""
@@ -191,6 +249,9 @@ class Client(models.Model):
     contact_person = models.CharField('Контактное лицо', max_length=255, blank=True)
     phone = models.CharField('Телефон', max_length=50, blank=True)
     email = models.EmailField('Email', blank=True)
+    # Адрес нужен коммерческому предложению: строка «Кому:» без него
+    # выглядит как записка, а не как документ, отправляемый организации
+    address = models.CharField('Адрес', max_length=500, blank=True)
 
     class Meta:
         verbose_name = 'Заказчик'
@@ -445,6 +506,33 @@ class RepairOrder(models.Model):
         'Последняя ошибка выставления', max_length=500, blank=True
     )
 
+    # --- Коммерческое предложение ---
+    # Предложение делается по итогам дефектации: что нашли, во сколько
+    # обойдётся и на каких условиях. Поля живут в заказе, а не в отдельной
+    # сущности: документ описывает ровно те работы, что уже заведены
+    # в заказе, и разъезжаться этим двум спискам незачем
+    quote_subject = models.CharField(
+        'Предмет предложения', max_length=255, blank=True,
+        help_text='Продолжение заголовка: «на ремонт приводов дверей EkoDrive-2.3-1.3»'
+    )
+    quote_date = models.DateField(
+        'Дата предложения', null=True, blank=True,
+        help_text='Пусто — в документе встанет сегодняшнее число'
+    )
+    quote_valid_until = models.DateField('Действительно до', null=True, blank=True)
+    quote_payment_terms = models.CharField(
+        'Условия оплаты', max_length=255, blank=True,
+        default='100% предоплата покупателем'
+    )
+    quote_delivery_terms = models.CharField(
+        'Условия доставки', max_length=255, blank=True,
+        default='до склада Покупателя включена в Предложение'
+    )
+    quote_lead_time = models.CharField(
+        'Сроки выполнения, дней', max_length=50, blank=True, default='3-14',
+        help_text='Ставится в каждой строке предложения: «3-14»'
+    )
+
     objects = RepairOrderQuerySet.as_manager()
 
     class Meta:
@@ -541,6 +629,40 @@ class RepairOrder(models.Model):
             total=Sum('repair_cost')
         )['total']
         return total or 0
+
+    def quote_rows(self):
+        """Строки коммерческого предложения — по единице оборудования.
+
+        Единицы без цены не пропускаются, в отличие от счёта: предложение
+        нередко составляют, когда часть позиций ещё не оценена, и потерять
+        их молча хуже, чем напечатать без суммы. В документе на их месте
+        стоит прочерк.
+        """
+        rows = []
+        for order_equipment in self.order_equipments.select_related('equipment__model').order_by('id'):
+            rows.append({
+                'equipment': order_equipment.equipment,
+                'name': order_equipment.quote_line,
+                'serial_number': order_equipment.equipment.serial_number,
+                'complexity': order_equipment.get_repair_complexity_display(),
+                'price': order_equipment.quote_price,
+            })
+        return rows
+
+    @property
+    def quote_total(self):
+        """Итог предложения. Позиции без цены в него просто не входят."""
+        total = Decimal('0')
+        for order_equipment in self.order_equipments.all():
+            price = order_equipment.quote_price
+            if price is not None:
+                total += price
+        return total
+
+    @property
+    def has_quote(self):
+        """Заполняли ли предложение. Пустой бланк печатать незачем."""
+        return bool(self.quote_subject or self.quote_date or self.quote_valid_until)
 
     @classmethod
     def next_invoice_number(cls):
@@ -795,6 +917,19 @@ class RepairOrderEquipment(models.Model):
                   'что стоимость ремонта: та ставится по факту.'
     )
 
+    # --- Строка коммерческого предложения ---
+    # Предлагаемые работы — не то же самое, что выполненные: первое пишут
+    # до согласия заказчика, второе после ремонта. Одним полем не обойтись,
+    # иначе предложение либо пустое, либо в нём стоит прошедшее время
+    proposed_work = models.TextField(
+        'Предлагаемые работы', blank=True,
+        help_text='Что предлагаем сделать. Идёт в коммерческое предложение.'
+    )
+    repair_complexity = models.CharField(
+        'Сложность ремонта', max_length=20, blank=True,
+        choices=[('simple', 'Простой'), ('medium', 'Средний'), ('complex', 'Сложный')]
+    )
+
     class Meta:
         verbose_name = 'Оборудование в заказе'
         verbose_name_plural = 'Оборудование в заказе'
@@ -818,6 +953,31 @@ class RepairOrderEquipment(models.Model):
         if self.estimated_cost is None:
             return None
         return format_amount(self.estimated_cost)
+
+    @property
+    def quote_price(self):
+        """Цена этой единицы в коммерческом предложении.
+
+        Оценка из дефектации, а если её нет — проставленная стоимость
+        ремонта. Именно в таком порядке: предложение делается до ремонта,
+        и оценка ближе к тому, что обсуждают с заказчиком.
+        """
+        if self.estimated_cost is not None:
+            return self.estimated_cost
+        return self.repair_cost
+
+    @property
+    def quote_line(self):
+        """Наименование работ в предложении.
+
+        Предлагаемые работы, если их записали; иначе выполненные (бывает,
+        что предложение печатают задним числом); иначе просто «Ремонт
+        <тип и модель>» — без выдумок о том, чего никто не писал.
+        """
+        work = self.proposed_work.strip() or self.work_performed.strip()
+        if work:
+            return ' '.join(work.split())
+        return f'Ремонт {self.equipment.model.full_name}'
 
     @property
     def invoice_line(self):

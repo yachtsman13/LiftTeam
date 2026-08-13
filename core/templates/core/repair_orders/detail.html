@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.33.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.34.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -12,6 +12,14 @@
             </a>
             <a href="{% url 'repair_order_act_complete' order.pk %}" class="btn btn-outline-dark" target="_blank">
                 <i class="bi bi-file-earmark-check me-2"></i>Акт работ
+            </a>
+            {% comment %}
+                Пока условия не заполнены — ведём на заполнение: печатать
+                пустой бланк незачем.
+            {% endcomment %}
+            <a href="{% if order.has_quote %}{% url 'repair_order_quote' order.pk %}{% else %}{% url 'repair_order_quote_edit' order.pk %}{% endif %}"
+               class="btn btn-outline-dark"{% if order.has_quote %} target="_blank"{% endif %}>
+                <i class="bi bi-file-earmark-ruled me-2"></i>Предложение
             </a>
         </div>
         {% comment %}

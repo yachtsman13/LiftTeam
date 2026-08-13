@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.33.0.
+Views для LiftTeam v2.34.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -38,7 +38,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
-    DefectActForm, InvoiceSendForm,
+    DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
 )
 from .utils import (
     generate_qr_image,
@@ -2244,6 +2244,53 @@ def repair_order_act_defect(request, order_pk, roe_pk):
         'order_equipment': order_equipment,
         'organization': Organization.get_solo(),
         'act_date': order_equipment.defect_act_date or timezone.localdate(),
+    })
+
+
+@login_required
+def repair_order_quote_edit(request, pk):
+    """Условия коммерческого предложения и строки по единицам."""
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+
+    if request.method == 'POST':
+        form = QuoteForm(request.POST, instance=order)
+        formset = QuoteLineFormSet(request.POST, instance=order)
+        if form.is_valid() and formset.is_valid():
+            form.save()
+            formset.save()
+            messages.success(request, 'Коммерческое предложение сохранено')
+            return redirect('repair_order_quote', pk=order.pk)
+        messages.error(request, 'Предложение не сохранено: проверьте отмеченные поля')
+    else:
+        today = timezone.localdate()
+        form = QuoteForm(instance=order, initial={
+            'quote_date': order.quote_date or today,
+            'quote_valid_until': order.quote_valid_until or today + timedelta(
+                days=getattr(settings, 'QUOTE_VALID_DAYS', 14)),
+        })
+        formset = QuoteLineFormSet(instance=order)
+
+    return render(request, 'core/repair_orders/quote_form.html', {
+        'order': order,
+        'form': form,
+        'formset': formset,
+    })
+
+
+@login_required
+def repair_order_quote(request, pk):
+    """Коммерческое предложение на А4.
+
+    Печатается по итогам дефектации: что предлагаем сделать, во сколько
+    обойдётся, в какие сроки и на каких условиях.
+    """
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+    return render(request, 'core/repair_orders/quote.html', {
+        'order': order,
+        'organization': Organization.get_solo(),
+        'rows': order.quote_rows(),
+        'total': order.quote_total,
+        'quote_date': order.quote_date or timezone.localdate(),
     })
 
 

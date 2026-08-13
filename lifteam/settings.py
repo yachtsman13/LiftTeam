@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.33.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.34.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -263,6 +263,11 @@ NOTIFY_TELEGRAM = os.getenv('NOTIFY_TELEGRAM', 'False').lower() == 'true'
 # Общая группа для складских оповещений. Если задана, сообщение уходит один
 # раз в неё, а не каждому кладовщику отдельно.
 TELEGRAM_GROUP_CHAT_ID = os.getenv('TELEGRAM_GROUP_CHAT_ID', '')
+
+# Сколько дней по умолчанию действует коммерческое предложение.
+# Только заготовка для формы: в самом документе стоит дата, и правит её
+# человек — у разных заказчиков сроки разные
+QUOTE_VALID_DAYS = int(os.getenv('QUOTE_VALID_DAYS', '14'))
 
 # --- Выписка Т-Банка ----------------------------------------------------
 # Программа только читает выписку по расчётному счёту и показывает

@@ -1611,7 +1611,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.33.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.34.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -4766,3 +4766,245 @@ class TBankInvoiceSendingTests(TestCase):
         resp = self.client_http.get(self._url())
 
         self.assertEqual(resp.status_code, 302)
+
+
+class QuoteTests(TestCase):
+    """Коммерческое предложение по заказу."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_quote', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        organization = Organization.get_solo()
+        organization.name = 'ИП Петров П. П.'
+        organization.inn = '772600000000'
+        organization.ogrn = '324774600000000'
+        organization.address = '117042, Москва, ул. Примерная, д. 1'
+        organization.bank_name = 'АО «ТБанк»'
+        organization.bank_bik = '044525974'
+        organization.bank_account = '40802810700006096146'
+        organization.corr_account = '30101810145250000974'
+        organization.tax_note = 'Без НДС, применяется УСН, ПСН'
+        organization.signatory_position = 'Индивидуальный предприниматель'
+        organization.signatory_name = 'Петров П. П.'
+        organization.save()
+
+        self.customer = ClientModel.objects.create(
+            name='ООО ГК «Промресурс»',
+            address='305048, г. Курск, проспект Дружбы, д. 9А')
+        self.order = RepairOrder.objects.create(client=self.customer)
+        model = EquipmentModel.objects.create(
+            name='EkoDrive-2.3-1.3', kind='Привод дверей')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='44223'),
+        )
+
+    def _edit_url(self):
+        return f'/repair-orders/{self.order.pk}/quote/edit/'
+
+    def _print_url(self):
+        return f'/repair-orders/{self.order.pk}/quote/'
+
+    def _fill(self, **overrides):
+        data = {
+            'quote_subject': 'на ремонт приводов дверей EkoDrive-2.3-1.3',
+            'quote_date': '2026-02-06',
+            'quote_valid_until': '2026-02-20',
+            'quote_lead_time': '3-14',
+            'quote_payment_terms': '100% предоплата покупателем',
+            'quote_delivery_terms': 'до склада Покупателя включена в Предложение',
+            'order_equipments-TOTAL_FORMS': '1',
+            'order_equipments-INITIAL_FORMS': '1',
+            'order_equipments-MIN_NUM_FORMS': '0',
+            'order_equipments-MAX_NUM_FORMS': '1000',
+            'order_equipments-0-id': str(self.roe.pk),
+            'order_equipments-0-proposed_work':
+                'Ремонт импульсного блока питания,\nзамена транзисторов ВКО, ВКЗ, РЕВ',
+            'order_equipments-0-repair_complexity': 'simple',
+            'order_equipments-0-estimated_cost': '6000',
+        }
+        data.update(overrides)
+        return self.client_http.post(self._edit_url(), data)
+
+    def test_filling_the_quote_opens_it(self):
+        resp = self._fill()
+
+        self.assertRedirects(resp, self._print_url())
+        self.order.refresh_from_db()
+        self.roe.refresh_from_db()
+        self.assertEqual(self.order.quote_date, datetime.date(2026, 2, 6))
+        self.assertEqual(self.roe.estimated_cost, Decimal('6000'))
+        self.assertEqual(self.roe.repair_complexity, 'simple')
+
+    def test_the_quote_carries_the_letterhead_and_the_bank_details(self):
+        self._fill()
+
+        resp = self.client_http.get(self._print_url())
+
+        self.assertContains(resp, 'ИП Петров П. П.')
+        self.assertContains(resp, 'ОГРН/ОГРНИП 324774600000000')
+        self.assertContains(resp, 'АО «ТБанк» БИК 044525974')
+        self.assertContains(resp, '40802810700006096146')
+        self.assertContains(resp, 'Без НДС, применяется УСН, ПСН')
+
+    def test_the_quote_names_the_addressee_with_the_address(self):
+        self._fill()
+
+        resp = self.client_http.get(self._print_url())
+
+        self.assertContains(resp, 'ООО ГК «Промресурс»')
+        self.assertContains(resp, 'проспект Дружбы')
+
+    def test_the_table_repeats_the_shape_of_their_own_quotes(self):
+        self._fill()
+
+        resp = self.client_http.get(self._print_url())
+
+        self.assertContains(resp, 'Ремонт импульсного блока питания')
+        self.assertContains(resp, '44223')
+        self.assertContains(resp, 'Простой')
+        self.assertContains(resp, '3-14')
+        self.assertContains(resp, '100% предоплата покупателем')
+        self.assertContains(resp, 'действительно до 20.02.2026')
+
+    def test_line_breaks_do_not_break_the_table_cell(self):
+        self.roe.proposed_work = 'Ремонт блока питания,\nзамена транзисторов'
+        self.roe.save(update_fields=['proposed_work'])
+
+        self.assertEqual(self.roe.quote_line,
+                         'Ремонт блока питания, замена транзисторов')
+
+    def test_proposed_work_is_not_the_same_as_performed_work(self):
+        """Предложение пишут до согласия, выполненные работы — после ремонта."""
+        self.roe.work_performed = 'Заменён блок питания'
+        self.roe.proposed_work = 'Ремонт блока питания'
+        self.roe.save(update_fields=['work_performed', 'proposed_work'])
+
+        self.assertEqual(self.roe.quote_line, 'Ремонт блока питания')
+
+    def test_without_proposed_work_the_performed_one_is_used(self):
+        self.roe.work_performed = 'Заменён блок питания'
+        self.roe.save(update_fields=['work_performed'])
+
+        self.assertEqual(self.roe.quote_line, 'Заменён блок питания')
+
+    def test_with_nothing_written_the_line_is_still_meaningful(self):
+        self.assertEqual(self.roe.quote_line, 'Ремонт Привод дверей EkoDrive-2.3-1.3')
+
+    def test_the_estimate_is_preferred_over_the_final_cost(self):
+        """Предложение делают до ремонта: оценка ближе к разговору с заказчиком."""
+        self.roe.repair_cost = Decimal('9000')
+        self.roe.estimated_cost = Decimal('6000')
+        self.roe.save(update_fields=['repair_cost', 'estimated_cost'])
+
+        self.assertEqual(self.roe.quote_price, Decimal('6000'))
+
+    def test_without_an_estimate_the_final_cost_is_used(self):
+        self.roe.repair_cost = Decimal('9000')
+        self.roe.save(update_fields=['repair_cost'])
+
+        self.assertEqual(self.roe.quote_price, Decimal('9000'))
+
+    def test_a_line_without_a_price_is_printed_with_a_dash_not_dropped(self):
+        """Потерять строку молча хуже, чем напечатать её без суммы."""
+        second = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='Без оценки'),
+                serial_number='NOEST'),
+        )
+        self.roe.estimated_cost = Decimal('6000')
+        self.roe.save(update_fields=['estimated_cost'])
+
+        rows = self.order.quote_rows()
+
+        self.assertEqual(len(rows), 2)
+        self.assertIsNone(rows[1]['price'])
+        self.assertEqual(second.quote_price, None)
+
+    def test_the_total_skips_unpriced_lines(self):
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='Без оценки 2'),
+                serial_number='NOEST2'),
+        )
+        self.roe.estimated_cost = Decimal('6000')
+        self.roe.save(update_fields=['estimated_cost'])
+
+        self.assertEqual(self.order.quote_total, Decimal('6000'))
+
+    def test_an_empty_quote_warns_instead_of_printing_a_blank(self):
+        resp = self.client_http.get(self._print_url())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Условия предложения не заполнены')
+
+    def test_a_validity_date_before_the_quote_date_is_refused(self):
+        resp = self._fill(quote_valid_until='2026-01-01')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Срок действия раньше даты предложения')
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.quote_date)
+
+    def test_the_order_card_leads_to_filling_while_the_quote_is_empty(self):
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, self._edit_url())
+
+    def test_a_filled_quote_is_linked_from_the_order_card(self):
+        self._fill()
+
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, self._print_url())
+
+    def test_a_missing_client_address_is_pointed_out_before_printing(self):
+        self.customer.address = ''
+        self.customer.save(update_fields=['address'])
+
+        resp = self.client_http.get(self._edit_url())
+
+        self.assertContains(resp, 'не заполнен адрес')
+
+    def test_the_client_form_keeps_the_address(self):
+        resp = self.client_http.post('/clients/create/', {
+            'name': 'ООО «Адресное»', 'inn': '', 'kpp': '',
+            'address': '305048, г. Курск, проспект Дружбы, д. 9А',
+            'contact_person': '', 'phone': '', 'email': '',
+        }, follow=True)
+
+        self.assertEqual(resp.status_code, 200)
+        created = ClientModel.objects.get(name='ООО «Адресное»')
+        self.assertEqual(created.address, '305048, г. Курск, проспект Дружбы, д. 9А')
+
+    def test_the_organization_form_keeps_the_bank_details(self):
+        resp = self.client_http.post('/management/organization/', {
+            'name': 'ИП Петров П. П.', 'inn': '772600000000', 'kpp': '',
+            'ogrn': '324774600000000', 'address': 'Москва', 'phone': '', 'email': '',
+            'signatory_position': 'ИП', 'signatory_name': 'Петров П. П.',
+            'bank_name': 'АО «ТБанк»', 'bank_bik': '044525974',
+            'bank_account': '40802810700006096146',
+            'corr_account': '30101810145250000974',
+            'tax_note': 'Без НДС, применяется УСН',
+        }, follow=True)
+
+        self.assertEqual(resp.status_code, 200)
+        organization = Organization.get_solo()
+        self.assertEqual(organization.bank_bik, '044525974')
+        self.assertEqual(organization.ogrn, '324774600000000')
+
+    def test_the_bank_lines_are_empty_when_nothing_is_filled(self):
+        Organization.objects.all().delete()
+
+        self.assertEqual(Organization.get_solo().bank_lines, [])
+
+    def test_the_quote_requires_login(self):
+        resp = TestClient().get(self._print_url())
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])

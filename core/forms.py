@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.33.0.
+Формы для LiftTeam v2.34.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -50,11 +50,14 @@ class LoginForm(forms.Form):
 class ClientForm(forms.ModelForm):
     class Meta:
         model = Client
-        fields = ['name', 'inn', 'kpp', 'contact_person', 'phone', 'email']
+        fields = ['name', 'inn', 'kpp', 'address', 'contact_person', 'phone', 'email']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'inn': forms.TextInput(attrs={'class': 'form-control'}),
             'kpp': forms.TextInput(attrs={'class': 'form-control'}),
+            'address': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': '305048, г. Курск, проспект Дружбы, д. 9А'}),
             'contact_person': forms.TextInput(attrs={'class': 'form-control'}),
             'phone': forms.TextInput(attrs={'class': 'form-control'}),
             'email': forms.EmailInput(attrs={'class': 'form-control'}),
@@ -63,6 +66,7 @@ class ClientForm(forms.ModelForm):
             'name': 'Название',
             'inn': 'ИНН',
             'kpp': 'КПП',
+            'address': 'Адрес',
             'contact_person': 'Контактное лицо',
             'phone': 'Телефон',
             'email': 'Email',
@@ -302,8 +306,10 @@ class OrganizationForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['name', 'inn', 'kpp', 'address', 'phone', 'email',
-                  'signatory_position', 'signatory_name']
+        fields = ['name', 'inn', 'kpp', 'ogrn', 'address', 'city', 'phone', 'email',
+                  'signatory_position', 'signatory_name',
+                  'bank_name', 'bank_bik', 'bank_account', 'corr_account',
+                  'tax_note']
         widgets = {
             'name': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'ООО «Название»'}),
@@ -315,6 +321,15 @@ class OrganizationForm(forms.ModelForm):
             'signatory_position': forms.TextInput(attrs={'class': 'form-control'}),
             'signatory_name': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'Иванов И. И.'}),
+            'ogrn': forms.TextInput(attrs={'class': 'form-control'}),
+            'city': forms.TextInput(attrs={'class': 'form-control'}),
+            'bank_name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'АО «ТБанк»'}),
+            'bank_bik': forms.TextInput(attrs={'class': 'form-control'}),
+            'bank_account': forms.TextInput(attrs={'class': 'form-control'}),
+            'corr_account': forms.TextInput(attrs={'class': 'form-control'}),
+            'tax_note': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Без НДС, применяется УСН'}),
         }
 
 
@@ -339,6 +354,59 @@ class PaymentForm(forms.ModelForm):
             'payment_date': 'Дата поступления',
             'note': 'Примечание',
         }
+
+
+class QuoteForm(forms.ModelForm):
+    """Условия коммерческого предложения по заказу."""
+
+    class Meta:
+        model = RepairOrder
+        fields = [
+            'quote_subject', 'quote_date', 'quote_valid_until',
+            'quote_lead_time', 'quote_payment_terms', 'quote_delivery_terms',
+        ]
+        widgets = {
+            'quote_subject': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'на ремонт приводов дверей EkoDrive-2.3-1.3'}),
+            'quote_date': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'),
+            'quote_valid_until': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'),
+            'quote_lead_time': forms.TextInput(attrs={'class': 'form-control'}),
+            'quote_payment_terms': forms.TextInput(attrs={'class': 'form-control'}),
+            'quote_delivery_terms': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        quote_date = cleaned.get('quote_date')
+        valid_until = cleaned.get('quote_valid_until')
+        if quote_date and valid_until and valid_until < quote_date:
+            self.add_error('quote_valid_until', 'Срок действия раньше даты предложения')
+        return cleaned
+
+
+class QuoteLineForm(forms.ModelForm):
+    """Строка предложения: что предлагаем сделать и почём."""
+
+    class Meta:
+        model = RepairOrderEquipment
+        fields = ['proposed_work', 'repair_complexity', 'estimated_cost']
+        widgets = {
+            'proposed_work': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 2,
+                'placeholder': 'Ремонт импульсного блока питания, замена транзисторов'}),
+            'repair_complexity': forms.Select(attrs={'class': 'form-select'}),
+            'estimated_cost': forms.NumberInput(attrs={
+                'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}),
+        }
+
+
+QuoteLineFormSet = inlineformset_factory(
+    RepairOrder, RepairOrderEquipment, form=QuoteLineForm,
+    extra=0, can_delete=False,
+)
 
 
 class InvoiceSendForm(forms.Form):

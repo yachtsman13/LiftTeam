@@ -1,0 +1,123 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.34.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-file-earmark-ruled me-2"></i>Коммерческое предложение</h2>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К заказу {{ order.order_number }}
+    </a>
+</div>
+
+<form method="post">
+    {% csrf_token %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Условия</h5>
+            <div class="small text-muted">{{ order.client.name }}</div>
+        </div>
+        <div class="card-body">
+            {% if not order.client.address %}
+            <div class="alert alert-warning py-2 small">
+                У заказчика не заполнен адрес — строка «Кому:» будет из одного
+                названия. Адрес вводится в карточке заказчика.
+            </div>
+            {% endif %}
+            <div class="row g-3">
+                <div class="col-12">
+                    <label class="form-label">{{ form.quote_subject.label }}</label>
+                    {{ form.quote_subject }}
+                    <div class="form-text">{{ form.quote_subject.help_text }}</div>
+                    {% if form.quote_subject.errors %}
+                    <div class="text-danger small">{{ form.quote_subject.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.quote_date.label }}</label>
+                    {{ form.quote_date }}
+                    {% if form.quote_date.errors %}
+                    <div class="text-danger small">{{ form.quote_date.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.quote_valid_until.label }}</label>
+                    {{ form.quote_valid_until }}
+                    {% if form.quote_valid_until.errors %}
+                    <div class="text-danger small">{{ form.quote_valid_until.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">{{ form.quote_lead_time.label }}</label>
+                    {{ form.quote_lead_time }}
+                    {% if form.quote_lead_time.errors %}
+                    <div class="text-danger small">{{ form.quote_lead_time.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.quote_payment_terms.label }}</label>
+                    {{ form.quote_payment_terms }}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.quote_delivery_terms.label }}</label>
+                    {{ form.quote_delivery_terms }}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Строки предложения</h5>
+        </div>
+        <div class="card-body">
+            {{ formset.management_form }}
+            {% for line in formset %}
+            {{ line.id }}
+            <div class="row g-3 align-items-start {% if not forloop.last %}mb-3 pb-3 border-bottom{% endif %}">
+                <div class="col-md-3">
+                    <div class="fw-bold">{{ line.instance.equipment.model.full_name }}</div>
+                    <div class="small text-muted">SN: {{ line.instance.equipment.serial_number }}</div>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label small">{{ line.proposed_work.label }}</label>
+                    {{ line.proposed_work }}
+                    {% if line.proposed_work.errors %}
+                    <div class="text-danger small">{{ line.proposed_work.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small">{{ line.repair_complexity.label }}</label>
+                    {{ line.repair_complexity }}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small">{{ line.estimated_cost.label }}, ₽</label>
+                    {{ line.estimated_cost }}
+                    {% if line.estimated_cost.errors %}
+                    <div class="text-danger small">{{ line.estimated_cost.errors.0 }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% empty %}
+            <p class="text-muted mb-0">
+                В заказе нет оборудования — предложению не из чего складываться.
+            </p>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% comment %}
+        Оценка здесь — то же поле, что и в акте дефектации: во сколько
+        обойдётся ремонт, решают один раз, и двум документам расходиться
+        в этой цифре незачем.
+    {% endcomment %}
+    <div class="d-flex gap-2 mb-4">
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-lg me-2"></i>Сохранить и открыть предложение
+        </button>
+        <a href="{% url 'repair_order_quote' order.pk %}" class="btn btn-outline-dark" target="_blank">
+            <i class="bi bi-printer me-2"></i>Предложение без сохранения
+        </a>
+    </div>
+</form>
+{% endblock %}
