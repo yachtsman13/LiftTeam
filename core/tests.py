@@ -23,7 +23,7 @@ from django.test import Client as TestClient
 from django.urls import resolve
 from django.utils import timezone
 
-from . import messengers, notifications, tbank
+from . import messengers, notifications, tbank, views
 from .models import (
     BankOperation, Client as ClientModel, Employee, Equipment, EquipmentModel,
     Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
@@ -683,19 +683,30 @@ class PiSettingsLabelTests(TestCase):
             module = importlib.import_module('lifteam.settings_pi')
             return importlib.reload(module)
 
-    def test_labels_point_at_tailscale_by_default(self):
-        """Адрес Tailscale работает и в офисе, и из дома — в отличие
-        от локального IP, который живёт только внутри офисной сети."""
+    def test_labels_point_at_the_tailscale_name_by_default(self):
+        """Имя, а не адрес 100.x: этикетка — бумажка, адрес в ней впечатан
+        навсегда, а 100.x меняется при заведении узла заново."""
         settings_pi = self._load(ALLOWED_HOSTS='192.168.1.50,localhost')
 
-        self.assertEqual(settings_pi.LABEL_BASE_URL, 'http://100.108.92.92')
+        self.assertEqual(settings_pi.LABEL_BASE_URL,
+                         'http://lifteam.taile9b605.ts.net')
+
+    def test_the_name_fits_the_qr_without_growing_it(self):
+        """Опасение, что имя длиннее адреса и код помельчает, не оправдалось:
+        27 и 39 символов дают одни и те же 29 модулей."""
+        settings_pi = self._load(ALLOWED_HOSTS='localhost')
+        link = f'{settings_pi.LABEL_BASE_URL}/o/1234'
+
+        self.assertLessEqual(len(link), views.QR_MAX_CHARS)
+        self.assertEqual(views.qr_length_warning([link]), '')
 
     def test_the_scanned_address_is_allowed(self):
         """Иначе отсканированный код приводит на «400 Bad Request»."""
         settings_pi = self._load(ALLOWED_HOSTS='192.168.1.50,localhost')
 
-        self.assertIn('100.108.92.92', settings_pi.ALLOWED_HOSTS)
-        self.assertIn('http://100.108.92.92', settings_pi.CSRF_TRUSTED_ORIGINS)
+        self.assertIn('lifteam.taile9b605.ts.net', settings_pi.ALLOWED_HOSTS)
+        self.assertIn('http://lifteam.taile9b605.ts.net',
+                      settings_pi.CSRF_TRUSTED_ORIGINS)
 
     def test_a_custom_address_is_allowed_too(self):
         """Адрес можно переопределить в .env — например, дописав порт,
@@ -1611,7 +1622,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.34.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.35.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5008,3 +5019,93 @@ class QuoteTests(TestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertIn('/login/', resp['Location'])
+
+
+class QrLinkLengthTests(TestCase):
+    """Длина ссылки в QR. Этикетка — бумажка, чинить её после печати нечем."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_qr', full_name='Админ', password='pass')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.part = SparePart.objects.create(
+            part_number='QR-1', name='Резистор', current_stock=5)
+        self.cell = StorageCell.objects.create(
+            cabinet_number=1, row_number=1, cell_row=1)
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО «QR»'))
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='QR-модель'),
+                serial_number='QR-SN'),
+        )
+
+    def test_the_threshold_matches_the_qr_version_boundary(self):
+        """43-й символ переводит код на 33 модуля — 2,3 точки на модуль."""
+        self.assertEqual(views.QR_MAX_CHARS, 42)
+
+    def test_a_short_link_says_nothing(self):
+        self.assertEqual(views.qr_length_warning(['http://lifteam/p/1']), '')
+
+    def test_a_link_exactly_at_the_limit_is_still_fine(self):
+        self.assertEqual(views.qr_length_warning(['h' * 42]), '')
+
+    def test_one_character_over_the_limit_warns(self):
+        warning = views.qr_length_warning(['h' * 43])
+
+        self.assertIn('43', warning)
+        self.assertIn('LABEL_BASE_URL', warning)
+
+    def test_the_longest_link_on_the_page_decides(self):
+        """Длина растёт с номером записи, а не только от настройки."""
+        warning = views.qr_length_warning(['короткая', 'h' * 50])
+
+        self.assertIn('50', warning)
+
+    def test_no_links_at_all_is_not_a_problem(self):
+        self.assertEqual(views.qr_length_warning([]), '')
+
+    @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
+    def test_the_magic_dns_name_fits(self):
+        """Имя длиннее адреса 100.x, но код от этого не растёт."""
+        for url in (f'/parts/{self.part.pk}/label/',
+                    f'/storage-cells/{self.cell.pk}/label/',
+                    f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/'):
+            resp = self.client_http.get(url)
+
+            self.assertEqual(resp.status_code, 200, url)
+            self.assertEqual(resp.context['qr_warning'], '', url)
+
+    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
+    def test_an_overlong_base_warns_before_printing_not_after(self):
+        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertNotEqual(resp.context['qr_warning'], '')
+        self.assertContains(resp, 'может не читаться сканером')
+
+    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
+    def test_batch_pages_warn_too(self):
+        for url in ('/parts/labels/?ids=%d' % self.part.pk,
+                    '/storage-cells/labels/?cabinet=1'):
+            resp = self.client_http.get(url)
+
+            self.assertEqual(resp.status_code, 200, url)
+            self.assertNotEqual(resp.context['qr_warning'], '', url)
+
+    @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
+    def test_the_link_in_the_code_points_at_the_name_not_the_address(self):
+        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertEqual(
+            resp.context['qr_url'],
+            f'http://lifteam.taile9b605.ts.net/p/{self.part.pk}')
+
+    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
+    def test_the_warning_is_not_printed_on_the_sticker(self):
+        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        content = resp.content.decode()
+        self.assertIn('alert alert-warning no-print', content)

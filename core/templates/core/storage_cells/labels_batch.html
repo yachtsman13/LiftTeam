@@ -1,8 +1,9 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетки ячеек — LiftTeam v2.34.0{% endblock %}
+{% block title %}Этикетки ячеек — LiftTeam v2.35.0{% endblock %}
 
 {% block content %}
+{% include 'core/_qr_warning.html' %}
 <div class="no-print">
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
         <h2 class="mb-0"><i class="bi bi-tags me-2"></i>Этикетки ячеек: {{ labels|length }}</h2>

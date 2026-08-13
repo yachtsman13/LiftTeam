@@ -1,8 +1,9 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.34.0{% endblock %}
+{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.35.0{% endblock %}
 
 {% block content %}
+{% include 'core/_qr_warning.html' %}
 <div class="label-container">
     {% include 'core/storage_cells/_label.html' %}
 

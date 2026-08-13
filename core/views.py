@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.34.0.
+Views для LiftTeam v2.35.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1538,12 +1538,14 @@ def _cell_label(cell, base_url):
     component_types = {p.component_type for p in parts if p.component_type}
     grouped = len(parts) > 1 and len(component_types) == 1
 
+    link = qr_url(base_url, 'c', cell.pk)
     return {
         'cell': cell,
         'cell_parts': parts,
         # Ссылка вместо простого адреса: сканирование сразу открывает
         # содержимое, а не показывает строку, которую потом ищут вручную
-        'qr_img': generate_qr_image(qr_url(base_url, 'c', cell.pk)),
+        'qr_url': link,
+        'qr_img': generate_qr_image(link),
         'grouped': grouped,
         'group_type': parts[0].component_type if grouped else None,
         'group_values': (
@@ -1556,9 +1558,9 @@ def _cell_label(cell, base_url):
 def storage_cell_label(request, pk):
     """Печать этикетки одной ячейки."""
     cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
-    return render(
-        request, 'core/storage_cells/label.html', _cell_label(cell, label_base_url(request))
-    )
+    context = _cell_label(cell, label_base_url(request))
+    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    return render(request, 'core/storage_cells/label.html', context)
 
 
 @login_required
@@ -1577,13 +1579,14 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
     # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому под него
     # освобождено место: у логотипа убран внутренний круг, а сам он увеличен.
-    qr_img = generate_qr_image(qr_url(label_base_url(request), 'o', order.pk))
+    link = qr_url(label_base_url(request), 'o', order.pk)
 
     return render(request, 'core/repair_orders/equipment_label.html', {
         'order': order,
         'roe': roe,
         'position': position,
-        'qr_img': qr_img,
+        'qr_img': generate_qr_image(link),
+        'qr_warning': qr_length_warning([link]),
     })
 
 
@@ -2611,12 +2614,40 @@ def qr_url(base_url, prefix, pk):
     return f'{base_url}/{prefix}/{pk}'
 
 
+# Сколько символов помещается в QR, не переводя его на следующую версию.
+# Границы при уровне коррекции M: до 26 символов — 25 модулей, 27–42 —
+# 29 модулей, 43 и больше — 33. На этикетке заказа QR всего 9,57 мм, и
+# 33 модуля дают 2,3 точки принтера на модуль — меньше, чем 2,5, которые
+# на практике уже не считывались.
+QR_MAX_CHARS = 42
+
+
+def qr_length_warning(urls):
+    """Предупреждение, если ссылка не помещается в QR нужного размера.
+
+    Считается по факту, а не по одной настройке: длина складывается из
+    LABEL_BASE_URL и номера записи, и вторая половина растёт сама собой.
+    Сказать об этом надо до печати — после того как этикетки наклеены
+    на сотню пакетов, чинить нечего.
+    """
+    longest = max((str(url) for url in urls), key=len, default='')
+    if len(longest) <= QR_MAX_CHARS:
+        return ''
+    return (
+        f'Ссылка в QR длиннее {QR_MAX_CHARS} символов ({len(longest)}): {longest}. '
+        'Код станет мельче и может не читаться сканером — особенно на этикетке '
+        'заказа, где он всего 9,6 мм. Укоротите LABEL_BASE_URL.'
+    )
+
+
 def _part_label(part, base_url):
     """Данные одной этикетки детали."""
+    link = qr_url(base_url, 'p', part.pk)
     return {
         'part': part,
         'cell': part.current_cell,
-        'qr_img': generate_qr_image(qr_url(base_url, 'p', part.pk)),
+        'qr_url': link,
+        'qr_img': generate_qr_image(link),
     }
 
 
@@ -2624,7 +2655,9 @@ def _part_label(part, base_url):
 def part_label(request, pk):
     """Этикетка детали — для наклейки на пакет."""
     part = get_object_or_404(SparePart, pk=pk)
-    return render(request, 'core/parts/label.html', _part_label(part, label_base_url(request)))
+    context = _part_label(part, label_base_url(request))
+    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    return render(request, 'core/parts/label.html', context)
 
 
 # Верхняя граница пачки. Столько этикеток — уже полтора метра ленты; больше
@@ -2655,10 +2688,13 @@ def part_labels_batch(request):
     parts = list(parts.prefetch_related('storage_cells').order_by('part_number')[:MAX_LABELS_PER_BATCH])
     base_url = label_base_url(request)
 
+    labels = [_part_label(part, base_url) for part in parts]
+
     return render(request, 'core/parts/labels_batch.html', {
-        'labels': [_part_label(part, base_url) for part in parts],
+        'labels': labels,
         'layout': _batch_layout(request),
         'limit': MAX_LABELS_PER_BATCH,
+        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
     })
 
 
@@ -2687,8 +2723,11 @@ def storage_cell_labels_batch(request):
 
     base_url = label_base_url(request)
 
+    labels = [_cell_label(cell, base_url) for cell in cells]
+
     return render(request, 'core/storage_cells/labels_batch.html', {
-        'labels': [_cell_label(cell, base_url) for cell in cells],
+        'labels': labels,
+        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
         'layout': _batch_layout(request),
         'only_filled': only_filled,
         'cabinet': request.GET.get('cabinet', ''),

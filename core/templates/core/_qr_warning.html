@@ -1,0 +1,12 @@
+{% comment %}
+Предупреждение о слишком длинной ссылке в QR-коде. Ожидает: qr_warning.
+
+Общий кусок для всех страниц печати: сказать об этом надо до печати —
+после того как этикетки наклеены на сотню пакетов, чинить нечего.
+Сам блок в печать не идёт (no-print).
+{% endcomment %}
+{% if qr_warning %}
+<div class="alert alert-warning no-print small" style="max-width: 640px">
+    <i class="bi bi-exclamation-triangle me-2"></i>{{ qr_warning }}
+</div>
+{% endif %}
