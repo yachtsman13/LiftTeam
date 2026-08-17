@@ -1,0 +1,151 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ title }} — LiftTeam v2.38.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-grid-3x3-gap me-2"></i>{{ title }}</h2>
+    <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К списку
+    </a>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    {% if form.non_field_errors %}
+                    <div class="alert alert-danger">
+                        {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+                    </div>
+                    {% endif %}
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">{{ form.number.label }}</label>
+                            {{ form.number }}
+                            {% if form.number.errors %}
+                            <div class="text-danger small">{{ form.number.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-9">
+                            <label class="form-label">{{ form.name.label }}</label>
+                            {{ form.name }}
+                            <div class="form-text">{{ form.name.help_text }}</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.layout.label }}</label>
+                            {{ form.layout }}
+                            <div class="form-text">{{ form.layout.help_text }}</div>
+                            {% if form.layout.errors %}
+                            <div class="text-danger small">{{ form.layout.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.note.label }}</label>
+                            {{ form.note }}
+                        </div>
+                    </div>
+
+                    {% comment %}
+                        Готовые раскладки под ходовые органайзеры: набирать
+                        «8, 8, 8, 8, 8, 8, 8, 8» руками — то ещё удовольствие,
+                        особенно с телефона.
+                    {% endcomment %}
+                    <div class="mt-3">
+                        <div class="text-muted small mb-2">Подставить готовую раскладку:</div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    onclick="setLayout('8, 8, 8, 8, 8, 8, 8, 8')">64 мелкие (8×8)</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    onclick="setLayout('8, 8, 8, 8, 8, 4, 4')">44: мелкие сверху, крупные снизу</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    onclick="setLayout('2, 2, 2, 2')">8 больших ящиков</button>
+                        </div>
+                    </div>
+
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Сохранить
+                        </button>
+                        <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary">Отмена</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-eye me-2"></i>Как будет выглядеть</h5>
+            </div>
+            <div class="card-body">
+                <div id="layout-preview" class="cabinet-preview"></div>
+                <div class="form-text mt-2">
+                    Ширина ячейки на сетке обратна их числу в ряду: четыре
+                    в ряду — крупные ящики, шестнадцать — мелкие.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cabinet-preview {
+        border: 1px solid #dee2e6;
+        border-radius: .375rem;
+        padding: 4px;
+        background: #f8f9fa;
+    }
+    .cabinet-preview .preview-row {
+        display: flex;
+        gap: 3px;
+        margin-bottom: 3px;
+    }
+    .cabinet-preview .preview-cell {
+        background: #fff;
+        border: 1px solid #ced4da;
+        border-radius: 2px;
+        height: 26px;
+    }
+</style>
+
+<script>
+{% comment %}
+    Предпросмотр рисуется на месте, без обращения к серверу: человек
+    подбирает раскладку методом проб, и ждать перезагрузки на каждую
+    правку он не станет.
+{% endcomment %}
+const layoutInput = document.getElementById('{{ form.layout.id_for_label }}');
+const preview = document.getElementById('layout-preview');
+
+function drawPreview() {
+    const counts = (layoutInput.value.match(/\d+/g) || []).map(Number).filter(n => n > 0);
+    preview.innerHTML = '';
+    counts.slice(0, 30).forEach(count => {
+        const row = document.createElement('div');
+        row.className = 'preview-row';
+        for (let i = 0; i < Math.min(count, 24); i++) {
+            const cell = document.createElement('div');
+            cell.className = 'preview-cell';
+            cell.style.flex = '1 1 0';
+            row.appendChild(cell);
+        }
+        preview.appendChild(row);
+    });
+    if (!counts.length) {
+        preview.innerHTML = '<div class="text-muted small p-2">Раскладка не задана</div>';
+    }
+}
+
+function setLayout(value) {
+    layoutInput.value = value;
+    drawPreview();
+}
+
+layoutInput.addEventListener('input', drawPreview);
+drawPreview();
+</script>
+{% endblock %}

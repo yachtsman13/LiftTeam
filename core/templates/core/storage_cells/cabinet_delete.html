@@ -1,0 +1,47 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление кассетницы {{ cabinet.number }} — LiftTeam v2.38.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-trash me-2"></i>Удалить кассетницу {{ cabinet.number }}?</h2>
+    <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="card" style="max-width: 720px">
+    <div class="card-body">
+        <p class="mb-2">
+            <strong>{{ cabinet }}</strong><br>
+            Ячеек: {{ cabinet.cell_count }}, раскладка: <code>{{ cabinet.layout_text }}</code>
+        </p>
+
+        {% if occupied %}
+        {% comment %}
+            Удалять занятые ячейки нельзя: сведения о том, где лежит деталь,
+            восстановить будет неоткуда — на складе она останется, а в
+            программе её место исчезнет.
+        {% endcomment %}
+        <div class="alert alert-danger">
+            <strong>Удалить нельзя.</strong> В {{ occupied|length }} ячейках лежат детали:
+            {% for cell in occupied|slice:":10" %}<code>{{ cell.address }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}{% if occupied|length > 10 %} и другие{% endif %}.
+            Сначала переложите их в другую кассетницу.
+        </div>
+        <a href="{% url 'storage_cell_grid' %}?cabinet={{ cabinet.number }}" class="btn btn-primary">
+            Открыть на сетке
+        </a>
+        <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        {% else %}
+        <div class="alert alert-warning">
+            Кассетница и все её ячейки будут удалены. Пустые — деталей в них нет.
+        </div>
+        <form method="post" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">
+                <i class="bi bi-trash me-2"></i>Удалить
+            </button>
+            <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

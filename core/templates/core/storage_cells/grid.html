@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.36.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.38.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -84,8 +84,16 @@
         display: flex;
         flex: 1;
         min-height: 0;
+        min-width: 0;
     }
     .cell-item {
+        /* Ширина ячейки приходит из представления отдельным стилем на каждый
+           ряд: flex: 0 0 calc(N% - 4px), где N = 100 / числа ячеек в ряду.
+           box-sizing здесь обязателен — иначе рамка и padding добавляются
+           к этим процентам, и ряд из шестнадцати ячеек уезжает за экран.
+           Bootstrap задаёт border-box глобально, но сетка не должна
+           разъезжаться, если он не загрузился. */
+        box-sizing: border-box;
         flex: 1;
         min-width: 0;
         border-radius: 5px;
@@ -214,22 +222,26 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-2">
-    <h2><i class="bi bi-grid-3x3 me-2"></i>Кассетница №{{ cabinet }}</h2>
+    <h2><i class="bi bi-grid-3x3 me-2"></i>Кассетница {{ cabinet.label }}</h2>
     <div class="d-flex gap-2 grid-toolbar-mobile">
         <form method="get" class="d-flex gap-2" action="{% url 'part_list' %}">
             <input type="text" name="q" class="form-control" placeholder="Поиск деталей..." style="width: 200px;">
             <button type="submit" class="btn btn-outline-primary"><i class="bi bi-search"></i></button>
         </form>
-        <a href="{% url 'storage_cell_labels_batch' %}?cabinet={{ cabinet }}&only_filled=1"
+        <a href="{% url 'storage_cell_labels_batch' %}?cabinet={{ cabinet.number }}&only_filled=1"
            class="btn btn-outline-dark text-nowrap" title="Этикетки на все занятые ячейки этой кассетницы">
             <i class="bi bi-tags me-1"></i>Этикетки
         </a>
-        <select class="form-select" style="width: 160px;" onchange="window.location.href='?cabinet='+this.value{% if selected_part %}+'&selected_part={{ selected_part.pk }}'{% endif %}">
-            {% for c in cabinet_range %}
-            <option value="{{ c }}" {% if cabinet == c %}selected{% endif %}>Кассетница {{ c }}</option>
+        <a href="{% url 'cabinet_list' %}" class="btn btn-outline-secondary text-nowrap"
+           title="Создать, изменить или удалить кассетницу">
+            <i class="bi bi-sliders me-1"></i>Кассетницы
+        </a>
+        <select class="form-select" style="width: 200px;" onchange="window.location.href='?cabinet='+this.value{% if selected_part %}+'&selected_part={{ selected_part.pk }}'{% endif %}">
+            {% for c in cabinets %}
+            <option value="{{ c.number }}" {% if cabinet.pk == c.pk %}selected{% endif %}>Кассетница {{ c.label }}</option>
             {% endfor %}
         </select>
-        <select class="form-select" style="width: 220px;" onchange="window.location.href='?cabinet={{ cabinet }}&selected_part='+this.value">
+        <select class="form-select" style="width: 220px;" onchange="window.location.href='?cabinet={{ cabinet.number }}&selected_part='+this.value">
             <option value="">Выбрать деталь...</option>
             {% for p in parts %}
             <option value="{{ p.pk }}" {% if selected_part == p %}selected{% endif %}>{{ p.part_number }} — {{ p.name }}</option>
@@ -254,41 +266,44 @@
         </div>
 
         <div class="grid-scroll-area">
-            <!-- Заголовок столбцов -->
-            <div class="col-header-row">
-                {% for col in col_range %}
-                <div class="col-header-cell">{{ col }}</div>
-                {% endfor %}
-            </div>
-
-            <!-- Сетка ячеек с подписями рядов -->
-            {% for row in grid %}
+            {% comment %}
+                Ряды рисуются по фактическим ячейкам: в одном их может быть
+                восемь, в соседнем четыре. Общей нумерации столбцов поэтому
+                нет — номер ячейки написан на ней самой.
+            {% endcomment %}
+            {% for row in rows %}
             <div class="grid-row-wrapper">
-                <div class="row-label">{{ forloop.counter }}</div>
+                <div class="row-label">{{ row.number }}</div>
                 <div class="grid-row">
-                    {% for cell in row %}
-                        {% if cell.exists %}
-                        <div class="cell-item {{ cell.status }}"
-                             data-cell-id="{{ cell.cell.pk }}"
-                             data-address="{{ cell.cell.address }}"
-                             data-is-free="{% if cell.part_count == 0 %}true{% else %}false{% endif %}"
-                             title="{{ cell.cell.address }}{% for p in cell.cell.parts.all %} — {{ p.name }} ({{ p.current_stock }}){% endfor %}"
-                             onclick="handleCellClick(this)">
-                            <span class="cell-num">{{ cell.cell.cell_row }}</span>
-                            {% if cell.part_count == 1 %}
-                            <span class="cell-part">{{ cell.cell.parts.all.0.part_number|truncatechars:9 }}</span>
-                            {% elif cell.part_count > 1 %}
-                            <span class="cell-part">{{ cell.cell.parts.all.0.part_number|truncatechars:6 }}</span>
-                            <span class="cell-part-count">+{{ cell.part_count|add:"-1" }} ещё</span>
-                            {% endif %}
-                        </div>
-                        {% else %}
-                        <div class="cell-item free" style="opacity:0.3">
-                            <span class="cell-num">—</span>
-                        </div>
+                    {% for item in row.cells %}
+                    <div class="cell-item {{ item.status }}"
+                         style="flex: 0 0 calc({{ row.width }}% - 4px);"
+                         data-cell-id="{{ item.cell.pk }}"
+                         data-address="{{ item.cell.address }}"
+                         data-is-free="{% if item.part_count == 0 %}true{% else %}false{% endif %}"
+                         title="{{ item.cell.address }}{% for p in item.cell.parts.all %} — {{ p.name }} ({{ p.current_stock }}){% endfor %}"
+                         onclick="handleCellClick(this)">
+                        <span class="cell-num">{{ item.cell.cell_row }}</span>
+                        {% if item.part_count == 1 %}
+                        <span class="cell-part">{{ item.cell.parts.all.0.part_number|truncatechars:9 }}</span>
+                        {% elif item.part_count > 1 %}
+                        <span class="cell-part">{{ item.cell.parts.all.0.part_number|truncatechars:6 }}</span>
+                        <span class="cell-part-count">+{{ item.part_count|add:"-1" }} ещё</span>
                         {% endif %}
+                    </div>
                     {% endfor %}
                 </div>
+            </div>
+            {% empty %}
+            <div class="text-muted p-4 text-center">
+                {% if cabinet %}
+                В этой кассетнице нет ячеек.
+                <a href="{% url 'cabinet_edit' cabinet.pk %}">Задайте раскладку</a>.
+                {% else %}
+                Кассетниц пока нет.
+                <a href="{% url 'cabinet_create' %}">Заведите первую</a> —
+                укажите номер и сколько ячеек в каждом ряду.
+                {% endif %}
             </div>
             {% endfor %}
         </div>
@@ -337,10 +352,10 @@
             <div class="modal-body">
                 <p class="text-muted small">Выберите кассетницу, в которую хотите переместить деталь. Затем кликните по ячейке назначения (можно занятую — деталь просто добавится к её содержимому).</p>
                 <div class="list-group">
-                    {% for c in cabinet_range %}
-                    <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectMoveCabinet({{ c }})">
-                        Кассетница {{ c }}
-                        {% if c == cabinet %}
+                    {% for c in cabinets %}
+                    <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectMoveCabinet({{ c.number }})">
+                        Кассетница {{ c.label }}
+                        {% if c.pk == cabinet.pk %}
                         <span class="badge bg-primary">Текущая</span>
                         {% endif %}
                     </button>
@@ -523,7 +538,7 @@ function selectMoveCabinet(cabinet) {
     isMoveMode = true;
     document.getElementById('moveModeBanner').style.display = 'flex';
 
-    if (cabinet != {{ cabinet }}) {
+    if (cabinet != {{ cabinet.number }}) {
         window.location.href = '?cabinet=' + cabinet + '&move_from=' + moveFromCellId + '&move_part=' + moveFromPartId;
         return;
     }

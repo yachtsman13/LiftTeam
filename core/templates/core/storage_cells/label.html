@@ -1,20 +1,21 @@
 {% extends 'core/base.html' %}
+{% load static %}
 
-{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.36.0{% endblock %}
+{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
 {% include 'core/_qr_link.html' %}
 <div class="label-container">
-    {% include 'core/storage_cells/_label.html' %}
+    {% include 'core/_label_part.html' %}
 
     <div class="label-controls no-print">
         <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
-        <a href="{% url 'storage_cell_grid' %}?cabinet={{ cell.cabinet_number }}" class="btn btn-outline-secondary">Назад</a>
+        <a href="{% url 'storage_cell_grid' %}?cabinet={{ cell.cabinet.number }}" class="btn btn-outline-secondary">Назад</a>
     </div>
 </div>
 
-{% include 'core/storage_cells/_label_styles.html' %}
+{% include 'core/_label_part_styles.html' %}
 <style>
     @media screen {
         .label-container { display: flex; flex-direction: column; align-items: center; padding: 40px; }
@@ -30,4 +31,8 @@
         .label-sheet { border: none; page-break-inside: avoid; }
     }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/label-fit.js' %}"></script>
 {% endblock %}

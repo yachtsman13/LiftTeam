@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load lifteam %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.36.0{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -21,11 +22,11 @@
                 <div class="row g-2">
                     <div class="col-6"><strong>Тип:</strong> {{ part.component_type|default:"—" }}</div>
                     <div class="col-6"><strong>Корпус:</strong> {{ part.package|default:"—" }}</div>
-                    <div class="col-6"><strong>Сопротивление:</strong> {% if part.resistance %}{{ part.resistance|floatformat:"-6" }} {{ part.resistance_unit|default:"Ом" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Мощность:</strong> {% if part.power %}{{ part.power|floatformat:"-6" }} {{ part.power_unit|default:"Вт" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Напряжение:</strong> {% if part.voltage %}{{ part.voltage|floatformat:"-6" }} {{ part.voltage_unit|default:"В" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Ток:</strong> {% if part.current %}{{ part.current|floatformat:"-6" }} {{ part.current_unit|default:"А" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|floatformat:"-6" }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Сопротивление:</strong> {% if part.resistance %}{{ part.resistance|spec }} {{ part.resistance_unit|default:"Ом" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Мощность:</strong> {% if part.power %}{{ part.power|spec }} {{ part.power_unit|default:"Вт" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Напряжение:</strong> {% if part.voltage %}{{ part.voltage|spec }} {{ part.voltage_unit|default:"В" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Ток:</strong> {% if part.current %}{{ part.current|spec }} {{ part.current_unit|default:"А" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|spec }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
                     <div class="col-6"><strong>Остаток:</strong> <span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span>{% if part.stock_state == 'at_minimum' %} <small class="text-muted">ровно на минимуме</small>{% endif %}</div>
                     <div class="col-6"><strong>Мин. остаток:</strong> {{ part.min_stock }}</div>
                     <div class="col-6"><strong>Цена закупки:</strong>
@@ -52,9 +53,9 @@
                 <div class="d-flex align-items-center justify-content-between mb-3">
                     <div>
                         <span class="badge bg-primary fs-6">{{ part.current_cell.address }}</span>
-                        <span class="text-muted ms-2">Кассетница {{ part.current_cell.cabinet_number }}, ряд {{ part.current_cell.row_number }}, ячейка {{ part.current_cell.cell_row }}</span>
+                        <span class="text-muted ms-2">Кассетница {{ part.current_cell.cabinet.number }}, ряд {{ part.current_cell.row_number }}, ячейка {{ part.current_cell.cell_row }}</span>
                     </div>
-                    <a href="{% url 'storage_cell_grid' %}?cabinet={{ part.current_cell.cabinet_number }}&selected_part={{ part.pk }}" class="btn btn-sm btn-outline-info">Показать на сетке</a>
+                    <a href="{% url 'storage_cell_grid' %}?cabinet={{ part.current_cell.cabinet.number }}&selected_part={{ part.pk }}" class="btn btn-sm btn-outline-info">Показать на сетке</a>
                 </div>
                 {% else %}
                 <p class="text-muted mb-3">Деталь пока не размещена ни в одной ячейке.</p>

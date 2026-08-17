@@ -25,9 +25,10 @@ from django.utils import timezone
 
 from . import messengers, notifications, tbank, views
 from .models import (
-    BankOperation, Client as ClientModel, Employee, Equipment, EquipmentModel,
+    BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
-    RepairOrderEquipment, SparePart, StockMovement, StorageCell,
+    RepairOrderEquipment, SparePart, StockMovement, StorageCell, parse_layout,
+    plural_genitive, format_spec,
 )
 
 
@@ -178,8 +179,8 @@ class StorageCellMultiPartTests(TestCase):
         self.admin = Employee.objects.create_superuser(username='admin_t', full_name='Админ', password='pass')
         self.part1 = SparePart.objects.create(part_number='CELL-1', name='Деталь A')
         self.part2 = SparePart.objects.create(part_number='CELL-2', name='Деталь B')
-        self.cell1 = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=1)
-        self.cell2 = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=2)
+        self.cell1 = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=1)
+        self.cell2 = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=2)
         self.client_http = TestClient()
         self.client_http.force_login(self.admin)
 
@@ -539,7 +540,7 @@ class LabelTests(TestCase):
             component_type='Резисторы', current_stock=5,
         )
         self.other = SparePart.objects.create(part_number='LBL-2', name='Соседняя деталь')
-        self.cell = StorageCell.objects.create(cabinet_number=2, row_number=3, cell_row=4)
+        self.cell = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=2)[0], row_number=3, cell_row=4)
         self.cell.parts.add(self.part, self.other)
         self.client_http = TestClient()
         self.client_http.force_login(self.user)
@@ -569,7 +570,7 @@ class LabelTests(TestCase):
         cell_response = self.client_http.get(f'/c/{self.cell.pk}/')
         self.assertRedirects(
             cell_response,
-            f'/storage-cells/?cabinet={self.cell.cabinet_number}&open_cell={self.cell.pk}',
+            f'/storage-cells/?cabinet={self.cell.cabinet.number}&open_cell={self.cell.pk}',
         )
 
     def test_short_urls_require_login(self):
@@ -629,7 +630,7 @@ class LabelTests(TestCase):
         cell_response = self.client_http.get(f'/c/{self.cell.pk}')
         self.assertRedirects(
             cell_response,
-            f'/storage-cells/?cabinet={self.cell.cabinet_number}&open_cell={self.cell.pk}',
+            f'/storage-cells/?cabinet={self.cell.cabinet.number}&open_cell={self.cell.pk}',
         )
 
     def test_qr_links_carry_no_trailing_slash(self):
@@ -1014,7 +1015,7 @@ class ReportExportTests(TestCase):
 
     def test_purchase_plan_export_shows_cell_address(self):
         part = SparePart.objects.create(part_number='LOW-2', name='Деталь', current_stock=0, min_stock=3)
-        cell = StorageCell.objects.create(cabinet_number=1, row_number=2, cell_row=3)
+        cell = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=2, cell_row=3)
         cell.parts.add(part)
 
         rows = self._rows(self._sheet('/reports/purchase-plan/export/'))
@@ -1622,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.36.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.38.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -1688,12 +1689,32 @@ class OrderLabelLinkTests(TestCase):
         self.assertContains(resp, self.order.order_number)
         self.assertIn('/1</span>', content)
 
-    def test_logo_has_no_inner_circle(self):
-        """У логотипа осталась одна окружность: внутренняя поджимала QR."""
+    def test_the_label_has_no_emblem(self):
+        """Кольцо с надписями занимало место вокруг кода и ограничивало его."""
         content = self.client_http.get(self._label_url()).content.decode()
-        logo = content[content.index('<svg class="label-logo"'):content.index('</svg>')]
 
-        self.assertEqual(logo.count('<circle'), 1)
+        self.assertNotIn('<svg', content)
+        self.assertNotIn('label-logo', content)
+
+    def test_the_company_and_the_site_stay_on_the_label(self):
+        """Эмблемы нет, но по этикетке должно быть видно, чья это железка."""
+        response = self.client_http.get(self._label_url())
+
+        self.assertContains(response, 'LIFT TEAM')
+        self.assertContains(response, 'LIFTTEAM.RU')
+
+    def test_the_phones_are_the_current_ones(self):
+        response = self.client_http.get(self._label_url())
+
+        self.assertContains(response, '+7 964 524 84 00')
+        self.assertContains(response, '+7 977 760 10 89')
+        self.assertNotContains(response, '282-40-31')
+
+    def test_the_qr_is_the_common_size(self):
+        """Размер кода один на всех этикетках: 12,3 мм."""
+        response = self.client_http.get(self._label_url())
+
+        self.assertContains(response, '12.3mm')
 
 
 class OrderExportTests(TestCase):
@@ -1987,7 +2008,7 @@ class StockStateTests(TestCase):
 
     def _cell_with(self, *parts):
         cell = StorageCell.objects.create(
-            cabinet_number=1, row_number=1, cell_row=StorageCell.objects.count() + 1
+            cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=StorageCell.objects.count() + 1
         )
         cell.parts.add(*parts)
         return cell
@@ -2164,10 +2185,10 @@ class BatchLabelTests(TestCase):
             part_number='B-DIO', name='Диод', component_type='Диод', current_stock=5
         )
 
-        self.filled = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=1)
+        self.filled = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=1)
         self.filled.parts.add(self.resistor)
-        self.empty = StorageCell.objects.create(cabinet_number=1, row_number=1, cell_row=2)
-        StorageCell.objects.create(cabinet_number=2, row_number=1, cell_row=1)
+        self.empty = StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=2)
+        StorageCell.objects.create(cabinet=Cabinet.objects.get_or_create(number=2)[0], row_number=1, cell_row=1)
 
     def _labels(self, url):
         resp = self.client_http.get(url)
@@ -2249,8 +2270,7 @@ class BatchLabelTests(TestCase):
         self.filled.parts.add(second)
 
         _, labels = self._labels('/storage-cells/labels/?cabinet=1&only_filled=1')
-        self.assertTrue(labels[0]['grouped'])
-        self.assertEqual(labels[0]['group_type'], 'Резистор')
+        self.assertEqual(labels[0]['title'], 'Набор резисторов')
 
     # --- раскладка и доступ ---
 
@@ -2447,7 +2467,7 @@ class GridLiveUpdateMarkupTests(TestCase):
         self.part = SparePart.objects.create(
             part_number='GRID-1', name='Деталь', current_stock=10, min_stock=2
         )
-        cell = StorageCell.objects.filter(cabinet_number=1).first()
+        cell = StorageCell.objects.filter(cabinet__number=1).first()
         cell.parts.add(self.part)
 
     def test_grid_exposes_cells_data_to_the_script(self):
@@ -5033,7 +5053,7 @@ class QrLinkLengthTests(TestCase):
         self.part = SparePart.objects.create(
             part_number='QR-1', name='Резистор', current_stock=5)
         self.cell = StorageCell.objects.create(
-            cabinet_number=1, row_number=1, cell_row=1)
+            cabinet=Cabinet.objects.get_or_create(number=1)[0], row_number=1, cell_row=1)
         self.order = RepairOrder.objects.create(
             client=ClientModel.objects.create(name='ООО «QR»'))
         self.roe = RepairOrderEquipment.objects.create(
@@ -5123,7 +5143,7 @@ class QrLinkVisibilityTests(TestCase):
         self.part = SparePart.objects.create(
             part_number='VIS-1', name='Диод', current_stock=5)
         self.cell = StorageCell.objects.create(
-            cabinet_number=2, row_number=1, cell_row=1)
+            cabinet=Cabinet.objects.get_or_create(number=2)[0], row_number=1, cell_row=1)
         self.order = RepairOrder.objects.create(
             client=ClientModel.objects.create(name='ООО «Видно»'))
         self.roe = RepairOrderEquipment.objects.create(
@@ -5170,3 +5190,534 @@ class QrLinkVisibilityTests(TestCase):
         resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
 
         self.assertContains(resp, 'text-muted small no-print')
+
+
+class CabinetTests(TestCase):
+    """Кассетницы: своя раскладка у каждой, ряды разной ширины."""
+
+    def setUp(self):
+        self.warehouse = Employee.objects.create_user(
+            username='sklad_cab', full_name='Кладовщик', password='pass',
+            role='warehouse')
+        self.manager = Employee.objects.create_user(
+            username='mgr_cab', full_name='Менеджер', password='pass',
+            role='repair_manager')
+        self.client_http = TestClient()
+        self.client_http.force_login(self.warehouse)
+
+    def _create(self, **overrides):
+        data = {'number': 1, 'name': 'Резисторы', 'note': '',
+                'layout': '8, 8, 8, 4, 4'}
+        data.update(overrides)
+        return self.client_http.post('/storage-cells/cabinets/create/', data)
+
+    def test_a_cabinet_gets_exactly_the_cells_of_its_layout(self):
+        self._create()
+
+        cabinet = Cabinet.objects.get(number=1)
+        self.assertEqual(cabinet.layout(), [8, 8, 8, 4, 4])
+        self.assertEqual(cabinet.cell_count, 32)
+
+    def test_rows_may_differ_in_width(self):
+        """Ряд из четырёх — это четыре крупных ящика, а не четыре из восьми."""
+        self._create(layout='8, 2')
+
+        cabinet = Cabinet.objects.get(number=1)
+        self.assertEqual(cabinet.layout(), [8, 2])
+        self.assertEqual(
+            sorted(cabinet.cells.filter(row_number=2).values_list('cell_row', flat=True)),
+            [1, 2])
+
+    def test_the_layout_is_parsed_from_any_separator(self):
+        for text in ('8,8,4', '8 8 4', '8, 8, 4', '8х8х4'):
+            self.assertEqual(parse_layout(text), [8, 8, 4], text)
+
+    def test_the_address_follows_the_cabinet_number(self):
+        self._create(number=7)
+        cell = Cabinet.objects.get(number=7).cells.get(row_number=1, cell_row=1)
+
+        self.assertEqual(cell.address, 'К7-Р1-Я1')
+
+    def test_the_next_number_is_suggested(self):
+        self._create(number=3)
+
+        self.assertEqual(Cabinet.next_number(), 4)
+
+    def test_growing_the_layout_adds_cells_and_keeps_the_old_ones(self):
+        self._create(layout='4')
+        cabinet = Cabinet.objects.get(number=1)
+        kept = cabinet.cells.get(row_number=1, cell_row=1)
+
+        self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/edit/', {
+            'number': 1, 'name': 'Резисторы', 'note': '', 'layout': '4, 4'})
+
+        self.assertEqual(cabinet.layout(), [4, 4])
+        self.assertTrue(StorageCell.objects.filter(pk=kept.pk).exists())
+
+    def test_shrinking_removes_empty_cells(self):
+        self._create(layout='4, 4')
+        cabinet = Cabinet.objects.get(number=1)
+
+        self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/edit/', {
+            'number': 1, 'name': '', 'note': '', 'layout': '4'})
+
+        self.assertEqual(cabinet.layout(), [4])
+        self.assertEqual(cabinet.cell_count, 4)
+
+    def test_shrinking_refuses_to_drop_cells_with_parts(self):
+        """Иначе деталь на складе есть, а где она лежит — уже неизвестно."""
+        self._create(layout='4, 4')
+        cabinet = Cabinet.objects.get(number=1)
+        part = SparePart.objects.create(part_number='CAB-1', name='Резистор',
+                                        current_stock=10)
+        cabinet.cells.get(row_number=2, cell_row=1).parts.add(part)
+
+        resp = self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/edit/', {
+            'number': 1, 'name': '', 'note': '', 'layout': '4'})
+
+        self.assertContains(resp, 'К1-Р2-Я1')
+        self.assertEqual(cabinet.layout(), [4, 4])
+
+    def test_an_empty_cabinet_can_be_deleted(self):
+        self._create()
+        cabinet = Cabinet.objects.get(number=1)
+
+        self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/delete/')
+
+        self.assertFalse(Cabinet.objects.filter(pk=cabinet.pk).exists())
+        self.assertEqual(StorageCell.objects.count(), 0)
+
+    def test_a_cabinet_with_parts_is_not_deleted(self):
+        self._create()
+        cabinet = Cabinet.objects.get(number=1)
+        part = SparePart.objects.create(part_number='CAB-2', name='Диод',
+                                        current_stock=5)
+        cabinet.cells.first().parts.add(part)
+
+        self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/delete/')
+
+        self.assertTrue(Cabinet.objects.filter(pk=cabinet.pk).exists())
+
+    def test_an_empty_layout_is_refused(self):
+        resp = self._create(layout='')
+
+        self.assertContains(resp, 'сколько ячеек в каждом ряду')
+        self.assertEqual(Cabinet.objects.count(), 0)
+
+    def test_too_many_cells_in_a_row_are_refused(self):
+        resp = self._create(layout='100')
+
+        self.assertContains(resp, 'не больше')
+        self.assertEqual(Cabinet.objects.count(), 0)
+
+    def test_the_number_stays_unique(self):
+        self._create(number=1)
+
+        resp = self._create(number=1)
+
+        self.assertEqual(Cabinet.objects.count(), 1)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_the_grid_draws_rows_by_their_real_width(self):
+        self._create(layout='8, 2')
+
+        resp = self.client_http.get('/storage-cells/?cabinet=1')
+
+        # Восемь в ряду — по 12,5% ширины, два — по 50%
+        self.assertContains(resp, '12.5000%')
+        self.assertContains(resp, '50.0000%')
+
+    def test_the_width_is_written_with_a_dot_not_a_comma(self):
+        """Локаль ru-ru печатает дробь через запятую, а «calc(12,5% - 4px)» —
+        невалидный CSS: ячейки остались бы без ширины."""
+        self._create(layout='8, 2')
+
+        resp = self.client_http.get('/storage-cells/?cabinet=1')
+
+        self.assertNotContains(resp, 'calc(12,5')
+
+    def test_the_grid_survives_an_empty_base(self):
+        """Свежая установка без кассетниц не должна падать."""
+        resp = self.client_http.get('/storage-cells/')
+
+        self.assertEqual(resp.status_code, 200)
+
+    def test_the_grid_falls_back_to_the_first_cabinet(self):
+        self._create(number=5)
+
+        resp = self.client_http.get('/storage-cells/?cabinet=99')
+
+        self.assertEqual(resp.context['cabinet'].number, 5)
+
+    def test_the_repair_manager_does_not_rebuild_the_warehouse(self):
+        self.client_http.force_login(self.manager)
+
+        resp = self.client_http.get('/storage-cells/cabinets/')
+
+        self.assertEqual(resp.status_code, 302)
+
+    def test_the_list_shows_the_layout_and_what_is_occupied(self):
+        self._create(layout='4, 4')
+        cabinet = Cabinet.objects.get(number=1)
+        part = SparePart.objects.create(part_number='CAB-3', name='Кондёр',
+                                        current_stock=3)
+        cabinet.cells.first().parts.add(part)
+
+        resp = self.client_http.get('/storage-cells/cabinets/')
+
+        self.assertContains(resp, '4, 4')
+        self.assertContains(resp, 'Резисторы')
+
+    def test_init_cells_creates_cabinets_with_the_given_layout(self):
+        out = io.StringIO()
+        call_command('init_cells', cabinets=2, layout='3,3', stdout=out)
+
+        self.assertEqual(Cabinet.objects.count(), 2)
+        self.assertEqual(Cabinet.objects.get(number=1).layout(), [3, 3])
+        self.assertEqual(StorageCell.objects.count(), 12)
+
+    def test_init_cells_does_not_recut_existing_cabinets(self):
+        """Раскладку могли поменять руками — повторный запуск её не трогает."""
+        self._create(number=1, layout='2')
+        call_command('init_cells', cabinets=1, layout='8,8', stdout=io.StringIO())
+
+        self.assertEqual(Cabinet.objects.get(number=1).layout(), [2])
+
+
+class CommonLabelLayoutTests(TestCase):
+    """Этикетка детали и этикетка ячейки печатаются одним шаблоном.
+
+    Раньше разметок было две, и одна и та же деталь на пакете и на ячейке
+    выглядела по-разному: где артикул, где название, адрес то сверху,
+    то снизу.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_common_label', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.cabinet = Cabinet.objects.create(number=7)
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.first()
+
+        self.part = SparePart.objects.create(
+            part_number='CL-1', name='Резистор 10к', component_type='Резистор',
+            package='0805', resistance=10, resistance_unit='кОм',
+            description='Ставится в блок питания БУАД',
+        )
+        self.cell.parts.add(self.part)
+
+    def _both_pages(self):
+        return (
+            f'/parts/{self.part.pk}/label/',
+            f'/storage-cells/{self.cell.pk}/label/',
+        )
+
+    def test_both_labels_use_the_same_template(self):
+        for page in self._both_pages():
+            with self.subTest(page=page):
+                response = self.client_http.get(page)
+                self.assertTemplateUsed(response, 'core/_label_part.html')
+                self.assertTemplateUsed(response, 'core/_label_part_styles.html')
+
+    def test_a_single_part_prints_the_same_on_both(self):
+        """Ячейка с одной деталью и пакет с ней же — одно и то же содержимое."""
+        for page in self._both_pages():
+            with self.subTest(page=page):
+                response = self.client_http.get(page)
+                self.assertEqual(response.context['title'], 'CL-1')
+                self.assertEqual(response.context['package'], '0805')
+                self.assertEqual(response.context['address'], self.cell.address)
+                self.assertEqual(
+                    response.context['description'], 'Ставится в блок питания БУАД'
+                )
+
+    def test_the_package_is_printed_below_and_stands_out(self):
+        """По корпусу подбирают замену: 0805 вместо 1206 на плату не встанет."""
+        for page in self._both_pages():
+            with self.subTest(page=page):
+                response = self.client_http.get(page)
+                self.assertContains(response, 'label-package')
+                self.assertContains(response, '0805')
+
+    def test_the_specs_go_next_to_the_article(self):
+        response = self.client_http.get(self._both_pages()[0])
+
+        self.assertEqual(response.context['specs'], 'Резистор · 10кОм')
+
+    def test_a_name_repeating_the_article_is_not_printed_twice(self):
+        """Артикул уже стоит сверху и самым крупным шрифтом."""
+        twin = SparePart.objects.create(part_number='CL-TWIN', name='CL-TWIN',
+                                        component_type='Диод')
+
+        response = self.client_http.get(f'/parts/{twin.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'CL-TWIN')
+        self.assertEqual(response.context['description'], '')
+
+    def test_a_part_without_a_cell_says_so(self):
+        loose = SparePart.objects.create(part_number='CL-LOOSE', name='Ничья деталь')
+
+        response = self.client_http.get(f'/parts/{loose.pk}/label/')
+
+        self.assertEqual(response.context['address'], 'нет ячейки')
+
+    def test_a_set_of_one_type_is_named_by_the_type(self):
+        """Перечислять одинаковые названия на этикетке незачем — важны номиналы."""
+        for number, value in (('CL-2', 4.7), ('CL-3', 1)):
+            self.cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Резистор {value}к',
+                component_type='Резистор', package='0805',
+                resistance=value, resistance_unit='кОм',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'Набор резисторов')
+        self.assertEqual(response.context['items'], ['10кОм', '4.7кОм', '1кОм'])
+        # Корпус общий на всю ячейку — он у всех один
+        self.assertEqual(response.context['package'], '0805')
+
+    def test_what_a_set_has_in_common_is_printed_once(self):
+        """«0.125Вт» у каждого номинала — это шум, а место на этикетке жёсткое."""
+        self.part.power, self.part.power_unit = 0.125, 'Вт'
+        self.part.save(update_fields=['power', 'power_unit'])
+        for number, value in (('CS-1', 4.7), ('CS-2', 22)):
+            self.cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Резистор {value}к',
+                component_type='Резистор', package='0805',
+                resistance=value, resistance_unit='кОм',
+                power=0.125, power_unit='Вт',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['specs'], '0.125Вт')
+        self.assertEqual(response.context['items'], ['10кОм', '4.7кОм', '22кОм'])
+
+    def test_values_of_two_kinds_stay_in_one_cell_of_the_grid(self):
+        """У конденсатора различаются два числа сразу; сплошной строкой
+        они слились бы в список, где не понять, что к чему относится."""
+        self.cell.parts.clear()
+        for number, farad, volt in (('CD-1', 47, 35), ('CD-2', 1000, 50)):
+            self.cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Конденсатор {number}',
+                component_type='Конденсатор',
+                capacitance=farad, capacitance_unit='мкФ',
+                voltage=volt, voltage_unit='В',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['items'], ['35В, 47мкФ', '50В, 1000мкФ'])
+
+    def test_a_set_falls_back_to_articles_when_the_values_repeat(self):
+        """У россыпи резисторов заполнена только мощность, а номинал живёт
+        в артикуле: «2Вт, 2Вт, 2Вт» не различает ничего."""
+        self.cell.parts.clear()
+        for number in ('RS-1', 'RS-2', 'RS-3'):
+            self.cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Резисторы {number}',
+                component_type='Резистор', power=2, power_unit='Вт',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['specs'], '2Вт')
+        self.assertEqual(response.context['items'], ['RS-1', 'RS-2', 'RS-3'])
+
+    def test_a_mixed_set_keeps_the_common_package_out(self):
+        """«0805» на ячейке, где половина деталей в 1206, хуже, чем ничего."""
+        self.cell.parts.add(SparePart.objects.create(
+            part_number='CL-4', name='Резистор 1к', component_type='Резистор',
+            package='1206', resistance=1, resistance_unit='кОм',
+        ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['package'], '')
+
+    def test_different_types_are_listed_by_article(self):
+        self.cell.parts.add(SparePart.objects.create(
+            part_number='CL-D', name='Диод', component_type='Диод',
+        ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'Разные детали')
+        self.assertEqual(response.context['items'], ['CL-1', 'CL-D'])
+
+    def test_a_list_of_parts_is_printed_as_a_grid(self):
+        """Сплошная строка переносилась посреди номинала: «10кОм, 4.7к»
+        и «Ом» на следующей строке."""
+        self.cell.parts.add(SparePart.objects.create(
+            part_number='CG-1', name='Диод', component_type='Диод'))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertContains(response, 'class="label-items"')
+        self.assertContains(response, '<span class="label-item">CL-1</span>', html=False)
+        self.assertContains(response, '<span class="label-item">CG-1</span>', html=False)
+
+    def test_a_single_part_has_no_grid(self):
+        """У одной детали перечислять нечего — печатается описание."""
+        response = self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertNotContains(response, 'class="label-items"')
+        self.assertContains(response, 'label-description')
+
+    def test_an_empty_cell_says_it_is_empty(self):
+        empty = self.cabinet.cells.last()
+
+        response = self.client_http.get(f'/storage-cells/{empty.pk}/label/')
+
+        self.assertEqual(response.context['title'], '')
+        self.assertEqual(response.context['description'], 'Ячейка пуста')
+        self.assertEqual(response.context['address'], empty.address)
+
+    def test_every_label_carries_the_same_qr_size(self):
+        """Размер кода один на всех этикетках — сканер подносят одинаково."""
+        pages = self._both_pages() + (
+            f'/parts/labels/?ids={self.part.pk}',
+            f'/storage-cells/labels/?cabinet={self.cabinet.number}',
+        )
+        for page in pages:
+            with self.subTest(page=page):
+                self.assertContains(self.client_http.get(page), '12.3mm')
+
+    def test_the_cell_label_fits_its_font(self):
+        """Длинное описание должно ужиматься, а не обрезаться на полуслове."""
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertContains(response, 'label-fit.js')
+
+
+class PluralGenitiveTests(TestCase):
+    """«Набор резисторов» — форму выводим правилами: список типов
+    компонентов ведёт человек, готового справочника в программе нет."""
+
+    def test_common_component_types(self):
+        cases = {
+            'Резистор': 'Резисторов',
+            'Диод': 'Диодов',
+            'Транзистор': 'Транзисторов',
+            'Конденсатор': 'Конденсаторов',
+            'Предохранитель': 'Предохранителей',
+            'Микросхема': 'Микросхем',
+            'Батарея': 'Батарей',
+            'Реле': 'Реле',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(plural_genitive(word), expected)
+
+    def test_an_empty_type_gives_an_empty_string(self):
+        self.assertEqual(plural_genitive(''), '')
+        self.assertEqual(plural_genitive(None), '')
+
+
+class SpecFormattingTests(TestCase):
+    """Характеристики хранятся с шестью знаками после точки, и Django
+    дописывает нули при каждой записи. «0.150000 А» читается как точность
+    до микроампера, которой ни у кого нет."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_spec', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.part = SparePart.objects.create(
+            part_number='SP-1', name='Диод', component_type='Диод',
+            current=Decimal('0.15'), current_unit='А',
+            voltage=Decimal('100'), voltage_unit='В',
+        )
+
+    def test_format_spec_drops_the_trailing_zeros(self):
+        cases = {
+            Decimal('0.150000'): '0.15',
+            Decimal('100.000000'): '100',
+            Decimal('4700.000000'): '4700',
+            Decimal('0.125000'): '0.125',
+            Decimal('2.200000'): '2.2',
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(format_spec(value), expected)
+
+    def test_format_spec_of_nothing_is_an_empty_string(self):
+        self.assertEqual(format_spec(None), '')
+
+    def test_the_part_card_shows_the_short_form(self):
+        response = self.client_http.get(f'/parts/{self.part.pk}/')
+
+        self.assertContains(response, '0.15')
+        self.assertNotContains(response, '0.150000')
+
+    def test_the_edit_form_shows_the_short_form(self):
+        """Иначе при каждом сохранении в поле остаётся «0.150000»."""
+        response = self.client_http.get(f'/parts/{self.part.pk}/edit/')
+
+        self.assertContains(response, 'value="0.15"')
+        self.assertNotContains(response, 'value="0.150000"')
+
+    def test_the_label_shows_the_short_form(self):
+        self.assertEqual(self.part.specs_display, '100В, 0.15А')
+
+
+class ImportUnitTests(TestCase):
+    """Единица измерения без значения — мусор: «Ом» у диода не значит ничего."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_import_unit', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def _import(self, rows, update_existing=False):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        headers = ['part_number', 'name', 'component_type', 'voltage', 'voltage_unit',
+                   'resistance', 'resistance_unit', 'capacitance', 'capacitance_unit']
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(header, '') for header in headers])
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        buffer.name = 'parts.xlsx'
+        data = {'file': buffer}
+        if update_existing:
+            data['update_existing'] = 'on'
+        return self.client_http.post('/parts/import/', data, follow=True)
+
+    def test_a_unit_without_a_value_is_not_imported(self):
+        """В присланных файлах единицы проставлены во всех строках подряд,
+        независимо от того, есть ли что измерять."""
+        self._import([{
+            'part_number': 'IU-1', 'name': 'Диод', 'component_type': 'Диод',
+            'voltage': 100, 'voltage_unit': 'В',
+            'resistance_unit': 'Ом', 'capacitance_unit': 'Ф',
+        }])
+
+        part = SparePart.objects.get(part_number='IU-1')
+        self.assertEqual(part.voltage_unit, 'В')
+        self.assertEqual(part.resistance_unit, '')
+        self.assertEqual(part.capacitance_unit, '')
+
+    def test_an_empty_unit_does_not_wipe_the_one_typed_by_hand(self):
+        SparePart.objects.create(
+            part_number='IU-2', name='Резистор', component_type='Резистор',
+            resistance=Decimal('10'), resistance_unit='кОм',
+        )
+
+        self._import([{
+            'part_number': 'IU-2', 'name': 'Резистор', 'component_type': 'Резистор',
+            'resistance': 10,
+        }], update_existing=True)
+
+        self.assertEqual(SparePart.objects.get(part_number='IU-2').resistance_unit, 'кОм')

@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load static %}
 
-{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.36.0{% endblock %}
+{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
@@ -12,59 +13,28 @@
         </div>
 
         <div class="label-body">
-            <div class="label-info">
+            <div class="label-info" data-fit="0.6">
                 <div class="label-model">{{ roe.equipment.model.name }}</div>
                 <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
                 <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
             </div>
 
             {% comment %}
-                Логотип нарисован контуром, а не залит цветом: сплошная заливка
-                на термопринтере печатается чёрным пятном, греет головку и может
-                слегка расплыться — расплывшийся край сделает QR внутри
-                нечитаемым.
+                Эмблемы на этикетке больше нет. Кольцо с надписями занимало
+                место вокруг кода и ограничивало его размер: на 43×25 мм
+                каждый миллиметр вокруг QR — это доли точки принтера на модуль.
+                Название и сайт остались, но обычной строкой внизу — читаются
+                они так же, а места не отнимают.
             {% endcomment %}
-            <div class="label-logo-wrap">
-            <svg class="label-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-                {% comment %}
-                    Окружность одна. Внутренняя убрана: она вплотную подходила
-                    к QR и на термопринтере грозила слиться с его крайними
-                    модулями, а место под код нужнее второй линии.
-                    Радиус 90 вместо 94 — при 94 круг упирался в край блока
-                    и на этикетке казался приклеенным к строке с телефонами.
-                {% endcomment %}
-                <circle cx="100" cy="100" r="90" fill="none" stroke="#000" stroke-width="4"/>
-
-                {% comment %}
-                    Дуги надписей опущены с r=86 до r=78. Буквы растут от линии
-                    наружу, и при 86 верхушки букв пересекали окружность —
-                    название сливалось с ней в одну кашу. Теперь между ними
-                    остаётся зазор.
-                {% endcomment %}
-                <path id="logoTop" d="M 49.9 40.2 A 78 78 0 0 1 150.1 40.2" fill="none"/>
-                <text class="label-logo-text">
-                    <textPath href="#logoTop" startOffset="50%" text-anchor="middle">LIFT TEAM</textPath>
-                </text>
-
-                <path id="logoBottom" d="M 49.9 159.8 A 78 78 0 0 0 150.1 159.8" fill="none"/>
-                <text class="label-logo-text">
-                    <textPath href="#logoBottom" startOffset="50%" text-anchor="middle">LIFTTEAM.RU</textPath>
-                </text>
-
-                {% comment %}
-                    Сторона 110 из 200: половина диагонали равна 77,8 при линии
-                    надписей на r=78. Углы кода приходятся на 45° от вертикали,
-                    а надписи занимают ±40° сверху и снизу — углы попадают
-                    в пустые боковые сектора и букв не задевают.
-                {% endcomment %}
-                {% if qr_img %}
-                <image href="{{ qr_img }}" x="45" y="45" width="110" height="110"/>
-                {% endif %}
-            </svg>
+            {% if qr_img %}
+            <div class="label-qr-wrap">
+                <img src="{{ qr_img }}" alt="QR" class="label-qr">
             </div>
+            {% endif %}
         </div>
 
-        <div class="label-phones">+7 925 282-40-31 · +7 977 760-10-89</div>
+        <div class="label-company">LIFT TEAM · LIFTTEAM.RU</div>
+        <div class="label-phones">+7 964 524 84 00 · +7 977 760 10 89</div>
     </div>
 
     <div class="label-controls no-print">
@@ -125,67 +95,69 @@
         padding-top: 0.4mm;
     }
     /* Ширины заданы явно: при flex: 1 колонка не сжималась под содержимое
-       и выталкивала логотип за край этикетки. 20 + 1 + 17.4 = 38.4 мм при
-       полезной ширине 40 мм. Текстовая колонка ужата в пользу логотипа:
-       ссылке в коде нужны модули покрупнее, чем прежней короткой строке. */
+       и выталкивала код за край этикетки. 26,2 + 1,5 + 12,3 = 40 мм — ровно
+       полезная ширина, те же доли, что и на складской этикетке. */
     .label-info {
-        flex: 0 0 20mm;
-        width: 20mm;
+        flex: 0 0 26.2mm;
+        width: 26.2mm;
         min-width: 0;
         overflow: hidden;
         display: flex;
         flex-direction: column;
         gap: 0.4mm;
+        --fit: 1;
     }
+    /* Своего overflow у строк нет намеренно: он спрятал бы переполнение
+       внутри строки, а блок выше отчитался бы, что всё поместилось, —
+       и подгонка шрифта не сработала бы (подробности в label-fit.js).
+       Обрезать здесь нечего: серийный номер в двадцать два знака и есть
+       то, ради чего этикетку читают. */
     .label-model {
-        font-size: 8pt;
+        font-size: calc(8pt * var(--fit));
         font-weight: bold;
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
     }
     .label-serial {
-        font-size: 7pt;
+        font-size: calc(7pt * var(--fit));
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
     }
-    .label-date { font-size: 5.5pt; }
-    /* SVG как flex-элемент резервирует в раскладке ширину из viewBox,
-       а не заданную в CSS, и выталкивает соседей за край. Обёртка обычным
-       блоком делает размер предсказуемым. */
-    /* Логотип ровно по высоте средней полосы, не больше. Если задать больше,
-       он не обрежется, а вылезет вверх и вниз (align-items: center) и наедет
-       на строку с телефонами — именно так и было при 18,6 мм в полосе 17 мм.
-       Размер здесь напрямую задаёт размер модуля QR, поэтому под него отыграна
-       высота у строки с номером заказа. */
-    .label-logo-wrap {
-        flex: 0 0 17.4mm;
-        width: 17.4mm;
-        height: 17.4mm;
-        overflow: hidden;
+    .label-date { font-size: calc(5.5pt * var(--fit)); }
+    /* Тот же размер, что и на складской этикетке: 12,3 мм. Без кольца вокруг
+       кода он уже ничем не ограничен, но крупнее делать незачем — размер
+       у всех этикеток должен быть один, иначе сканер приходится подносить
+       по-разному. */
+    .label-qr-wrap {
+        flex: 0 0 12.3mm;
+        width: 12.3mm;
+        height: 12.3mm;
     }
-    .label-logo {
+    .label-qr {
         display: block;
         width: 100%;
         height: 100%;
+        image-rendering: pixelated;
     }
-    /* 11px вместо 13: при 13 верхушки букв доходили до r≈87,3 при внутреннем
-       крае окружности 88 — на печати это выглядело как слипшиеся линии.
-       При 11 буквы кончаются на r≈86, и зазор виден. */
-    .label-logo-text {
-        font-family: Arial, sans-serif;
-        font-size: 11px;
+    /* Название и сайт — вместо прежней эмблемы. Отдельной строкой, а не
+       вместе с телефонами: вчетвером в 40 мм они не помещаются даже
+       при 4,5 пунктах. */
+    .label-company {
+        text-align: center;
+        font-size: 5pt;
         font-weight: bold;
-        fill: #000;
-        letter-spacing: 0.5px;
+        line-height: 1;
+        flex-shrink: 0;
+        padding-top: 0.4mm;
     }
     .label-phones {
         text-align: center;
         font-size: 4.5pt;
         line-height: 1;
         flex-shrink: 0;
-        padding-top: 0.4mm;
+        padding-top: 0.3mm;
     }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/label-fit.js' %}"></script>
 {% endblock %}

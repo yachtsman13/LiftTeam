@@ -1,0 +1,71 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Кассетницы — LiftTeam v2.38.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-grid-3x3-gap me-2"></i>Кассетницы</h2>
+    <div>
+        <a href="{% url 'cabinet_create' %}" class="btn btn-primary me-2">
+            <i class="bi bi-plus-lg me-2"></i>Новая кассетница
+        </a>
+        <a href="{% url 'storage_cell_grid' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-2"></i>К сетке
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>№</th>
+                        <th>Название</th>
+                        <th>Ячеек в рядах</th>
+                        <th class="text-end">Всего ячеек</th>
+                        <th class="text-end">Занято</th>
+                        <th>Примечание</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td class="fw-bold">{{ row.cabinet.number }}</td>
+                        <td>{{ row.cabinet.name|default:"—" }}</td>
+                        <td><code>{{ row.layout|default:"пусто" }}</code></td>
+                        <td class="text-end">{{ row.cell_count }}</td>
+                        <td class="text-end">
+                            {% if row.occupied %}{{ row.occupied }}{% else %}<span class="text-muted">—</span>{% endif %}
+                        </td>
+                        <td class="small text-muted">{{ row.cabinet.note|default:"" }}</td>
+                        <td class="text-end text-nowrap">
+                            <a href="{% url 'storage_cell_grid' %}?cabinet={{ row.cabinet.number }}"
+                               class="btn btn-sm btn-outline-secondary" title="Показать на сетке">
+                                <i class="bi bi-grid-3x3"></i>
+                            </a>
+                            <a href="{% url 'cabinet_edit' row.cabinet.pk %}"
+                               class="btn btn-sm btn-outline-primary" title="Изменить">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <a href="{% url 'cabinet_delete' row.cabinet.pk %}"
+                               class="btn btn-sm btn-outline-danger" title="Удалить">
+                                <i class="bi bi-trash"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-4">
+                            Кассетниц нет. Заведите первую — и станет куда раскладывать детали.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
