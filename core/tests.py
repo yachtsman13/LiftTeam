@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.38.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.39.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5721,3 +5721,172 @@ class ImportUnitTests(TestCase):
         }], update_existing=True)
 
         self.assertEqual(SparePart.objects.get(part_number='IU-2').resistance_unit, 'кОм')
+
+
+class PartBulkDeleteTests(TestCase):
+    """Удаление отмеченных деталей списком: после загрузки каталога лишние
+    позиции удаляют десятками."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_bulk_del', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.parts = [
+            SparePart.objects.create(part_number=f'BD-{index}', name=f'Деталь {index}',
+                                     component_type='Диод', current_stock=index)
+            for index in range(3)
+        ]
+
+    def _ids(self, parts):
+        return '&'.join(f'ids={part.pk}' for part in parts)
+
+    def test_the_page_lists_what_will_be_deleted(self):
+        response = self.client_http.get(f'/parts/delete-selected/?{self._ids(self.parts[:2])}')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'BD-0')
+        self.assertContains(response, 'BD-1')
+        self.assertNotContains(response, 'BD-2')
+
+    def test_nothing_is_deleted_by_opening_the_page(self):
+        """GET только показывает — удаляет подтверждение."""
+        self.client_http.get(f'/parts/delete-selected/?{self._ids(self.parts)}')
+
+        self.assertEqual(SparePart.objects.count(), 3)
+
+    def test_confirmation_deletes_the_selected_parts(self):
+        response = self.client_http.post(
+            '/parts/delete-selected/', {'ids': [self.parts[0].pk, self.parts[2].pk]}
+        )
+
+        self.assertRedirects(response, '/parts/')
+        self.assertEqual(
+            list(SparePart.objects.values_list('part_number', flat=True)), ['BD-1']
+        )
+
+    def test_the_page_warns_about_stock_and_orders(self):
+        """Удаление уносит историю движений и записи о деталях в заказах."""
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Тест', inn='7700000123')
+        )
+        RepairOrderDetail.objects.create(
+            repair_order=order, part=self.parts[1], quantity_used=2
+        )
+
+        response = self.client_http.get(f'/parts/delete-selected/?{self._ids(self.parts)}')
+
+        self.assertContains(response, 'использованы в заказах')
+        self.assertContains(response, 'На складе ещё есть остаток')
+
+    def test_an_empty_selection_says_so(self):
+        response = self.client_http.get('/parts/delete-selected/')
+
+        self.assertContains(response, 'Ни одна деталь не отмечена')
+        self.assertEqual(SparePart.objects.count(), 3)
+
+    def test_the_list_has_the_button(self):
+        response = self.client_http.get('/parts/')
+
+        self.assertContains(response, '/parts/delete-selected/')
+        self.assertContains(response, 'Удалить отмеченные')
+
+    def test_a_repair_manager_cannot_delete_parts(self):
+        """Склад ведут кладовщики; удаление списком тем более не для всех."""
+        manager = Employee.objects.create_user(
+            username='manager_bulk', full_name='Мастер', password='pass', role='repair_manager'
+        )
+        client = TestClient()
+        client.force_login(manager)
+
+        response = client.post('/parts/delete-selected/', {'ids': [self.parts[0].pk]})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(SparePart.objects.count(), 3)
+
+
+class ApplicationFieldTests(TestCase):
+    """Применимость — отдельное поле, а не строка в описании: её печатают
+    на этикетке своим местом и по ней ищут."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_appl', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.cabinet = Cabinet.objects.create(number=9)
+        self.cabinet.apply_layout([2])
+        self.cell = self.cabinet.cells.first()
+        self.part = SparePart.objects.create(
+            part_number='AP-1', name='Оптопара', component_type='Оптрон',
+            package='DIP-8', application='Otis',
+        )
+        self.cell.parts.add(self.part)
+
+    def test_the_label_prints_it_between_the_package_and_the_address(self):
+        for page in (f'/parts/{self.part.pk}/label/', f'/storage-cells/{self.cell.pk}/label/'):
+            with self.subTest(page=page):
+                response = self.client_http.get(page)
+                self.assertEqual(response.context['application'], 'Otis')
+                content = response.content.decode()
+                self.assertLess(content.index('label-package"'), content.index('label-application"'))
+                self.assertLess(content.index('label-application"'), content.index('label-address"'))
+
+    def test_a_cell_shows_it_only_when_every_part_agrees(self):
+        """«Otis» на ячейке, где половина деталей от ABB, вводит в заблуждение."""
+        self.cell.parts.add(SparePart.objects.create(
+            part_number='AP-2', name='Драйвер', component_type='Оптрон', application='ABB',
+        ))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['application'], '')
+
+    def test_the_card_and_the_form_show_it(self):
+        card = self.client_http.get(f'/parts/{self.part.pk}/')
+        form = self.client_http.get(f'/parts/{self.part.pk}/edit/')
+
+        self.assertContains(card, 'Применимость')
+        self.assertContains(form, 'name="application"')
+        self.assertContains(form, 'value="Otis"')
+
+    def test_import_and_export_carry_the_field(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['part_number', 'name', 'component_type', 'application'])
+        ws.append(['AP-3', 'Реле', 'Реле', 'Altivar'])
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        buffer.name = 'parts.xlsx'
+        self.client_http.post('/parts/import/', {'file': buffer}, follow=True)
+
+        self.assertEqual(SparePart.objects.get(part_number='AP-3').application, 'Altivar')
+
+        export = self.client_http.get('/parts/export/')
+        sheet = openpyxl.load_workbook(io.BytesIO(export.content)).active
+        headers = [cell.value for cell in sheet[1]]
+        self.assertIn('application', headers)
+        values = [row[headers.index('application')] for row in sheet.iter_rows(min_row=2, values_only=True)]
+        self.assertIn('Altivar', values)
+
+    def test_the_migration_splits_it_out_of_the_description(self):
+        """Так её записывали каталоги, из которых детали загружали:
+        «Оптопара DIP-8 | Применение: Otis»."""
+        from importlib import import_module
+
+        from django.apps import apps as installed_apps
+
+        migration = import_module('core.migrations.0023_spare_part_application')
+        legacy = SparePart.objects.create(
+            part_number='AP-OLD', name='Оптопара', component_type='Оптрон',
+            description='Оптопара с логическим выходом | Применение: ABB',
+        )
+
+        migration.split_application(installed_apps, None)
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.application, 'ABB')
+        self.assertEqual(legacy.description, 'Оптопара с логическим выходом')

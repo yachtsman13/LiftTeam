@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.38.0.
+Views для LiftTeam v2.39.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1068,7 +1068,7 @@ def part_export(request):
         'current', 'current_unit',
         'capacitance', 'capacitance_unit',
         'min_stock', 'current_stock', 'lead_time_days',
-        'price', 'preferred_supplier', 'description',
+        'price', 'preferred_supplier', 'application', 'description',
     ]
     rows = [
         [getattr(part, field) for field in headers]
@@ -1108,6 +1108,10 @@ def _part_choices():
         'packages': list(
             SparePart.objects.exclude(package='')
             .values_list('package', flat=True).distinct().order_by('package')
+        ),
+        'applications': list(
+            SparePart.objects.exclude(application='')
+            .values_list('application', flat=True).distinct().order_by('application')
         ),
     }
 
@@ -1163,6 +1167,51 @@ def part_edit(request, pk):
         'part': part,
         'measurement_pairs': _measurement_pairs(form),
         **_part_choices(),
+    })
+
+
+@role_required('warehouse')
+def part_bulk_delete(request):
+    """Удаление отмеченных деталей — списком, а не по одной.
+
+    После загрузки каталога из файла лишние позиции удаляют десятками,
+    и открывать на каждую отдельную страницу подтверждения бессмысленно.
+
+    Страница подтверждения показывает, что уйдёт вместе с деталями:
+    удаление уносит за собой историю движений и записи о том, что деталь
+    ставили в заказ. Восстановить это можно только из резервной копии,
+    поэтому сказано об этом прямо, а не мелким шрифтом.
+    """
+    ids = request.POST.getlist('ids') if request.method == 'POST' else _selected_ids(request)
+    parts = (
+        SparePart.objects
+        .filter(pk__in=[value for value in ids if str(value).isdigit()])
+        .annotate(
+            movement_count=Count('movements', distinct=True),
+            order_count=Count('repairorderdetail', distinct=True),
+        )
+        .prefetch_related('storage_cells')
+        .order_by('part_number')
+    )
+
+    parts = list(parts)
+
+    if request.method == 'POST':
+        if not parts:
+            messages.warning(request, 'Удалять нечего: ни одна деталь не отмечена')
+            return redirect('part_list')
+        numbers = [part.part_number for part in parts]
+        SparePart.objects.filter(pk__in=[part.pk for part in parts]).delete()
+        messages.success(request, (
+            f'Удалено деталей: {len(numbers)}'
+            if len(numbers) > 1 else f'Деталь {numbers[0]} удалена'
+        ))
+        return redirect('part_list')
+
+    return render(request, 'core/parts/bulk_delete.html', {
+        'parts': parts,
+        'in_stock': [part for part in parts if part.current_stock],
+        'in_orders': [part for part in parts if part.order_count],
     })
 
 
@@ -1352,6 +1401,7 @@ def part_import(request):
                         'current_stock': _parse_int(data.get('current_stock'), 0),
                         'lead_time_days': _parse_int(data.get('lead_time_days'), 14),
                         'price': _parse_decimal(data.get('price')),
+                        'application': _get_str(data.get('application'))[:100],
                         'description': _get_str(data.get('description')),
                     }
 
@@ -1701,8 +1751,12 @@ def _cell_label(cell, base_url):
     parts = list(cell.parts.all())
     component_types = {p.component_type for p in parts if p.component_type}
     packages = {p.package for p in parts if p.package}
+    applications = {p.application for p in parts if p.application}
     grouped = len(parts) > 1 and len(component_types) == 1
     items = []
+    # Применимость на ячейку — только если она у всех одна: «Otis» на ячейке,
+    # где половина деталей от ABB, вводит в заблуждение
+    application = applications.pop() if len(applications) == 1 else ''
 
     if not parts:
         title, specs, description, package = '', '', 'Ячейка пуста', ''
@@ -1735,6 +1789,7 @@ def _cell_label(cell, base_url):
         'description': description,
         'items': items,
         'package': package,
+        'application': application,
         'address': cell.address,
         # Ссылка вместо простого адреса: сканирование сразу открывает
         # содержимое, а не показывает строку, которую потом ищут вручную
@@ -2850,6 +2905,7 @@ def _part_label(part, base_url):
         'specs': _label_specs(part),
         'description': part.label_text,
         'package': part.package,
+        'application': part.application,
         'address': cell.address if cell else 'нет ячейки',
         'qr_url': link,
         'qr_img': generate_qr_image(link),

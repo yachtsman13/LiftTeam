@@ -117,7 +117,8 @@
     .label-foot {
         display: flex;
         align-items: baseline;
-        gap: 1.5mm;
+        justify-content: space-between;
+        gap: 1.2mm;
         flex: 0 0 auto;
         margin-top: 0.4mm;
         white-space: nowrap;
@@ -127,11 +128,20 @@
     /* Корпус набран как артикул, а не как пояснение: 0805 вместо 1206
        на плату не встанет, и увидеть это нужно сразу */
     .label-package {
-        flex: 1 1 auto;
+        flex: 0 1 auto;
         min-width: 0;
         overflow: hidden;
         font-size: calc(8.5pt * var(--fit));
         font-weight: bold;
+    }
+    /* Применимость — между корпусом и адресом. Легче обоих: по ней деталь
+       не опознают, она отвечает на другой вопрос — «от чего эта плата» */
+    .label-application {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: calc(6.5pt * var(--fit));
     }
     /* Адрес стоит ровно под кодом и по его ширине: код и адрес — про одно
        и то же место, и читаются они как одно целое. Прижатый к правому краю

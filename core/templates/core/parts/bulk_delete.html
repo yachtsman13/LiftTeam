@@ -1,0 +1,89 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление деталей — LiftTeam v2.39.0{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-9">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <i class="bi bi-trash me-2"></i>Удалить отмеченные детали: {{ parts|length }}
+            </div>
+            <div class="card-body">
+                {% if not parts %}
+                <p class="mb-3">Ни одна деталь не отмечена. Вернитесь в список
+                    и поставьте отметки в первом столбце.</p>
+                <a href="{% url 'part_list' %}" class="btn btn-outline-secondary">К списку</a>
+                {% else %}
+
+                {% comment %}
+                    Удаление уносит за собой историю движений и записи о том,
+                    что деталь ставили в заказ, — это каскад в самой базе.
+                    Сказать об этом нужно до нажатия, а не после.
+                {% endcomment %}
+                <div class="alert alert-warning">
+                    Вместе с деталями будут удалены их приходы и расходы,
+                    а также записи о том, что деталь ставили в заказ. Отменить
+                    это нельзя — только восстановить базу из резервной копии.
+                </div>
+
+                {% if in_stock %}
+                <div class="alert alert-danger">
+                    <strong>На складе ещё есть остаток</strong> у
+                    {{ in_stock|length }} из отмеченных. Если детали лежат
+                    в ячейках, сначала спишите их — иначе остаток исчезнет
+                    вместе с записью, а сами детали останутся в кассетнице.
+                </div>
+                {% endif %}
+
+                {% if in_orders %}
+                <div class="alert alert-danger">
+                    <strong>{{ in_orders|length }}</strong> из отмеченных
+                    использованы в заказах на ремонт. Из истории этих заказов
+                    детали пропадут.
+                </div>
+                {% endif %}
+
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Артикул</th>
+                                <th>Название</th>
+                                <th>Остаток</th>
+                                <th>Ячейка</th>
+                                <th>Движений</th>
+                                <th>В заказах</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for part in parts %}
+                            <tr>
+                                <td class="fw-bold">{{ part.part_number }}</td>
+                                <td>{{ part.name }}</td>
+                                <td{% if part.current_stock %} class="text-danger fw-bold"{% endif %}>{{ part.current_stock }}</td>
+                                <td>{{ part.current_cell.address|default:"—" }}</td>
+                                <td>{{ part.movement_count }}</td>
+                                <td{% if part.order_count %} class="text-danger fw-bold"{% endif %}>{{ part.order_count }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <form method="post">
+                    {% csrf_token %}
+                    {% for part in parts %}
+                    <input type="hidden" name="ids" value="{{ part.pk }}">
+                    {% endfor %}
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash me-2"></i>Удалить {{ parts|length }}
+                    </button>
+                    <a href="{% url 'part_list' %}" class="btn btn-outline-secondary">Отмена</a>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

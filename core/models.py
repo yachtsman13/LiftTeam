@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.38.0.
+Модели данных для LiftTeam v2.39.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -1146,6 +1146,14 @@ class SparePart(models.Model):
         help_text='За штуку. Обновляется сама при приходе с указанной ценой'
     )
     preferred_supplier = models.CharField('Предпочтительный поставщик', max_length=255, blank=True)
+    # Где эта деталь стоит: «Otis», «ABB», «БУАД», «Повсеместно». Отдельным
+    # полем, а не строкой в описании: применимость печатается на этикетке
+    # своим местом, по ней ищут («что у нас есть под Altivar») и она короткая,
+    # а описание — свободный текст, который на этикетку помещается не всегда
+    application = models.CharField(
+        'Применимость', max_length=100, blank=True,
+        help_text='Где применяется: Otis, ABB, БУАД, Altivar'
+    )
     description = models.TextField('Описание', blank=True)
 
     class Meta:

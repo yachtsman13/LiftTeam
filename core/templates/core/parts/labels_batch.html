@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Этикетки деталей — LiftTeam v2.38.0{% endblock %}
+{% block title %}Этикетки деталей — LiftTeam v2.39.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
@@ -48,7 +48,7 @@
 
 <div class="labels-area">
     {% for label in labels %}
-    {% include 'core/_label_part.html' with title=label.title specs=label.specs description=label.description items=label.items package=label.package address=label.address qr_img=label.qr_img %}
+    {% include 'core/_label_part.html' with title=label.title specs=label.specs description=label.description items=label.items package=label.package application=label.application address=label.address qr_img=label.qr_img %}
     {% endfor %}
 </div>
 

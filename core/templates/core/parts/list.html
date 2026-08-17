@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.38.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.39.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -129,6 +129,15 @@
             <a href="{% url 'part_labels_batch' %}?{{ request.GET.urlencode }}" class="btn btn-sm btn-outline-dark">
                 <i class="bi bi-tags me-1"></i>На все отобранные{% if filters_active %} ({{ found_count }}){% endif %}
             </a>
+            {% comment %}
+                Кнопка ведёт на страницу подтверждения тем же отбором отметок:
+                удаление списком опасно, и показать, что уйдёт вместе
+                с деталями, нужно до нажатия, а не после.
+            {% endcomment %}
+            <button type="submit" formaction="{% url 'part_bulk_delete' %}"
+                    class="btn btn-sm btn-outline-danger ms-auto">
+                <i class="bi bi-trash me-1"></i>Удалить отмеченные
+            </button>
         </div>
 
         <div class="table-responsive">

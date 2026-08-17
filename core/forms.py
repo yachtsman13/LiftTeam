@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.38.0.
+Формы для LiftTeam v2.39.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -256,7 +256,7 @@ class SparePartForm(forms.ModelForm):
             'current', 'current_unit',
             'capacitance', 'capacitance_unit',
             'min_stock', 'lead_time_days',
-            'price', 'preferred_supplier', 'description'
+            'price', 'preferred_supplier', 'application', 'description'
         ]
         widgets = {
             'part_number': forms.TextInput(attrs={'class': 'form-control'}),
@@ -278,6 +278,8 @@ class SparePartForm(forms.ModelForm):
             'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01',
                                               'min': '0', 'placeholder': '0.00'}),
             'preferred_supplier': forms.TextInput(attrs={'class': 'form-control'}),
+            'application': forms.TextInput(attrs={'class': 'form-control', 'list': 'applications',
+                                                  'placeholder': 'Otis, ABB, БУАД'}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
         }
         labels = {
@@ -298,6 +300,7 @@ class SparePartForm(forms.ModelForm):
             'min_stock': 'Минимальный остаток',
             'lead_time_days': 'Срок поставки (дней)',
             'preferred_supplier': 'Предпочтительный поставщик',
+            'application': 'Применимость',
             'description': 'Описание',
         }
 
