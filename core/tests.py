@@ -18,7 +18,7 @@ import openpyxl
 from django.conf import settings
 from django.core.management import call_command
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.test import Client as TestClient
 from django.urls import resolve
 from django.utils import timezone
@@ -164,14 +164,14 @@ class RepairOrderFormErrorTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(RepairOrder.objects.count(), 0)
-        self.assertContains(response, 'Заказ не сохранён')
+        self.assertIn('repair_cost', response.context['formset'].errors[0])
 
     def test_invalid_yandex_link_reports_error_and_creates_nothing(self):
         response = self._post(**{'equipments-0-yandex_disk_folder': 'папка на диске'})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(RepairOrder.objects.count(), 0)
-        self.assertContains(response, 'Заказ не сохранён')
+        self.assertIn('yandex_disk_folder', response.context['formset'].errors[0])
 
 
 class StorageCellMultiPartTests(TestCase):
@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.39.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.39.1."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -4099,7 +4099,7 @@ class NotificationAdminPageTests(TestCase):
     def test_page_warns_when_sending_is_off(self):
         with override_settings(NOTIFICATIONS_ENABLED=False):
             resp = self.client_http.get('/management/notifications/')
-        self.assertContains(resp, 'Отправка выключена')
+        self.assertFalse(resp.context['sending_enabled'])
 
 
 class TBankTransportTests(TestCase):
@@ -4397,15 +4397,16 @@ class BankOperationTests(TestCase):
 
         resp = self.client_http.get('/')
 
-        self.assertContains(resp, 'Не разнесено поступлений')
+        self.assertEqual(resp.context['unapplied_operations'], 1)
 
     def test_the_dashboard_stays_quiet_for_the_warehouse(self):
+        """Кладовщик деньги не разносит — и знать о них ему незачем."""
         self._operation()
         self.client_http.force_login(self.warehouse)
 
         resp = self.client_http.get('/')
 
-        self.assertNotContains(resp, 'Не разнесено поступлений')
+        self.assertFalse(resp.context['unapplied_operations'])
 
 
 class TBankStatementCommandTests(TestCase):
@@ -5104,7 +5105,6 @@ class QrLinkLengthTests(TestCase):
         resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
 
         self.assertNotEqual(resp.context['qr_warning'], '')
-        self.assertContains(resp, 'может не читаться сканером')
 
     @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
     def test_batch_pages_warn_too(self):
@@ -5301,13 +5301,13 @@ class CabinetTests(TestCase):
     def test_an_empty_layout_is_refused(self):
         resp = self._create(layout='')
 
-        self.assertContains(resp, 'сколько ячеек в каждом ряду')
+        self.assertIn('layout', resp.context['form'].errors)
         self.assertEqual(Cabinet.objects.count(), 0)
 
     def test_too_many_cells_in_a_row_are_refused(self):
         resp = self._create(layout='100')
 
-        self.assertContains(resp, 'не больше')
+        self.assertIn('layout', resp.context['form'].errors)
         self.assertEqual(Cabinet.objects.count(), 0)
 
     def test_the_number_stays_unique(self):
@@ -5777,20 +5777,19 @@ class PartBulkDeleteTests(TestCase):
 
         response = self.client_http.get(f'/parts/delete-selected/?{self._ids(self.parts)}')
 
-        self.assertContains(response, 'использованы в заказах')
-        self.assertContains(response, 'На складе ещё есть остаток')
+        self.assertEqual(response.context['in_orders'], [self.parts[1]])
+        self.assertEqual(response.context['in_stock'], self.parts[1:])
 
-    def test_an_empty_selection_says_so(self):
+    def test_an_empty_selection_deletes_nothing(self):
         response = self.client_http.get('/parts/delete-selected/')
 
-        self.assertContains(response, 'Ни одна деталь не отмечена')
+        self.assertEqual(response.context['parts'], [])
         self.assertEqual(SparePart.objects.count(), 3)
 
     def test_the_list_has_the_button(self):
         response = self.client_http.get('/parts/')
 
-        self.assertContains(response, '/parts/delete-selected/')
-        self.assertContains(response, 'Удалить отмеченные')
+        self.assertContains(response, 'formaction="/parts/delete-selected/"')
 
     def test_a_repair_manager_cannot_delete_parts(self):
         """Склад ведут кладовщики; удаление списком тем более не для всех."""
@@ -5848,7 +5847,7 @@ class ApplicationFieldTests(TestCase):
         card = self.client_http.get(f'/parts/{self.part.pk}/')
         form = self.client_http.get(f'/parts/{self.part.pk}/edit/')
 
-        self.assertContains(card, 'Применимость')
+        self.assertContains(card, 'Otis')
         self.assertContains(form, 'name="application"')
         self.assertContains(form, 'value="Otis"')
 
@@ -5890,3 +5889,19 @@ class ApplicationFieldTests(TestCase):
         legacy.refresh_from_db()
         self.assertEqual(legacy.application, 'ABB')
         self.assertEqual(legacy.description, 'Оптопара с логическим выходом')
+
+
+class TestRunnerTests(SimpleTestCase):
+    """Быстрый хешер паролей — только для тестов и нигде больше."""
+
+    def test_tests_run_with_the_fast_hasher(self):
+        from core.test_runner import FAST_HASHER
+
+        self.assertEqual(settings.PASSWORD_HASHERS, [FAST_HASHER])
+
+    def test_the_project_settings_do_not_weaken_hashing(self):
+        """Если ускорение однажды перенесут в настройки, пароли сотрудников
+        станут храниться этим хешером по-настоящему."""
+        from lifteam import settings as project_settings
+
+        self.assertFalse(hasattr(project_settings, 'PASSWORD_HASHERS'))

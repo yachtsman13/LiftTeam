@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.39.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.39.1 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -79,6 +79,12 @@ if database_url and not database_url.startswith('sqlite'):
         default=database_url,
         conn_max_age=600
     )
+
+# Свой прогонщик тестов — ради быстрого хеширования паролей в них.
+# Подробности и цифры — в core/test_runner.py. На хранение настоящих паролей
+# это не влияет: PASSWORD_HASHERS здесь не переопределяется, Django берёт
+# свои умолчания (PBKDF2), а подмена живёт только внутри `manage.py test`.
+TEST_RUNNER = 'core.test_runner.FastPasswordTestRunner'
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
