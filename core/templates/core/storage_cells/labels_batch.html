@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load static %}
 
-{% block title %}Этикетки ячеек — LiftTeam v2.37.0{% endblock %}
+{% block title %}Этикетки ячеек — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
@@ -46,11 +47,11 @@
 
 <div class="labels-area">
     {% for label in labels %}
-    {% include 'core/storage_cells/_label.html' with cell=label.cell cell_parts=label.cell_parts qr_img=label.qr_img grouped=label.grouped group_type=label.group_type group_values=label.group_values %}
+    {% include 'core/_label_part.html' with title=label.title specs=label.specs description=label.description items=label.items package=label.package address=label.address qr_img=label.qr_img %}
     {% endfor %}
 </div>
 
-{% include 'core/storage_cells/_label_styles.html' %}
+{% include 'core/_label_part_styles.html' %}
 <style>
     @media screen {
         .labels-area {
@@ -82,4 +83,8 @@
         {% endif %}
     }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/label-fit.js' %}"></script>
 {% endblock %}

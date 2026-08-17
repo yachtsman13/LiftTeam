@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.37.0.
+Формы для LiftTeam v2.38.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -8,7 +8,7 @@ from django.forms import inlineformset_factory
 from .models import (
     Cabinet, Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
-    parse_layout,
+    parse_layout, format_spec,
 )
 
 
@@ -300,6 +300,18 @@ class SparePartForm(forms.ModelForm):
             'preferred_supplier': 'Предпочтительный поставщик',
             'description': 'Описание',
         }
+
+    # Характеристики хранятся с шестью знаками после точки, и в поле формы
+    # значение приходит как «0.150000». Править его никто не станет, но
+    # выглядит это как точность до микроампера, которой нет
+    SPEC_FIELDS = ('resistance', 'power', 'voltage', 'current', 'capacitance')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in self.SPEC_FIELDS:
+            value = self.initial.get(name)
+            if value is not None:
+                self.initial[name] = format_spec(value)
 
 
 class OrganizationForm(forms.ModelForm):

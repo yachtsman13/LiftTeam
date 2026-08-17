@@ -1,13 +1,13 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.37.0{% endblock %}
+{% block title %}Этикетка {{ part.part_number }} — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
 {% include 'core/_qr_link.html' %}
 <div class="label-container">
-    {% include 'core/parts/_label.html' %}
+    {% include 'core/_label_part.html' %}
 
     <div class="label-controls no-print">
         <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
@@ -22,7 +22,7 @@
     из списка деталей.
 </div>
 
-{% include 'core/parts/_label_styles.html' %}
+{% include 'core/_label_part_styles.html' %}
 <style>
     @media screen {
         .label-container { display: flex; flex-direction: column; align-items: center; padding: 40px; }

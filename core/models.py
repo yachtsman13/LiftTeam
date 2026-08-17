@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.37.0.
+Модели данных для LiftTeam v2.38.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -48,6 +48,58 @@ def format_amount(value):
     на другой.
     """
     return f'{value:,.0f}'.replace(',', ' ')
+
+
+def format_spec(value):
+    """Значение характеристики без хвостовых нулей: «0.15», а не «0.150000».
+
+    Поля характеристик — `DecimalField(decimal_places=6)`, и Django при
+    записи дописывает значение нулями до шести знаков. Само число от этого
+    не меняется, но «0.150000 А» в карточке и в форме читается как точность
+    до микроампера, которой ни у кого нет. Убрать нули на уровне базы нельзя —
+    Django выравнивает значение при каждой записи, поэтому приводим их
+    к виду при показе.
+    """
+    if value is None:
+        return ''
+    number = value if isinstance(value, Decimal) else Decimal(str(value))
+    number = number.normalize()
+    # normalize() у целых даёт «1E+2»: показатель уходит вправо от точки.
+    # Возвращаем такие числа к обычной записи
+    if number.as_tuple().exponent > 0:
+        number = number.quantize(Decimal(1))
+    return f'{number:f}'
+
+
+def plural_genitive(word):
+    """Родительный падеж множественного числа: «резистор» → «резисторов».
+
+    Нужно ровно в одном месте — в заголовке этикетки на ячейку, где вместо
+    перечисления одинаковых деталей пишется «Набор резисторов». Тип
+    компонента вводит человек, готового списка типов в программе нет,
+    поэтому форма выводится правилами, а не таблицей соответствий.
+
+    Правила покрывают то, что реально пишут в поле «Тип компонента».
+    Несклоняемые слова («реле») остаются как есть — «Набор реле» звучит
+    верно и так.
+    """
+    word = (word or '').strip()
+    if not word:
+        return ''
+    stem, last = word[:-1], word[-1].lower()
+    if last in 'ое':           # реле, ядро — не склоняем, вернее так, чем «релей»
+        return word
+    if last == 'ь':            # предохранитель → предохранителей
+        return stem + 'ей'
+    if last == 'й':            # разъёмный случай: случай → случаев
+        return stem + 'ев'
+    if last == 'а':            # микросхема → микросхем
+        return stem
+    if last == 'я':            # батарея → батарей
+        return stem + 'й'
+    if last in 'жчшщ':         # дроссель уже выше, а нож → ножей
+        return word + 'ей'
+    return word + 'ов'         # резистор → резисторов, диод → диодов
 
 
 def add_months(moment, months):
@@ -1154,16 +1206,24 @@ class SparePart(models.Model):
             (self.power, self.power_unit),
             (self.capacitance, self.capacitance_unit),
         ]
-        return ', '.join(f'{float(value):g}{unit}' for value, unit in field_pairs if value is not None)
+        return ', '.join(
+            f'{format_spec(value)}{unit}' for value, unit in field_pairs if value is not None
+        )
 
     @property
     def label_text(self):
         """Пояснение под характеристиками на этикетке.
 
-        Описание, а если его не заполнили — название. Пустая строка на
-        этикетке не нужна никому, а название есть у каждой детали.
+        Описание, а если его не заполнили — название. Название, дословно
+        равное артикулу, не печатаем: артикул уже стоит на этикетке сверху
+        и самым крупным шрифтом, а второй раз то же самое место занимает,
+        но ничего не добавляет. Так заполнена половина присланных каталогов.
         """
-        return (self.description or '').strip() or self.name
+        text = (self.description or '').strip()
+        if text:
+            return text
+        name = (self.name or '').strip()
+        return '' if name == self.part_number else name
 
     @property
     def current_cell(self):

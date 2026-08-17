@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.37.0.
+Views для LiftTeam v2.38.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -31,7 +31,7 @@ from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
-    add_months, warranty_cutoff, warranty_months,
+    add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
     LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
@@ -1257,6 +1257,16 @@ def part_assign_cell(request, pk):
     return redirect('part_detail', pk=pk)
 
 
+# Пары «значение — единица измерения» характеристик детали
+SPEC_FIELDS = (
+    ('voltage', 'voltage_unit'),
+    ('current', 'current_unit'),
+    ('power', 'power_unit'),
+    ('resistance', 'resistance_unit'),
+    ('capacitance', 'capacitance_unit'),
+)
+
+
 @login_required
 def part_import(request):
     """Импорт радиодеталей из Excel."""
@@ -1329,15 +1339,15 @@ def part_import(request):
                         'component_type': _get_str(data.get('component_type')),
                         'package': _get_str(data.get('package')),
                         'voltage': _parse_decimal(data.get('voltage')),
-                        'voltage_unit': _get_str(data.get('voltage_unit')) or 'В',
+                        'voltage_unit': _get_str(data.get('voltage_unit')),
                         'current': _parse_decimal(data.get('current')),
-                        'current_unit': _get_str(data.get('current_unit')) or 'А',
+                        'current_unit': _get_str(data.get('current_unit')),
                         'power': _parse_decimal(data.get('power')),
-                        'power_unit': _get_str(data.get('power_unit')) or 'Вт',
+                        'power_unit': _get_str(data.get('power_unit')),
                         'resistance': _parse_decimal(data.get('resistance')),
-                        'resistance_unit': _get_str(data.get('resistance_unit')) or 'Ом',
+                        'resistance_unit': _get_str(data.get('resistance_unit')),
                         'capacitance': _parse_decimal(data.get('capacitance')),
-                        'capacitance_unit': _get_str(data.get('capacitance_unit')) or 'Ф',
+                        'capacitance_unit': _get_str(data.get('capacitance_unit')),
                         'min_stock': _parse_int(data.get('min_stock'), 5),
                         'current_stock': _parse_int(data.get('current_stock'), 0),
                         'lead_time_days': _parse_int(data.get('lead_time_days'), 14),
@@ -1345,9 +1355,16 @@ def part_import(request):
                         'description': _get_str(data.get('description')),
                     }
 
-                    # Убираем unit-поля из defaults если они пустые (чтобы не перезаписать существующие)
-                    for unit_field in ['voltage_unit', 'current_unit', 'power_unit', 'resistance_unit', 'capacitance_unit']:
-                        if not defaults[unit_field]:
+                    # Единица без значения — мусор: «Ом» у диода не значит
+                    # ничего, а в форме и в выгрузке выглядит как заполненное
+                    # поле. В присланных файлах единицы обычно проставлены
+                    # во всех строках подряд, независимо от значений.
+                    # Пустую единицу при заполненном значении, наоборот,
+                    # не переносим: она затёрла бы уже введённую руками.
+                    for value_field, unit_field in SPEC_FIELDS:
+                        if defaults[value_field] is None:
+                            defaults[unit_field] = ''
+                        elif not defaults[unit_field]:
                             del defaults[unit_field]
 
                     try:
@@ -1637,31 +1654,92 @@ def storage_cell_remove_part(request, pk):
     return JsonResponse({'success': True, 'message': f'Деталь {part.part_number} удалена из ячейки {cell.address}'})
 
 
+def _label_specs(part):
+    """Строка характеристик для этикетки: тип и номиналы через точку."""
+    return ' · '.join(value for value in (part.component_type, part.specs_display) if value)
+
+
+def _grouped_specs(parts):
+    """Что у набора общее и чем детали в нём различаются.
+
+    Повторять «0.125Вт» у каждого номинала незачем — в 26 мм ширины из-за
+    этого не помещаются сами номиналы. Общее выносим в строку рядом
+    с заголовком, под заголовком оставляем только различия — списком,
+    по элементу на деталь.
+    """
+    values = [[value for value in part.specs_display.split(', ') if value] for part in parts]
+    common = [value for value in values[0] if all(value in row for row in values[1:])]
+    distinct = [
+        ', '.join(value for value in row if value not in common) or part.part_number
+        for part, row in zip(parts, values)
+    ]
+    # Если после вычитания общего номиналы совпадают, различить детали по ним
+    # нельзя: так вышло с россыпью резисторов, где заполнена только мощность
+    # («2Вт, 2Вт, 2Вт»), а номинал живёт в артикуле. Тогда перечисляем артикулы
+    if len(set(distinct)) < len(distinct):
+        distinct = [part.part_number for part in parts]
+    return ', '.join(common), distinct
+
+
 def _cell_label(cell, base_url):
     """Данные одной этикетки ячейки.
 
+    Поля те же, что и у этикетки детали, и печатаются они тем же шаблоном:
+    на пакете и на ячейке одна и та же деталь должна выглядеть одинаково,
+    иначе кладовщик каждый раз ищет глазами, где что написано.
+
     Если все детали в ячейке одного типа (набор номиналов одного типа —
-    резисторы, конденсаторы и т.д.), тип указывается один раз, а значения
-    характеристик перечисляются списком. Иначе — построчно название
-    и характеристика.
+    резисторы, конденсаторы и т.д.), сверху пишется «Набор резисторов»,
+    рядом — то, что у них общее, а ниже столбцами номиналы. Разнотипную
+    ячейку подписываем перечнем артикулов: общего имени у неё нет.
+
+    Перечисление возвращается списком, а не строкой: на этикетке он рисуется
+    сеткой в два столбца. Сплошная строка переносилась посреди номинала —
+    «10кОм, 4.7к» и «Ом» на следующей строке, — и понять, где кончается
+    одна деталь и начинается другая, было нельзя.
     """
     parts = list(cell.parts.all())
     component_types = {p.component_type for p in parts if p.component_type}
+    packages = {p.package for p in parts if p.package}
     grouped = len(parts) > 1 and len(component_types) == 1
+    items = []
+
+    if not parts:
+        title, specs, description, package = '', '', 'Ячейка пуста', ''
+    elif len(parts) == 1:
+        part = parts[0]
+        title, specs = part.part_number, _label_specs(part)
+        description, package = part.label_text, part.package
+    elif grouped:
+        title = f'Набор {plural_genitive(component_types.copy().pop()).lower()}'
+        # Номинал — то, чем детали набора различаются; если его не заполнили,
+        # различить их можно только по артикулу
+        specs, items = _grouped_specs(parts)
+        description = ''
+        # Корпус общий на всю ячейку — только если он у всех один: «0805»
+        # на ячейке, где половина деталей в 1206, хуже, чем ничего
+        package = packages.pop() if len(packages) == 1 else ''
+    else:
+        title = 'Разные детали'
+        specs = ''
+        description = ''
+        items = [p.part_number for p in parts]
+        package = packages.pop() if len(packages) == 1 else ''
 
     link = qr_url(base_url, 'c', cell.pk)
     return {
         'cell': cell,
         'cell_parts': parts,
+        'title': title,
+        'specs': specs,
+        'description': description,
+        'items': items,
+        'package': package,
+        'address': cell.address,
         # Ссылка вместо простого адреса: сканирование сразу открывает
         # содержимое, а не показывает строку, которую потом ищут вручную
         'qr_url': link,
         'qr_img': generate_qr_image(link),
-        'grouped': grouped,
-        'group_type': parts[0].component_type if grouped else None,
-        'group_values': (
-            ', '.join(p.specs_display for p in parts if p.specs_display) if grouped else ''
-        ),
     }
 
 
@@ -1691,8 +1769,8 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     # Ссылка на заказ вместо текста «LT-2026-08-001/1». Текст читался
     # человеком, но сканирование им ничего не давало: заказ всё равно искали
     # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
-    # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому под него
-    # освобождено место: у логотипа убран внутренний круг, а сам он увеличен.
+    # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому место под
+    # него освобождено: эмблема с этикетки убрана, код печатается сам по себе.
     base_url = label_base_url(request)
     link = qr_url(base_url, 'o', order.pk)
 
@@ -2758,11 +2836,21 @@ def qr_length_warning(urls):
 
 
 def _part_label(part, base_url):
-    """Данные одной этикетки детали."""
+    """Данные одной этикетки детали.
+
+    Набор полей общий с этикеткой ячейки (`_cell_label`) — печатаются они
+    одним шаблоном.
+    """
     link = qr_url(base_url, 'p', part.pk)
+    cell = part.current_cell
     return {
         'part': part,
-        'cell': part.current_cell,
+        'cell': cell,
+        'title': part.part_number,
+        'specs': _label_specs(part),
+        'description': part.label_text,
+        'package': part.package,
+        'address': cell.address if cell else 'нет ячейки',
         'qr_url': link,
         'qr_img': generate_qr_image(link),
     }

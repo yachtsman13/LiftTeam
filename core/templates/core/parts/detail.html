@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load lifteam %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.37.0{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.38.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -21,11 +22,11 @@
                 <div class="row g-2">
                     <div class="col-6"><strong>Тип:</strong> {{ part.component_type|default:"—" }}</div>
                     <div class="col-6"><strong>Корпус:</strong> {{ part.package|default:"—" }}</div>
-                    <div class="col-6"><strong>Сопротивление:</strong> {% if part.resistance %}{{ part.resistance|floatformat:"-6" }} {{ part.resistance_unit|default:"Ом" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Мощность:</strong> {% if part.power %}{{ part.power|floatformat:"-6" }} {{ part.power_unit|default:"Вт" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Напряжение:</strong> {% if part.voltage %}{{ part.voltage|floatformat:"-6" }} {{ part.voltage_unit|default:"В" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Ток:</strong> {% if part.current %}{{ part.current|floatformat:"-6" }} {{ part.current_unit|default:"А" }}{% else %}—{% endif %}</div>
-                    <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|floatformat:"-6" }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Сопротивление:</strong> {% if part.resistance %}{{ part.resistance|spec }} {{ part.resistance_unit|default:"Ом" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Мощность:</strong> {% if part.power %}{{ part.power|spec }} {{ part.power_unit|default:"Вт" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Напряжение:</strong> {% if part.voltage %}{{ part.voltage|spec }} {{ part.voltage_unit|default:"В" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Ток:</strong> {% if part.current %}{{ part.current|spec }} {{ part.current_unit|default:"А" }}{% else %}—{% endif %}</div>
+                    <div class="col-6"><strong>Ёмкость:</strong> {% if part.capacitance %}{{ part.capacitance|spec }} {{ part.capacitance_unit|default:"Ф" }}{% else %}—{% endif %}</div>
                     <div class="col-6"><strong>Остаток:</strong> <span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span>{% if part.stock_state == 'at_minimum' %} <small class="text-muted">ровно на минимуме</small>{% endif %}</div>
                     <div class="col-6"><strong>Мин. остаток:</strong> {{ part.min_stock }}</div>
                     <div class="col-6"><strong>Цена закупки:</strong>
