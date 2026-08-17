@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.36.0{% endblock %}
+{% block title %}Этикетка {{ cell.address }} — LiftTeam v2.37.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
@@ -10,7 +10,7 @@
 
     <div class="label-controls no-print">
         <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
-        <a href="{% url 'storage_cell_grid' %}?cabinet={{ cell.cabinet_number }}" class="btn btn-outline-secondary">Назад</a>
+        <a href="{% url 'storage_cell_grid' %}?cabinet={{ cell.cabinet.number }}" class="btn btn-outline-secondary">Назад</a>
     </div>
 </div>
 

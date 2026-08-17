@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.36.0.
+Модели данных для LiftTeam v2.37.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -1171,9 +1171,128 @@ class SparePart(models.Model):
         return self.storage_cells.first()
 
 
+class Cabinet(models.Model):
+    """Кассетница — физический органайзер с ячейками.
+
+    Раньше кассетницы как объекта не было: ячейка хранила её номер числом,
+    а геометрия (12 штук по 8×8) была зашита в коде. Реальные органайзеры
+    так не устроены — у одного 64 одинаковых ячейки, у другого 44, где
+    верхние ряды мелкие, а нижние крупные, у третьего 8 больших ящиков.
+
+    Поэтому раскладка задаётся по рядам: сколько ячеек в каждом. Ряд
+    из четырёх ячеек — это четыре крупных ящика, из восьми — восемь мелких.
+    Отдельного поля «размер» нет намеренно: ширина ячейки на экране и так
+    выходит обратной их числу в ряду, и это ровно то, что видно у стены.
+    """
+    number = models.PositiveIntegerField(
+        'Номер', unique=True, validators=[MinValueValidator(1)],
+        help_text='Печатается в адресе ячейки: К1-Р1-Я1'
+    )
+    name = models.CharField(
+        'Название', max_length=100, blank=True,
+        help_text='Необязательно: «Резисторы», «Крепёж», «Над столом»'
+    )
+    note = models.CharField('Примечание', max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = 'Кассетница'
+        verbose_name_plural = 'Кассетницы'
+        ordering = ['number']
+
+    def __str__(self):
+        return f'Кассетница {self.number}' + (f' — {self.name}' if self.name else '')
+
+    @property
+    def label(self):
+        """Как называть в списках: «1 — Резисторы» либо просто «1»."""
+        return f'{self.number} — {self.name}' if self.name else str(self.number)
+
+    def layout(self):
+        """Сколько ячеек в каждом ряду: [8, 8, 8, 8, 8, 4, 4, 4].
+
+        Считается по самим ячейкам, а не по отдельному полю: ячейки —
+        источник истины, и расхождению между «как записано» и «что есть»
+        взяться неоткуда.
+        """
+        counts = {}
+        for row_number, cell_row in self.cells.values_list('row_number', 'cell_row'):
+            counts[row_number] = max(counts.get(row_number, 0), cell_row)
+        return [counts[row] for row in sorted(counts)]
+
+    @property
+    def layout_text(self):
+        return ', '.join(str(count) for count in self.layout())
+
+    @property
+    def cell_count(self):
+        return self.cells.count()
+
+    @transaction.atomic
+    def apply_layout(self, counts):
+        """Приводит ячейки к заданной раскладке.
+
+        Лишние ячейки удаляются, недостающие создаются, существующие
+        не трогаются — вместе с разложенными в них деталями. Проверку,
+        что в удаляемых ячейках пусто, делает вызывающий код: здесь
+        не место решать, спросить ли человека.
+        """
+        wanted = {
+            (row, cell)
+            for row, count in enumerate(counts, start=1)
+            for cell in range(1, count + 1)
+        }
+        existing = {
+            (row, cell): pk
+            for pk, row, cell in self.cells.values_list('pk', 'row_number', 'cell_row')
+        }
+
+        extra = [pk for key, pk in existing.items() if key not in wanted]
+        if extra:
+            StorageCell.objects.filter(pk__in=extra).delete()
+
+        StorageCell.objects.bulk_create([
+            StorageCell(cabinet=self, row_number=row, cell_row=cell)
+            for row, cell in sorted(wanted - set(existing))
+        ])
+        return len(wanted - set(existing)), len(extra)
+
+    def occupied_outside(self, counts):
+        """Занятые ячейки, которые не переживут переход на новую раскладку.
+
+        Нужны до сохранения: удалить ячейку с деталями молча — значит
+        потерять сведения о том, где лежит железка.
+        """
+        wanted = {
+            (row, cell)
+            for row, count in enumerate(counts, start=1)
+            for cell in range(1, count + 1)
+        }
+        return [
+            cell for cell in self.cells.prefetch_related('parts')
+            if (cell.row_number, cell.cell_row) not in wanted and cell.parts.exists()
+        ]
+
+    @classmethod
+    def next_number(cls):
+        biggest = cls.objects.aggregate(top=models.Max('number'))['top'] or 0
+        return biggest + 1
+
+
+def parse_layout(text):
+    """«8, 8, 8, 4, 4» → [8, 8, 8, 4, 4].
+
+    Разделители любые нецифровые: человек напишет и через запятую,
+    и через пробел, и через «х» — все три способа встречаются.
+    """
+    return [int(part) for part in re.findall(r'\d+', text or '')]
+
+
 class StorageCell(models.Model):
     """Ячейка хранения в кассетнице. Может содержать несколько разных деталей."""
-    cabinet_number = models.IntegerField('Номер кассетницы', validators=[MinValueValidator(1)])
+    cabinet = models.ForeignKey(
+        Cabinet, on_delete=models.CASCADE, related_name='cells',
+        verbose_name='Кассетница'
+    )
     row_number = models.IntegerField('Номер ряда', validators=[MinValueValidator(1)])
     cell_row = models.IntegerField('Номер ячейки в ряду', validators=[MinValueValidator(1)])
     parts = models.ManyToManyField(
@@ -1190,15 +1309,15 @@ class StorageCell(models.Model):
     class Meta:
         verbose_name = 'Ячейка хранения'
         verbose_name_plural = 'Ячейки хранения'
-        unique_together = [['cabinet_number', 'row_number', 'cell_row']]
-        ordering = ['cabinet_number', 'row_number', 'cell_row']
+        unique_together = [['cabinet', 'row_number', 'cell_row']]
+        ordering = ['cabinet__number', 'row_number', 'cell_row']
 
     def __str__(self):
         return self.address
 
     @property
     def address(self):
-        return f"К{self.cabinet_number}-Р{self.row_number}-Я{self.cell_row}"
+        return f"К{self.cabinet.number}-Р{self.row_number}-Я{self.cell_row}"
 
     def get_status(self):
         """Статус ячейки для раскраски сетки.

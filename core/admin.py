@@ -1,5 +1,5 @@
 """
-Настройка Django Admin для LiftTeam v2.36.0.
+Настройка Django Admin для LiftTeam v2.37.0.
 """
 from django.contrib import admin
 from .models import (
@@ -80,8 +80,8 @@ class SparePartAdmin(admin.ModelAdmin):
 
 @admin.register(StorageCell)
 class StorageCellAdmin(admin.ModelAdmin):
-    list_display = ['address', 'cabinet_number', 'row_number', 'cell_row', 'parts_display']
-    list_filter = ['cabinet_number']
+    list_display = ['address', 'cabinet', 'row_number', 'cell_row', 'parts_display']
+    list_filter = ['cabinet']
     search_fields = ['parts__part_number', 'parts__name']
     filter_horizontal = ['parts']
 

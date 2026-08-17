@@ -1,13 +1,14 @@
 """
-Формы для LiftTeam v2.36.0.
+Формы для LiftTeam v2.37.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
 from django.core import validators
 from django.forms import inlineformset_factory
 from .models import (
-    Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
-    RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization
+    Cabinet, Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
+    RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
+    parse_layout,
 )
 
 
@@ -354,6 +355,76 @@ class PaymentForm(forms.ModelForm):
             'payment_date': 'Дата поступления',
             'note': 'Примечание',
         }
+
+
+class CabinetForm(forms.ModelForm):
+    """Кассетница и её раскладка по рядам.
+
+    Раскладка вводится строкой «8, 8, 8, 8, 8, 4, 4, 4»: сверху мелкие
+    ячейки, снизу крупные — ровно так устроены органайзеры, и ряд из
+    четырёх ячеек означает четыре крупных ящика.
+    """
+    MAX_ROWS = 30
+    MAX_CELLS_PER_ROW = 24
+
+    layout = forms.CharField(
+        label='Ячеек в рядах',
+        # required=False, чтобы пустое поле дошло до clean_layout: там текст
+        # ошибки объясняет, что вписать, а стандартное «Обязательное поле»
+        # не объясняет ничего
+        required=False,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control', 'placeholder': '8, 8, 8, 8, 8, 4, 4, 4'}),
+        help_text='По числу на каждый ряд, сверху вниз. «8, 8, 4» — два ряда '
+                  'по восемь мелких ячеек и один из четырёх крупных.'
+    )
+
+    class Meta:
+        model = Cabinet
+        fields = ['number', 'name', 'note']
+        widgets = {
+            'number': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+            'name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Резисторы'}),
+            'note': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields['layout'].initial = self.instance.layout_text
+        else:
+            self.fields['number'].initial = Cabinet.next_number()
+
+    def clean_layout(self):
+        counts = parse_layout(self.cleaned_data['layout'])
+        if not counts:
+            raise forms.ValidationError(
+                'Укажите, сколько ячеек в каждом ряду: например «8, 8, 4»')
+        if len(counts) > self.MAX_ROWS:
+            raise forms.ValidationError(f'Рядов не больше {self.MAX_ROWS}')
+        if any(count < 1 for count in counts):
+            raise forms.ValidationError('В ряду не может быть ноль ячеек')
+        if any(count > self.MAX_CELLS_PER_ROW for count in counts):
+            raise forms.ValidationError(
+                f'В ряду не больше {self.MAX_CELLS_PER_ROW} ячеек')
+        return counts
+
+    def clean(self):
+        """Не даём молча выбросить ячейки, в которых лежат детали."""
+        cleaned = super().clean()
+        counts = cleaned.get('layout')
+        if counts and self.instance.pk:
+            occupied = self.instance.occupied_outside(counts)
+            if occupied:
+                addresses = ', '.join(cell.address for cell in occupied[:10])
+                more = f' и ещё {len(occupied) - 10}' if len(occupied) > 10 else ''
+                self.add_error('layout', (
+                    f'В отрезаемых ячейках лежат детали: {addresses}{more}. '
+                    'Сначала переложите их, иначе сведения о месте хранения '
+                    'потеряются.'
+                ))
+        return cleaned
 
 
 class QuoteForm(forms.ModelForm):

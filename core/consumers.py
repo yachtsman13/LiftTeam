@@ -1,5 +1,5 @@
 """
-WebSocket consumers для LiftTeam v2.36.0.
+WebSocket consumers для LiftTeam v2.37.0.
 """
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer

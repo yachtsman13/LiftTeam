@@ -1,5 +1,5 @@
 """
-REST API для LiftTeam v2.36.0 (Django REST Framework).
+REST API для LiftTeam v2.37.0 (Django REST Framework).
 """
 from django.db.models import Q
 from django.utils import timezone
@@ -143,7 +143,7 @@ class StorageCellViewSet(viewsets.ModelViewSet):
     queryset = StorageCell.objects.prefetch_related('parts')
     serializer_class = StorageCellSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['cabinet_number']
+    filterset_fields = ['cabinet']
 
 
 class StockMovementViewSet(viewsets.ModelViewSet):

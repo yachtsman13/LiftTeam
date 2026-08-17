@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.36.0.
+Views для LiftTeam v2.37.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -30,7 +30,7 @@ from channels.layers import get_channel_layer
 from .models import (
     Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
-    Notification, Payment, Organization, BankOperation,
+    Notification, Payment, Organization, BankOperation, Cabinet,
     add_months, warranty_cutoff, warranty_months,
 )
 from .forms import (
@@ -39,6 +39,7 @@ from .forms import (
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
+    CabinetForm,
 )
 from .utils import (
     generate_qr_image,
@@ -1085,7 +1086,7 @@ def part_detail(request, pk):
     # и в занятую другой деталью ячейку (в одной ячейке может быть несколько деталей)
     available_cells = StorageCell.objects.prefetch_related('parts').exclude(
         parts=part
-    ).order_by('cabinet_number', 'row_number', 'cell_row')
+    ).order_by('cabinet__number', 'row_number', 'cell_row')
     stock_form = StockMovementForm()
     return render(request, 'core/parts/detail.html', {
         'part': part,
@@ -1386,19 +1387,33 @@ def part_import(request):
 
 @login_required
 def storage_cell_grid(request):
-    """Визуальная сетка кассетниц. Одна ячейка может содержать несколько деталей."""
-    cabinet = int(request.GET.get('cabinet', 1))
+    """Визуальная сетка кассетниц. Одна ячейка может содержать несколько деталей.
+
+    Ряды рисуются по фактическим ячейкам, а не по восьмёркам: в ряду из
+    четырёх ячеек каждая занимает четверть ширины и выглядит крупной —
+    ровно как крупные ящики внизу настоящего органайзера.
+    """
+    cabinets = list(Cabinet.objects.all())
+    if not cabinets:
+        return render(request, 'core/storage_cells/grid.html', {
+            'cabinets': [], 'cabinet': None, 'rows': [],
+        })
+
+    requested = request.GET.get('cabinet', '')
+    cabinet = next(
+        (item for item in cabinets if str(item.number) == requested), cabinets[0]
+    )
+
     selected_part_id = request.GET.get('selected_part', '')
     move_from = request.GET.get('move_from', '')
     selected_part = None
     if selected_part_id:
         selected_part = get_object_or_404(SparePart, pk=selected_part_id)
 
-    cells = StorageCell.objects.filter(cabinet_number=cabinet).prefetch_related('parts')
-    cell_map = {}
+    cells = cabinet.cells.prefetch_related('parts').order_by('row_number', 'cell_row')
+    rows_map = {}
     cells_data = {}
     for cell in cells:
-        cell_map[(cell.row_number, cell.cell_row)] = cell
         cells_data[cell.pk] = {
             'address': cell.address,
             'parts': [
@@ -1414,25 +1429,31 @@ def storage_cell_grid(request):
             ],
         }
 
-    grid = []
-    for row in range(1, 9):
-        grid_row = []
-        for col in range(1, 9):
-            cell = cell_map.get((row, col))
-            if cell:
-                status = cell.get_status()
-                cell_parts = cells_data[cell.pk]['parts']
-                if selected_part and any(p['id'] == selected_part.pk for p in cell_parts):
-                    status = 'selected'
-                grid_row.append({
-                    'exists': True,
-                    'cell': cell,
-                    'status': status,
-                    'part_count': len(cell_parts),
-                })
-            else:
-                grid_row.append({'exists': False})
-        grid.append(grid_row)
+        status = cell.get_status()
+        cell_parts = cells_data[cell.pk]['parts']
+        if selected_part and any(p['id'] == selected_part.pk for p in cell_parts):
+            status = 'selected'
+        rows_map.setdefault(cell.row_number, []).append({
+            'cell': cell,
+            'status': status,
+            'part_count': len(cell_parts),
+        })
+
+    # Ширина ячейки в процентах, чтобы ряд из четырёх выглядел вчетверо
+    # крупнее ряда из шестнадцати. Считаем здесь, а не в шаблоне: там
+    # деления нет, а подгонять классами Bootstrap под любое число нельзя.
+    #
+    # Строкой, а не числом: локаль ru-ru печатает дробь через запятую,
+    # и «calc(12,5% - 4px)» — невалидный CSS. Ячейки тогда остаются
+    # без ширины, а на экране это выглядит как развалившаяся вёрстка
+    rows = [
+        {
+            'number': number,
+            'cells': rows_map[number],
+            'width': f'{100 / len(rows_map[number]):.4f}',
+        }
+        for number in sorted(rows_map)
+    ]
 
     parts = SparePart.objects.all().order_by('part_number')
     all_parts_data = [
@@ -1441,16 +1462,106 @@ def storage_cell_grid(request):
     ]
 
     return render(request, 'core/storage_cells/grid.html', {
-        'grid': grid,
+        'rows': rows,
         'cabinet': cabinet,
-        'cabinet_range': range(1, 13),
-        'row_range': range(1, 9),
-        'col_range': range(1, 9),
+        'cabinets': cabinets,
         'selected_part': selected_part,
         'parts': parts,
         'move_from': move_from,
         'cells_data_json': json.dumps(cells_data, ensure_ascii=False),
         'all_parts_json': json.dumps(all_parts_data, ensure_ascii=False),
+    })
+
+
+# ==================== КАССЕТНИЦЫ ====================
+
+@role_required('warehouse')
+def cabinet_list(request):
+    """Список кассетниц с их раскладкой."""
+    cabinets = Cabinet.objects.prefetch_related('cells')
+    rows = [
+        {
+            'cabinet': cabinet,
+            'layout': cabinet.layout_text,
+            'cell_count': cabinet.cell_count,
+            'occupied': sum(1 for cell in cabinet.cells.all() if cell.parts.exists()),
+        }
+        for cabinet in cabinets
+    ]
+    return render(request, 'core/storage_cells/cabinets.html', {'rows': rows})
+
+
+@role_required('warehouse')
+def cabinet_create(request):
+    """Новая кассетница: номер, название и раскладка по рядам."""
+    if request.method == 'POST':
+        form = CabinetForm(request.POST)
+        if form.is_valid():
+            cabinet = form.save()
+            added, _ = cabinet.apply_layout(form.cleaned_data['layout'])
+            messages.success(
+                request, f'Кассетница {cabinet.number} создана, ячеек: {added}')
+            return redirect('cabinet_list')
+        messages.error(request, 'Кассетница не создана: проверьте отмеченные поля')
+    else:
+        form = CabinetForm()
+    return render(request, 'core/storage_cells/cabinet_form.html', {
+        'form': form, 'title': 'Новая кассетница',
+    })
+
+
+@role_required('warehouse')
+def cabinet_edit(request, pk):
+    """Правка кассетницы, в том числе раскладки.
+
+    Ячейки, оказавшиеся за пределами новой раскладки, удаляются — но
+    только пустые: занятые форма не пропускает.
+    """
+    cabinet = get_object_or_404(Cabinet, pk=pk)
+    if request.method == 'POST':
+        form = CabinetForm(request.POST, instance=cabinet)
+        if form.is_valid():
+            cabinet = form.save()
+            added, removed = cabinet.apply_layout(form.cleaned_data['layout'])
+            messages.success(request, (
+                f'Кассетница {cabinet.number} сохранена. '
+                f'Добавлено ячеек: {added}, удалено: {removed}'
+            ))
+            return redirect('cabinet_list')
+        messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
+    else:
+        form = CabinetForm(instance=cabinet)
+    return render(request, 'core/storage_cells/cabinet_form.html', {
+        'form': form, 'cabinet': cabinet,
+        'title': f'Кассетница {cabinet.number}',
+    })
+
+
+@role_required('warehouse')
+def cabinet_delete(request, pk):
+    """Удаление кассетницы вместе с её ячейками.
+
+    Занятые ячейки удалять не даём: сведения о том, где лежит деталь,
+    восстановить будет неоткуда.
+    """
+    cabinet = get_object_or_404(Cabinet, pk=pk)
+    occupied = [cell for cell in cabinet.cells.prefetch_related('parts') if cell.parts.exists()]
+
+    if request.method == 'POST':
+        if occupied:
+            messages.error(request, (
+                f'Кассетница {cabinet.number} не удалена: в её ячейках лежат '
+                f'детали ({len(occupied)} шт.). Сначала переложите их.'
+            ))
+            return redirect('cabinet_list')
+        number = cabinet.number
+        cabinet.delete()
+        messages.success(request, f'Кассетница {number} удалена')
+        return redirect('cabinet_list')
+
+    return render(request, 'core/storage_cells/cabinet_delete.html', {
+        'cabinet': cabinet,
+        'occupied': occupied,
     })
 
 
@@ -1557,7 +1668,8 @@ def _cell_label(cell, base_url):
 @login_required
 def storage_cell_label(request, pk):
     """Печать этикетки одной ячейки."""
-    cell = get_object_or_404(StorageCell.objects.prefetch_related('parts'), pk=pk)
+    cell = get_object_or_404(
+        StorageCell.objects.select_related('cabinet').prefetch_related('parts'), pk=pk)
     base_url = label_base_url(request)
     context = _cell_label(cell, base_url)
     context['qr_base'] = base_url
@@ -2566,7 +2678,7 @@ def short_cell(request, pk):
     """Короткий адрес ячейки для QR: /c/<id>/
     Открывает сетку на нужной кассетнице и сразу показывает содержимое ячейки."""
     cell = get_object_or_404(StorageCell, pk=pk)
-    return redirect(f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet_number}&open_cell={cell.pk}")
+    return redirect(f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet.number}&open_cell={cell.pk}")
 
 
 @login_required
@@ -2714,18 +2826,18 @@ def storage_cell_labels_batch(request):
     когда собирают новую или переклеивают старые.
     """
     ids = _selected_ids(request)
-    cells = StorageCell.objects.prefetch_related('parts')
+    cells = StorageCell.objects.select_related('cabinet').prefetch_related('parts')
 
     if ids:
         cells = cells.filter(pk__in=ids)
     else:
         cabinet = request.GET.get('cabinet', '')
-        cells = cells.filter(cabinet_number=int(cabinet)) if cabinet.isdigit() else cells.none()
+        cells = cells.filter(cabinet__number=int(cabinet)) if cabinet.isdigit() else cells.none()
 
     # Пустые ячейки обычно подписывать незачем: адрес и так виден в сетке,
     # а лента тратится
     only_filled = request.GET.get('only_filled') == '1'
-    cells = list(cells.order_by('cabinet_number', 'row_number', 'cell_row')[:MAX_LABELS_PER_BATCH])
+    cells = list(cells.order_by('cabinet__number', 'row_number', 'cell_row')[:MAX_LABELS_PER_BATCH])
     if only_filled:
         cells = [cell for cell in cells if cell.parts.all()]
 
