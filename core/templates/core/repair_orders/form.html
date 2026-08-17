@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.39.1{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.39.2{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -99,12 +99,27 @@
                                 <div class="text-danger small">{{ eq_form.seal_numbers.errors.0 }}</div>
                                 {% endif %}
                             </div>
-                            <div class="col-md-2 d-flex align-items-end">
+                            <div class="col-md-2 d-flex align-items-end gap-2">
                                 {% if eq_form.instance.pk %}
                                 <div class="form-check mb-2">
                                     {{ eq_form.DELETE }}
                                     <label class="form-check-label small">Удалить</label>
                                 </div>
+                                {% comment %}
+                                    Этикетку чаще всего печатают сразу после того,
+                                    как поправили серийник или пломбы, — возвращаться
+                                    для этого в карточку заказа незачем.
+
+                                    Только у сохранённых единиц: у новой строки ещё
+                                    нет ни номера, ни ссылки, которую можно закодировать.
+                                    Открывается в новой вкладке и печатает сохранённое:
+                                    о правках, не нажатых «Сохранить», она не знает.
+                                {% endcomment %}
+                                <a href="{% url 'repair_order_equipment_label' order.pk eq_form.instance.pk %}"
+                                   class="btn btn-outline-dark btn-sm mb-2" target="_blank"
+                                   title="Этикетка на эту единицу. Печатается по сохранённым данным">
+                                    <i class="bi bi-printer"></i>
+                                </a>
                                 {% else %}
                                 <button type="button" class="btn btn-outline-danger btn-sm remove-equipment" onclick="removeEquipmentRow(this)">
                                     <i class="bi bi-trash"></i>

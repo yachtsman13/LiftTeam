@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.39.1."""
+        """Печать этикетки оборудования вне заказа убрана в v2.39.2."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5905,3 +5905,46 @@ class TestRunnerTests(SimpleTestCase):
         from lifteam import settings as project_settings
 
         self.assertFalse(hasattr(project_settings, 'PASSWORD_HASHERS'))
+
+
+class OrderEditLabelButtonTests(TestCase):
+    """Этикетку печатают сразу после правки серийника или пломб —
+    возвращаться для этого в карточку заказа незачем."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_edit_label', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        model = EquipmentModel.objects.create(name='БУАД-3')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Лифт', inn='7700000456')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-EDIT-1'),
+        )
+
+    def test_the_edit_page_offers_the_label(self):
+        response = self.client_http.get(f'/repair-orders/{self.order.pk}/edit/')
+
+        self.assertContains(
+            response,
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/',
+        )
+
+    def test_a_new_order_has_nothing_to_print_yet(self):
+        """У несохранённой единицы нет ни номера, ни ссылки для кода."""
+        response = self.client_http.get('/repair-orders/create/')
+
+        self.assertNotContains(response, '/label/')
+
+    def test_the_label_itself_still_opens(self):
+        response = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'SN-EDIT-1')
