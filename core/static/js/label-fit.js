@@ -24,7 +24,25 @@
     // считался бы переполненным на ровном месте
     var TOLERANCE = 1;
 
+    /* Переполнение считается по настоящим прямоугольникам строк, а не по
+       scrollWidth/scrollHeight. Те округлены до целых пикселей, и при
+       масштабе экрана, отличном от единицы, блок с вылезающим текстом
+       отчитывался, что всё поместилось: шрифт не уменьшался, а лишнее
+       молча уезжало под нижнюю строку этикетки. Прямоугольники дробные,
+       и такой промах на них невозможен.
+
+       scrollWidth/scrollHeight оставлены запасной проверкой: у строки,
+       переполненной изнутри (длинное слово без переносов), собственный
+       прямоугольник равен родительскому, и заметен только этот способ. */
     function overflows(element) {
+        var box = element.getBoundingClientRect();
+        var children = element.children;
+        for (var i = 0; i < children.length; i++) {
+            var line = children[i].getBoundingClientRect();
+            if (line.bottom > box.bottom + TOLERANCE || line.right > box.right + TOLERANCE) {
+                return true;
+            }
+        }
         return element.scrollWidth > element.clientWidth + TOLERANCE ||
                element.scrollHeight > element.clientHeight + TOLERANCE;
     }
