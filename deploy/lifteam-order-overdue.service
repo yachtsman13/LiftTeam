@@ -1,0 +1,33 @@
+# Разовая проверка зависших заказов. Расписание задаёт lifteam-order-overdue.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-order-overdue.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-order-overdue.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-order-overdue
+# Посмотреть логи:    journalctl -u lifteam-order-overdue
+# Что попало бы в очередь, ничего не ставя:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       order_overdue_check --dry-run
+#
+# Команда только наполняет очередь; отправляет её lifteam-notify.timer.
+
+[Unit]
+Description=Проверка просроченных заказов LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+
+ExecStart=/opt/lifteam/venv/bin/python manage.py order_overdue_check
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

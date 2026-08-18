@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.43.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.44.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -233,6 +233,27 @@ DEBT_DIGEST_COOLDOWN_DAYS = int(os.getenv('DEBT_DIGEST_COOLDOWN_DAYS', '7'))
 # начинаться само собой после обновления оно не должно.
 NOTIFY_DEBTS = os.getenv('NOTIFY_DEBTS', 'False').lower() == 'true'
 DEBT_REMINDER_COOLDOWN_DAYS = int(os.getenv('DEBT_REMINDER_COOLDOWN_DAYS', '7'))
+
+# --- Просроченные заказы (SLA) -------------------------------------------
+# Через сколько дней без движения в одном статусе заказ считается «зависшим».
+# Свой порог на каждый промежуточный статус: диагностика обычно короче
+# ремонта, и общий порог на все статусы был бы либо слишком строгим для
+# ремонта, либо слишком мягким для диагностики. У «Отгружен» и «Ремонт
+# невозможен» порога нет — это завершённые состояния.
+ORDER_OVERDUE_DAYS = {
+    'accepted': int(os.getenv('ORDER_OVERDUE_DAYS_ACCEPTED', '2')),
+    'diagnostic': int(os.getenv('ORDER_OVERDUE_DAYS_DIAGNOSTIC', '3')),
+    'repair': int(os.getenv('ORDER_OVERDUE_DAYS_REPAIR', '7')),
+    'ready_for_shipment': int(os.getenv('ORDER_OVERDUE_DAYS_READY_FOR_SHIPMENT', '5')),
+}
+
+# Внутреннее оповещение персоналу (менеджер по ремонту, администратор) —
+# заказчик его никогда не видит, поэтому включено сразу.
+NOTIFY_ORDER_OVERDUE = os.getenv('NOTIFY_ORDER_OVERDUE', 'True').lower() == 'true'
+
+# Первое оповещение — сразу по пересечении порога; затем повторно не чаще,
+# чем раз в столько дней, пока заказ не сдвинется со статуса (эскалация).
+ORDER_OVERDUE_ESCALATION_DAYS = int(os.getenv('ORDER_OVERDUE_ESCALATION_DAYS', '7'))
 
 # --- Мессенджер MAX -----------------------------------------------------
 # Второй канал складских оповещений. Почта на телефоне часто молчит до

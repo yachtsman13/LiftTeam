@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.43.0.
+Модели данных для LiftTeam v2.44.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           Employee (User extension).
@@ -39,6 +39,16 @@ def warranty_cutoff():
 def debt_overdue_days():
     """Через сколько дней после счёта долг считается просроченным."""
     return getattr(settings, 'DEBT_OVERDUE_DAYS', 14)
+
+
+def order_overdue_days(status):
+    """Порог просрочки (в днях) для статуса заказа — сколько можно провести
+    в нём без движения, прежде чем это считается «зависшим».
+
+    None — у статуса порога нет: `shipped` и `unrepairable` — завершённые
+    состояния, не «зависшие».
+    """
+    return getattr(settings, 'ORDER_OVERDUE_DAYS', {}).get(status)
 
 
 def format_amount(value):
@@ -522,6 +532,13 @@ class RepairOrderQuerySet(models.QuerySet):
             payment_status__in=['unpaid', 'partially_paid']
         ).exclude(status='unrepairable')
 
+    def open(self):
+        """Заказы в незавершённых статусах — ещё не «Отгружен» и не
+        «Ремонт невозможен». Один и тот же список статусов нужен и здесь,
+        и в проверке просроченных заказов, и в подсчёте текущей загрузки
+        по инженерам."""
+        return self.filter(status__in=RepairOrder.OPEN_STATUSES)
+
     def overdue(self, days=None):
         """Долги, по которым уже можно напоминать.
 
@@ -589,6 +606,9 @@ class RepairOrder(models.Model):
         ('shipped', 'Отгружен'),
         ('unrepairable', 'Ремонт невозможен'),
     ]
+    # Незавершённые статусы — заказ ещё «в работе». Используется и в проверке
+    # просроченных заказов (SLA), и в подсчёте текущей загрузки по инженерам
+    OPEN_STATUSES = ('accepted', 'diagnostic', 'repair', 'ready_for_shipment')
     PAYMENT_STATUS_CHOICES = [
         ('unpaid', 'Не оплачен'),
         ('partially_paid', 'Частично оплачен'),
@@ -1523,6 +1543,7 @@ class Notification(models.Model):
         ('low_stock', 'Деталь ушла в дефицит'),
         ('debt_reminder', 'Напоминание об оплате'),
         ('debt_digest', 'Сводка по задолженностям'),
+        ('order_overdue', 'Заказ завис в статусе'),
     ]
     STATUS_CHOICES = [
         ('pending', 'В очереди'),

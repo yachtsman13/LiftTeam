@@ -11,7 +11,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import messengers
-from .models import Employee, Notification, format_amount
+from .models import Employee, Notification, format_amount, order_overdue_days
 
 
 def _setting(name, default):
@@ -22,6 +22,7 @@ def _setting(name, default):
 # следит бухгалтерия, администратор нужен и там и там
 STOCK_ROLES = ('warehouse', 'admin')
 DEBT_ROLES = ('accountant', 'admin')
+ORDER_OVERDUE_ROLES = ('repair_manager', 'admin')
 
 
 def _staff(roles=STOCK_ROLES):
@@ -351,3 +352,81 @@ def notify_debt_digest(orders, without_invoice=()):
         if orders else 'Задолженности: отгрузки без счёта'
     )
     return queue_for_staff('debt_digest', subject, '\n'.join(lines), roles=DEBT_ROLES)
+
+
+def order_last_touched(order):
+    """Когда в последний раз что-то происходило с заказом.
+
+    Обычно это `changed_at` самой свежей записи в истории статусов —
+    неважно, была ли это смена самого статуса или, скажем, списание детали:
+    и то и другое значит, что заказ не забыт. Если истории ещё нет (заказ
+    только создан и статус ни разу не менялся), отсчёт начинается от даты
+    приёма — до первой правки заказ и так «висит» в статусе «Принят»
+    с этого момента.
+    """
+    latest = order.status_history.order_by('-changed_at').first()
+    return latest.changed_at if latest else order.date_received
+
+
+def order_stuck_days(order):
+    """Сколько дней заказ провёл без движения в текущем статусе, и порог
+    для этого статуса.
+
+    None, если у статуса порога нет (`shipped`, `unrepairable` — заказ
+    завершён, а не завис) или отсчитывать не от чего.
+    """
+    threshold = order_overdue_days(order.status)
+    if threshold is None:
+        return None
+    last_touched = order_last_touched(order)
+    if last_touched is None:
+        return None
+    return (timezone.now() - last_touched).days, threshold
+
+
+def notify_order_overdue(order):
+    """Персоналу — заказ завис в одном статусе дольше порога.
+
+    Идемпотентность построена на времени, а не на отдельном поле «уже
+    оповещали»: ищем оповещение по этому же заказу, созданное позже того
+    момента, как заказ в последний раз трогали (`order_last_touched`) —
+    то есть уже в текущем статусе. Если такое оповещение свежее порога
+    эскалации, повторно не пишем; если оно старше — это и есть повторная
+    эскалация. Смена статуса создаёт новую запись истории, отодвигает
+    `order_last_touched` вперёд и тем самым сама открывает счёт заново —
+    искать «тот же статус» отдельным полем не нужно.
+    """
+    if not _setting('NOTIFY_ORDER_OVERDUE', True):
+        return None
+
+    result = order_stuck_days(order)
+    if result is None:
+        return None
+    days, threshold = result
+    if days < threshold:
+        return None
+
+    escalation = _setting('ORDER_OVERDUE_ESCALATION_DAYS', 7)
+    recent = timezone.now() - timedelta(days=escalation)
+    last_touched = order_last_touched(order)
+    cutoff = max(recent, last_touched)
+    if Notification.objects.filter(
+        event='order_overdue', repair_order=order, created_at__gte=cutoff
+    ).exists():
+        return None
+
+    subject = (
+        f'Заказ {order.order_number} завис в статусе '
+        f'«{order.get_status_display()}»'
+    )
+    body = '\n'.join([
+        f'Заказ {order.order_number} — {order.client.name}.',
+        f'Статус: {order.get_status_display()}, без движения {days} '
+        f'{plural(days, "день", "дня", "дней")} (порог — {threshold} '
+        f'{plural(threshold, "день", "дня", "дней")}).',
+        '',
+        'Оповещение сформировано автоматической проверкой просроченных заказов.',
+    ])
+    return queue_for_staff(
+        'order_overdue', subject, body, roles=ORDER_OVERDUE_ROLES, repair_order=order
+    )

@@ -28,9 +28,9 @@ from . import messengers, notifications, tbank, views
 from .forms import RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
-    FaultType, FaultTypePart, Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
-    RepairOrderEquipment, SparePart, StockMovement, StorageCell, parse_layout,
-    plural_genitive, format_spec,
+    FaultType, FaultTypePart, Notification, Organization, OrderStatusHistory, Payment,
+    RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement,
+    StorageCell, parse_layout, plural_genitive, format_spec,
 )
 
 
@@ -1625,7 +1625,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.43.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.44.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -3587,6 +3587,136 @@ class DebtReminderTests(TestCase):
         self._run()
 
         self.assertEqual(Notification.objects.count(), 0)
+
+
+class OrderOverdueTests(TestCase):
+    """Оповещения о заказах, зависших в одном статусе дольше порога (SLA)."""
+
+    ORDER_OVERDUE_DAYS = {
+        'accepted': 2, 'diagnostic': 3, 'repair': 7, 'ready_for_shipment': 5,
+    }
+
+    def setUp(self):
+        self.manager = Employee.objects.create_user(
+            username='rem', full_name='Менеджер по ремонту', password='pass',
+            role='repair_manager', email='rem@example.com',
+        )
+        Employee.objects.create_user(
+            username='sklad_o', full_name='Кладовщик', password='pass',
+            role='warehouse', email='sklad_o@example.com',
+        )
+        self.client_obj = ClientModel.objects.create(name='ООО Клиент')
+
+    def _order(self, status, days_ago):
+        """Заказ, застрявший в `status` уже `days_ago` дней назад.
+
+        Создание заказа уже заводит запись истории само (сигнал
+        `create_status_history`) — сдвигаем в прошлое именно её,
+        а не добавляем свою: `order_last_touched` берёт самую свежую
+        запись, и вторая, недвинутая, забила бы первую. `changed_at`
+        задним числом ставится через queryset.update(), потому что
+        auto_now_add применяется только при создании.
+        """
+        order = RepairOrder.objects.create(client=self.client_obj, status=status)
+        when = timezone.now() - datetime.timedelta(days=days_ago)
+        OrderStatusHistory.objects.filter(order=order).update(changed_at=when)
+        return order
+
+    def _queued(self):
+        return list(Notification.objects.filter(event='order_overdue'))
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_an_order_younger_than_the_threshold_is_left_alone(self):
+        order = self._order('accepted', days_ago=1)
+
+        self.assertIsNone(notifications.notify_order_overdue(order))
+        self.assertEqual(self._queued(), [])
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_an_overdue_order_is_notified_once_not_on_every_check(self):
+        order = self._order('diagnostic', days_ago=4)
+
+        notifications.notify_order_overdue(order)
+        notifications.notify_order_overdue(order)
+
+        self.assertEqual(len(self._queued()), 1)
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS, ORDER_OVERDUE_ESCALATION_DAYS=7)
+    def test_escalation_repeats_after_the_extra_interval_not_before(self):
+        # Заказ давно застрял (дольше, чем окно эскалации), чтобы порог по
+        # статусу заведомо не мешал проверке самой эскалации
+        order = self._order('diagnostic', days_ago=20)
+        notifications.notify_order_overdue(order)
+        first = self._queued()[0]
+
+        # До эскалации остался день — повторно писать ещё рано
+        Notification.objects.filter(pk=first.pk).update(
+            created_at=timezone.now() - datetime.timedelta(days=6))
+        self.assertIsNone(notifications.notify_order_overdue(order))
+        self.assertEqual(len(self._queued()), 1)
+
+        # А неделя с прошлого письма уже прошла — пора написать снова
+        Notification.objects.filter(pk=first.pk).update(
+            created_at=timezone.now() - datetime.timedelta(days=8))
+        notifications.notify_order_overdue(order)
+        self.assertEqual(len(self._queued()), 2)
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_different_statuses_apply_different_thresholds(self):
+        """4 дня в диагностике (порог 3) — уже просрочка; 4 дня в ремонте
+        (порог 7) — ещё нет."""
+        diagnostic_order = self._order('diagnostic', days_ago=4)
+        repair_order = self._order('repair', days_ago=4)
+
+        self.assertTrue(notifications.notify_order_overdue(diagnostic_order))
+        self.assertIsNone(notifications.notify_order_overdue(repair_order))
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_terminal_statuses_have_no_threshold(self):
+        order = self._order('shipped', days_ago=60)
+
+        self.assertIsNone(notifications.notify_order_overdue(order))
+        self.assertEqual(self._queued(), [])
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_only_repair_manager_and_admin_are_notified_not_the_warehouse(self):
+        order = self._order('diagnostic', days_ago=4)
+
+        notifications.notify_order_overdue(order)
+
+        recipients = {n.recipient for n in self._queued()}
+        self.assertEqual(recipients, {'rem@example.com'})
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS, NOTIFY_ORDER_OVERDUE=False)
+    def test_the_whole_check_can_be_switched_off(self):
+        order = self._order('diagnostic', days_ago=10)
+
+        self.assertIsNone(notifications.notify_order_overdue(order))
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_the_command_queues_the_overdue_order(self):
+        self._order('diagnostic', days_ago=4)
+
+        call_command('order_overdue_check', stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.assertEqual(len(self._queued()), 1)
+
+    @override_settings(ORDER_OVERDUE_DAYS=ORDER_OVERDUE_DAYS)
+    def test_dry_run_queues_nothing(self):
+        order = self._order('diagnostic', days_ago=4)
+
+        out = io.StringIO()
+        call_command('order_overdue_check', '--dry-run', stdout=out, stderr=io.StringIO())
+
+        self.assertEqual(Notification.objects.count(), 0)
+        self.assertIn(order.order_number, out.getvalue())
+
+    def test_open_orders_exclude_shipped_and_unrepairable(self):
+        open_order = self._order('repair', days_ago=1)
+        self._order('shipped', days_ago=1)
+        self._order('unrepairable', days_ago=1)
+
+        self.assertEqual(list(RepairOrder.objects.open()), [open_order])
 
 
 class DebtReportTests(TestCase):
