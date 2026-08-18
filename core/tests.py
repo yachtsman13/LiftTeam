@@ -25,9 +25,10 @@ from django.urls import resolve
 from django.utils import timezone
 
 from . import messengers, notifications, tbank, views
+from .forms import RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
-    Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
+    FaultType, FaultTypePart, Notification, Organization, Payment, RepairOrder, RepairOrderDetail,
     RepairOrderEquipment, SparePart, StockMovement, StorageCell, parse_layout,
     plural_genitive, format_spec,
 )
@@ -1624,7 +1625,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.42.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.43.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -6412,3 +6413,231 @@ class DryRunOutputTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.note.refresh_from_db()
         self.assertEqual(self.note.status, 'pending')
+
+
+class FaultTemplateApplyTests(TestCase):
+    """Типовая неисправность предлагает рецепт деталей — заказ дополняется
+    им, а не переписывается заново."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_faults', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.model_a = EquipmentModel.objects.create(name='БУАД-3')
+        self.model_b = EquipmentModel.objects.create(name='ШУНЛ-2')
+
+        self.part1 = SparePart.objects.create(part_number='FP-1', name='Транзистор', current_stock=10)
+        self.part2 = SparePart.objects.create(part_number='FP-2', name='Резистор', current_stock=5)
+        self.part3 = SparePart.objects.create(part_number='FP-3', name='Конденсатор', current_stock=2)
+
+        self.fault1 = FaultType.objects.create(equipment_model=self.model_a, name='Не запускается')
+        FaultTypePart.objects.create(fault_type=self.fault1, part=self.part1, quantity=2)
+        FaultTypePart.objects.create(fault_type=self.fault1, part=self.part2, quantity=1)
+
+        # part2 сознательно повторяется в обоих рецептах — проверка слияния
+        self.fault2 = FaultType.objects.create(equipment_model=self.model_a, name='Шумит')
+        FaultTypePart.objects.create(fault_type=self.fault2, part=self.part2, quantity=3)
+        FaultTypePart.objects.create(fault_type=self.fault2, part=self.part3, quantity=1)
+
+        self.fault_other_model = FaultType.objects.create(equipment_model=self.model_b, name='Неисправность другой модели')
+        FaultTypePart.objects.create(fault_type=self.fault_other_model, part=self.part1, quantity=1)
+
+        self.equipment = Equipment.objects.create(model=self.model_a, serial_number='SN-FAULT-1')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Лифт', inn='7700000789')
+        )
+        self.roe = RepairOrderEquipment.objects.create(repair_order=self.order, equipment=self.equipment)
+
+    def _apply(self, fault_ids):
+        return self.client_http.post(
+            f'/repair-orders/{self.order.pk}/apply-fault-template/',
+            {'fault_ids': fault_ids},
+        )
+
+    def test_applying_one_fault_creates_its_recipe(self):
+        response = self._apply([self.fault1.pk])
+        data = response.json()
+
+        self.assertTrue(data['success'])
+        details = {d.part_id: d.quantity_used for d in self.order.details.all()}
+        self.assertEqual(details, {self.part1.pk: 2, self.part2.pk: 1})
+
+        self.part1.refresh_from_db()
+        self.part2.refresh_from_db()
+        self.assertEqual(self.part1.current_stock, 8)
+        self.assertEqual(self.part2.current_stock, 4)
+
+    def test_applying_adds_to_an_existing_manual_line_without_replacing_it(self):
+        """Ручная строка по part1 уже есть — применение шаблона добавляет
+        свою собственную, а не трогает и не сливается с существующей."""
+        RepairOrderDetail.objects.create(repair_order=self.order, part=self.part1, quantity_used=5)
+
+        self._apply([self.fault1.pk])
+
+        details = list(self.order.details.all())
+        self.assertEqual(len(details), 3)
+        part1_lines = sorted(d.quantity_used for d in details if d.part_id == self.part1.pk)
+        self.assertEqual(part1_lines, [2, 5])
+
+    def test_several_faults_merge_the_same_part_into_one_line(self):
+        """part2 встречается в обоих рецептах (1 и 3) — в заказе должна
+        появиться одна строка на 4, а не две частичные."""
+        response = self._apply([self.fault1.pk, self.fault2.pk])
+        data = response.json()
+
+        self.assertTrue(data['success'])
+        details = list(self.order.details.all())
+        part2_lines = [d for d in details if d.part_id == self.part2.pk]
+        self.assertEqual(len(part2_lines), 1)
+        self.assertEqual(part2_lines[0].quantity_used, 4)
+        self.assertEqual(
+            {d.part_id: d.quantity_used for d in details},
+            {self.part1.pk: 2, self.part2.pk: 4, self.part3.pk: 1}
+        )
+
+    def test_a_shortage_is_reported_but_the_detail_is_still_added(self):
+        fault3 = FaultType.objects.create(equipment_model=self.model_a, name='Сильный дефицит')
+        FaultTypePart.objects.create(fault_type=fault3, part=self.part3, quantity=10)  # остаток всего 2
+
+        response = self._apply([fault3.pk])
+        data = response.json()
+
+        self.assertTrue(data['success'])
+        self.assertIn('не хватило', data['message'])
+        self.part3.refresh_from_db()
+        self.assertEqual(self.part3.current_stock, -8)
+        self.assertEqual(self.order.details.get(part=self.part3).quantity_used, 10)
+
+    def test_applying_nothing_fails_without_touching_the_order(self):
+        response = self._apply([])
+        data = response.json()
+
+        self.assertFalse(data['success'])
+        self.assertEqual(self.order.details.count(), 0)
+
+    def test_the_order_form_lists_only_this_equipments_model_faults(self):
+        response = self.client_http.get(f'/repair-orders/{self.order.pk}/edit/')
+
+        self.assertContains(response, self.fault1.name)
+        self.assertContains(response, self.fault2.name)
+        self.assertNotContains(response, self.fault_other_model.name)
+
+    def test_the_faults_ajax_endpoint_is_scoped_to_the_equipment_model(self):
+        response = self.client_http.get(f'/ajax/equipment/{self.equipment.pk}/faults/')
+        data = response.json()
+
+        names = {f['name'] for f in data['faults']}
+        self.assertEqual(names, {self.fault1.name, self.fault2.name})
+
+    def test_the_equipment_form_rejects_a_fault_from_another_model(self):
+        form = RepairOrderEquipmentForm(data={
+            'equipment': self.equipment.pk,
+            'fault_description': '',
+            'faults': [self.fault_other_model.pk],
+            'work_performed': '', 'seal_numbers': '', 'initial_condition': '',
+            'repair_cost': '', 'yandex_disk_folder': '',
+        })
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('faults', form.errors)
+
+    def test_the_other_option_is_not_a_database_choice(self):
+        """«Другое» в списке — сигнал для интерфейса, а не id неисправности:
+        его выбор не должен ронять валидацию формы."""
+        form = RepairOrderEquipmentForm(data={
+            'equipment': self.equipment.pk,
+            'fault_description': 'своими словами, чего в справочнике ещё нет',
+            'faults': ['other'],
+            'work_performed': '', 'seal_numbers': '', 'initial_condition': '',
+            'repair_cost': '', 'yandex_disk_folder': '',
+        })
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(list(form.cleaned_data['faults']), [])
+
+
+class FaultTypeAdminTests(TestCase):
+    """Справочник типовых неисправностей — права те же, что у EquipmentModel:
+    создание и правка открыты любому авторизованному, удаление — только
+    складу и мастеру."""
+
+    def setUp(self):
+        self.model = EquipmentModel.objects.create(name='БУАД-9')
+        self.part = SparePart.objects.create(part_number='FTP-1', name='Диод')
+        self.fault = FaultType.objects.create(equipment_model=self.model, name='Проверочная неисправность')
+
+    @staticmethod
+    def _formset_data(prefix='parts', total=0):
+        return {
+            f'{prefix}-TOTAL_FORMS': str(total),
+            f'{prefix}-INITIAL_FORMS': '0',
+            f'{prefix}-MIN_NUM_FORMS': '0',
+            f'{prefix}-MAX_NUM_FORMS': '1000',
+        }
+
+    def test_a_repair_manager_can_create_a_fault_type(self):
+        manager = Employee.objects.create_user(
+            username='manager_faults', full_name='Мастер', password='pass', role='repair_manager'
+        )
+        client = TestClient()
+        client.force_login(manager)
+
+        data = {'equipment_model': self.model.pk, 'name': 'Новая неисправность', 'description': ''}
+        data.update(self._formset_data())
+        response = client.post('/faults/create/', data)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(FaultType.objects.filter(name='Новая неисправность').exists())
+
+    def test_creating_a_fault_type_together_with_its_recipe(self):
+        manager = Employee.objects.create_user(
+            username='manager_recipe', full_name='Мастер', password='pass', role='repair_manager'
+        )
+        client = TestClient()
+        client.force_login(manager)
+
+        data = {'equipment_model': self.model.pk, 'name': 'С рецептом', 'description': ''}
+        data.update(self._formset_data(total=1))
+        data['parts-0-part'] = self.part.pk
+        data['parts-0-quantity'] = '3'
+        response = client.post('/faults/create/', data)
+
+        self.assertEqual(response.status_code, 302)
+        fault = FaultType.objects.get(name='С рецептом')
+        self.assertEqual(fault.parts.count(), 1)
+        self.assertEqual(fault.parts.first().quantity, 3)
+
+    def test_an_accountant_cannot_delete_a_fault_type(self):
+        accountant = Employee.objects.create_user(
+            username='accountant_faults', full_name='Бухгалтер', password='pass', role='accountant'
+        )
+        client = TestClient()
+        client.force_login(accountant)
+
+        response = client.post(f'/faults/{self.fault.pk}/delete/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(FaultType.objects.filter(pk=self.fault.pk).exists())
+
+    def test_warehouse_can_delete_a_fault_type(self):
+        warehouse = Employee.objects.create_user(
+            username='warehouse_faults', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        client = TestClient()
+        client.force_login(warehouse)
+
+        response = client.post(f'/faults/{self.fault.pk}/delete/')
+
+        self.assertRedirects(response, '/faults/')
+        self.assertFalse(FaultType.objects.filter(pk=self.fault.pk).exists())
+
+    def test_an_anonymous_user_is_sent_to_login(self):
+        client = TestClient()
+
+        response = client.get('/faults/create/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response.url)

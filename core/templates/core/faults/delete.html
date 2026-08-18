@@ -1,0 +1,22 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление неисправности — LiftTeam v2.43.0{% endblock %}
+
+{% block content %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Подтверждение удаления</h5>
+    </div>
+    <div class="card-body">
+        <p>Вы действительно хотите удалить типовую неисправность
+            <strong>{{ fault_type.name }}</strong> ({{ fault_type.equipment_model.name }})?</p>
+        <p class="text-muted">Это действие нельзя отменить. Рецепт деталей будет удалён вместе с ней.
+            На уже применённые в заказах детали это не повлияет — они остаются обычными строками заказа.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'fault_type_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

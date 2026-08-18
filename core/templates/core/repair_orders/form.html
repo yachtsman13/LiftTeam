@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.42.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.43.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -128,6 +128,46 @@
                             </div>
                         </div>
                         <div class="row g-2 mt-1">
+                            <div class="col-md-8">
+                                <label class="form-label small">{{ eq_form.faults.label }}</label>
+                                <select name="{{ eq_form.faults.html_name }}" id="{{ eq_form.faults.id_for_label }}"
+                                        class="form-select fault-select" multiple size="4"
+                                        data-selected="{% for f in eq_form.instance.faults.all %}{{ f.pk }}{% if not forloop.last %},{% endif %}{% endfor %}">
+                                    <option value="other">Другое (не из списка)</option>
+                                    {% if eq_form.instance.equipment_id %}
+                                    {% for fault in eq_form.instance.equipment.model.fault_types.all %}
+                                    <option value="{{ fault.pk }}" {% if fault in eq_form.instance.faults.all %}selected{% endif %}>{{ fault.name }}</option>
+                                    {% endfor %}
+                                    {% endif %}
+                                </select>
+                                <div class="form-text">
+                                    Список — только для этой модели оборудования. Несколько
+                                    выбранных неисправностей объединят свои рецепты деталей.
+                                    «Другое» — если случая ещё нет в справочнике; тогда опишите
+                                    его в поле «Неисправность» выше.
+                                </div>
+                                {% if eq_form.faults.errors %}
+                                <div class="text-danger small">{{ eq_form.faults.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            {% comment %}
+                                Применение требует существующего заказа: детали заказа
+                                привязаны к заказу целиком, а не к конкретной единице
+                                оборудования в нём, поэтому кнопка не показывается на
+                                странице создания нового заказа. Активна только тогда,
+                                когда в списке выбрано хоть что-то, кроме «Другое».
+                            {% endcomment %}
+                            {% if order %}
+                            <div class="col-md-4 d-flex align-items-end">
+                                <button type="button" class="btn btn-outline-success btn-sm apply-fault-template w-100" disabled
+                                        data-apply-url="{% url 'repair_order_apply_fault_template' order.pk %}"
+                                        title="Добавит рецепт выбранных неисправностей в список использованных деталей заказа">
+                                    <i class="bi bi-magic me-1"></i>Применить шаблон деталей
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="row g-2 mt-1">
                             <div class="col-md-4">
                                 <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
                                 {{ eq_form.initial_condition }}
@@ -247,17 +287,123 @@ function showEquipmentHistory(select) {
         });
 }
 
+// ===== Типовые неисправности и рецепт деталей =====
+// Список неисправностей зависит от модели выбранного оборудования, а
+// оборудование в строке можно сменить в любой момент — поэтому вариант
+// в select обновляется запросом, а не готовится один раз при загрузке.
+const EQUIPMENT_FAULTS_URL = '{% url "ajax_equipment_faults" 0 %}';
+const FAULT_OTHER_VALUE = 'other';
+
+function faultSelectFor(select) {
+    const row = select.closest('.equipment-row');
+    return row ? row.querySelector('.fault-select') : null;
+}
+
+function applyButtonFor(select) {
+    const row = select.closest('.equipment-row');
+    return row ? row.querySelector('.apply-fault-template') : null;
+}
+
+// Активна, только если выбрано что-то, кроме «Другое» — у него своего
+// рецепта нет, применять нечего
+function updateApplyButtonState(faultSelect) {
+    const button = applyButtonFor(faultSelect);
+    if (!button) return;
+    const values = Array.from(faultSelect.selectedOptions).map(o => o.value);
+    const hasRealFault = values.some(v => v && v !== FAULT_OTHER_VALUE);
+    button.disabled = !hasRealFault;
+}
+
+function updateFaultOptions(equipmentSelect) {
+    const faultSelect = faultSelectFor(equipmentSelect);
+    if (!faultSelect) return;
+
+    const preselected = (faultSelect.dataset.selected || '')
+        .split(',').map(v => v.trim()).filter(Boolean);
+
+    if (!equipmentSelect.value) {
+        faultSelect.innerHTML = '<option value="' + FAULT_OTHER_VALUE + '">Другое (не из списка)</option>';
+        updateApplyButtonState(faultSelect);
+        return;
+    }
+
+    fetch(EQUIPMENT_FAULTS_URL.replace('/0/', '/' + equipmentSelect.value + '/'))
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(data => {
+            if (!data.success) return;
+            let html = '<option value="' + FAULT_OTHER_VALUE + '">Другое (не из списка)</option>';
+            data.faults.forEach(function(fault) {
+                const selected = preselected.includes(String(fault.id)) ? ' selected' : '';
+                html += '<option value="' + fault.id + '"' + selected + '>' + fault.name + '</option>';
+            });
+            faultSelect.innerHTML = html;
+            updateApplyButtonState(faultSelect);
+        })
+        .catch(() => {
+            // Как и с подсказкой по истории: без списка форму заполнить
+            // всё ещё можно, ошибка загрузки не должна её блокировать
+            faultSelect.innerHTML = '<option value="' + FAULT_OTHER_VALUE + '">Другое (не из списка)</option>';
+            updateApplyButtonState(faultSelect);
+        });
+}
+
+function applyFaultTemplate(button) {
+    const row = button.closest('.equipment-row');
+    const faultSelect = row ? row.querySelector('.fault-select') : null;
+    if (!faultSelect) return;
+
+    const faultIds = Array.from(faultSelect.selectedOptions)
+        .map(o => o.value)
+        .filter(v => v && v !== FAULT_OTHER_VALUE);
+    if (!faultIds.length) return;
+
+    const applyUrl = button.dataset.applyUrl;
+    if (!applyUrl) return;
+
+    const params = new URLSearchParams();
+    faultIds.forEach(id => params.append('fault_ids', id));
+
+    button.disabled = true;
+    fetch(applyUrl, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: params.toString()
+    })
+    .then(r => r.json())
+    .then(data => {
+        alert(data.success ? data.message : data.error);
+        updateApplyButtonState(faultSelect);
+    })
+    .catch(err => {
+        alert('Ошибка: ' + err);
+        updateApplyButtonState(faultSelect);
+    });
+}
+
 // Инициализируем отслеживание
 document.addEventListener('change', function(e) {
     if (e.target.name && e.target.name.includes('-equipment')) {
         updateEquipmentOptions();
         showEquipmentHistory(e.target);
+        updateFaultOptions(e.target);
     }
+    if (e.target.classList && e.target.classList.contains('fault-select')) {
+        updateApplyButtonState(e.target);
+    }
+});
+
+document.addEventListener('click', function(e) {
+    const button = e.target.closest('.apply-fault-template');
+    if (button) applyFaultTemplate(button);
 });
 
 // Первоначальная фильтрация
 updateEquipmentOptions();
 document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
+document.querySelectorAll('.fault-select').forEach(updateApplyButtonState);
 
 function addEquipmentRow() {
     const container = document.getElementById('equipmentFormset');
@@ -283,6 +429,16 @@ function addEquipmentRow() {
     if (deleteCheck) {
         deleteCheck.innerHTML = '<button type="button" class="btn btn-outline-danger btn-sm" onclick="removeEquipmentRow(this)"><i class="bi bi-trash"></i></button>';
     }
+
+    // Клон унаследовал варианты неисправностей исходной строки — новой
+    // единице оборудования они не подходят, пока не выбрано её оборудование
+    const clonedFaultSelect = newRow.querySelector('.fault-select');
+    if (clonedFaultSelect) {
+        clonedFaultSelect.innerHTML = '<option value="other">Другое (не из списка)</option>';
+        clonedFaultSelect.removeAttribute('data-selected');
+    }
+    const clonedApplyButton = newRow.querySelector('.apply-fault-template');
+    if (clonedApplyButton) clonedApplyButton.disabled = true;
 
     container.appendChild(newRow);
     formNum++;

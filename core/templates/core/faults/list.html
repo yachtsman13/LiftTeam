@@ -1,0 +1,54 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Типовые неисправности — LiftTeam v2.43.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard2-pulse me-2"></i>Типовые неисправности</h2>
+    <div>
+        <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-secondary me-2"><i class="bi bi-arrow-left me-2"></i>К моделям</a>
+        <a href="{% url 'fault_type_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новая неисправность</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr>
+                        <th>Модель оборудования</th>
+                        <th>Неисправность</th>
+                        <th>Рецепт деталей</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fault in fault_types %}
+                    <tr>
+                        <td>{{ fault.equipment_model.name }}</td>
+                        <td>
+                            {{ fault.name }}
+                            {% if fault.description %}<div class="small text-muted">{{ fault.description }}</div>{% endif %}
+                        </td>
+                        <td>
+                            {% for line in fault.parts.all %}
+                            <span class="badge bg-secondary fw-normal">{{ line.part.name }} ×{{ line.quantity }}</span>
+                            {% empty %}
+                            <span class="text-muted">рецепт пуст</span>
+                            {% endfor %}
+                        </td>
+                        <td class="text-end">
+                            <a href="{% url 'fault_type_edit' fault.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'fault_type_delete' fault.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-center text-muted py-4">Типовые неисправности не заведены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

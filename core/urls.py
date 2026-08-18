@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.42.0
+v2.43.0
 """
 from django.urls import path
 from . import views
@@ -34,6 +34,12 @@ urlpatterns = [
     path('equipment/models/<int:pk>/edit/', views.equipment_model_edit, name='equipment_model_edit'),
     path('equipment/models/<int:pk>/delete/', views.equipment_model_delete, name='equipment_model_delete'),
 
+    # Типовые неисправности и их рецепты деталей
+    path('faults/', views.fault_type_list, name='fault_type_list'),
+    path('faults/create/', views.fault_type_create, name='fault_type_create'),
+    path('faults/<int:pk>/edit/', views.fault_type_edit, name='fault_type_edit'),
+    path('faults/<int:pk>/delete/', views.fault_type_delete, name='fault_type_delete'),
+
     # Заказы на ремонт
     path('repair-orders/', views.repair_order_list, name='repair_order_list'),
     path('repair-orders/export/', views.repair_order_export, name='repair_order_export'),
@@ -44,6 +50,7 @@ urlpatterns = [
     path('repair-orders/<int:pk>/edit/', views.repair_order_edit, name='repair_order_edit'),
     path('repair-orders/<int:pk>/delete/', views.repair_order_delete, name='repair_order_delete'),
     path('repair-orders/<int:pk>/add-detail/', views.repair_order_add_detail, name='repair_order_add_detail'),
+    path('repair-orders/<int:pk>/apply-fault-template/', views.repair_order_apply_fault_template, name='repair_order_apply_fault_template'),
     path('repair-orders/<int:pk>/change-status/', views.repair_order_change_status, name='repair_order_change_status'),
     path('repair-orders/<int:pk>/change-payment-status/', views.repair_order_change_payment_status, name='repair_order_change_payment_status'),
     path('repair-orders/<int:pk>/payments/add/', views.repair_order_add_payment, name='repair_order_add_payment'),
@@ -126,6 +133,7 @@ urlpatterns = [
     path('ajax/equipment-model/list/', views.ajax_equipment_model_list, name='ajax_equipment_model_list'),
     path('ajax/equipment/create/', views.ajax_equipment_create, name='ajax_equipment_create'),
     path('ajax/equipment/<int:pk>/history-summary/', views.ajax_equipment_history_summary, name='ajax_equipment_history_summary'),
+    path('ajax/equipment/<int:pk>/faults/', views.ajax_equipment_faults, name='ajax_equipment_faults'),
     path('ajax/client/create/', views.ajax_client_create, name='ajax_client_create'),
 
     # Администрирование

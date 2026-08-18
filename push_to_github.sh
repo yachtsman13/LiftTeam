@@ -1,5 +1,5 @@
 #!/bin/bash
-# LiftTeam v2.42.0 — Push to GitHub (единый скрипт)
+# LiftTeam v2.43.0 — Push to GitHub (единый скрипт)
 
 cd "$(dirname "$0")"
 
@@ -7,7 +7,7 @@ REPO_URL="https://github.com/yachtsman13/Lifteam.git"
 
 echo ""
 echo "  ================================================"
-echo "   LiftTeam v2.42.0 — Push to GitHub"
+echo "   LiftTeam v2.43.0 — Push to GitHub"
 echo "  ================================================"
 echo ""
 
@@ -48,14 +48,14 @@ git status --short
 # 6. Коммит
 echo "  [4/5] Создание коммита..."
 git add -A
-git commit -m "LiftTeam v2.42.0 update" 2>/dev/null || true
+git commit -m "LiftTeam v2.43.0 update" 2>/dev/null || true
 
 # 7. Push
 echo "  [5/5] Push на GitHub..."
 if git push -u origin main --force; then
     echo ""
     echo "  ================================================"
-    echo "   [OK] LiftTeam v2.42.0 успешно отправлен на GitHub"
+    echo "   [OK] LiftTeam v2.43.0 успешно отправлен на GitHub"
     echo "  ================================================"
     echo ""
     echo "  URL: $REPO_URL"

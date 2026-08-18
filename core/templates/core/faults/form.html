@@ -1,0 +1,148 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ title }} — LiftTeam v2.43.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard2-pulse me-2"></i>{{ title }}</h2>
+    <a href="{% url 'fault_type_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+{% if form.errors or formset.errors or formset.non_form_errors %}
+<div class="alert alert-danger">
+    <h6 class="alert-heading"><i class="bi bi-exclamation-triangle me-2"></i>Не сохранено — исправьте ошибки</h6>
+    <ul class="mb-0 small">
+        {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+        {% for field in form %}
+            {% for error in field.errors %}<li>{{ field.label }}: {{ error }}</li>{% endfor %}
+        {% endfor %}
+        {% for error in formset.non_form_errors %}<li>Рецепт: {{ error }}</li>{% endfor %}
+        {% for line_form in formset %}
+            {% for field in line_form %}
+                {% for error in field.errors %}<li>Деталь рецепта, «{{ field.label }}»: {{ error }}</li>{% endfor %}
+            {% endfor %}
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.equipment_model.label }}</label>
+                    {{ form.equipment_model }}
+                    {% if form.equipment_model.errors %}<div class="text-danger small">{{ form.equipment_model.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.name.label }}</label>
+                    {{ form.name }}
+                    {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">{{ form.description.label }}</label>
+                    {{ form.description }}
+                    {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <h5><i class="bi bi-cpu me-2"></i>Рецепт деталей</h5>
+                <p class="text-muted small">
+                    Список деталей, который в заказе предлагается кнопкой «Применить шаблон» —
+                    он только предлагает, а редактируют его уже в самом заказе как обычные детали.
+                </p>
+                <div id="partsFormset">
+                    {{ formset.management_form }}
+                    {% for line_form in formset %}
+                    <div class="fault-part-row border rounded p-2 mb-2">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-6">
+                                <label class="form-label small">{{ line_form.part.label }}</label>
+                                {{ line_form.part }}
+                                {% if line_form.part.errors %}<div class="text-danger small">{{ line_form.part.errors.0 }}</div>{% endif %}
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">{{ line_form.quantity.label }}</label>
+                                {{ line_form.quantity }}
+                                {% if line_form.quantity.errors %}<div class="text-danger small">{{ line_form.quantity.errors.0 }}</div>{% endif %}
+                            </div>
+                            <div class="col-md-3">
+                                {% if line_form.instance.pk %}
+                                <div class="form-check">
+                                    {{ line_form.DELETE }}
+                                    <label class="form-check-label small">Удалить</label>
+                                </div>
+                                {% else %}
+                                <button type="button" class="btn btn-outline-danger btn-sm remove-part-row" onclick="removePartRow(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="addPartRow()">
+                    <i class="bi bi-plus-lg me-1"></i>Добавить деталь
+                </button>
+            </div>
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
+                <a href="{% url 'fault_type_list' %}" class="btn btn-outline-secondary">Отмена</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+let partsTotalForms = document.getElementById('id_parts-TOTAL_FORMS');
+let partsFormNum = parseInt(partsTotalForms.value);
+
+function addPartRow() {
+    const container = document.getElementById('partsFormset');
+    const template = container.querySelector('.fault-part-row');
+    if (!template) return;
+
+    const newRow = template.cloneNode(true);
+    const oldPrefix = 'parts-' + (partsFormNum - 1) + '-';
+    const newPrefix = 'parts-' + partsFormNum + '-';
+    newRow.innerHTML = newRow.innerHTML.split(oldPrefix).join(newPrefix);
+
+    newRow.querySelectorAll('input, select').forEach(function(el) {
+        if (el.type !== 'hidden' && el.name.indexOf('DELETE') === -1) {
+            el.value = '';
+        }
+    });
+
+    const deleteCheck = newRow.querySelector('.form-check');
+    if (deleteCheck) {
+        deleteCheck.outerHTML = '<button type="button" class="btn btn-outline-danger btn-sm remove-part-row" onclick="removePartRow(this)"><i class="bi bi-trash"></i></button>';
+    }
+
+    container.appendChild(newRow);
+    partsFormNum++;
+    partsTotalForms.value = partsFormNum;
+}
+
+function removePartRow(btn) {
+    const row = btn.closest('.fault-part-row');
+    row.remove();
+    const rows = document.querySelectorAll('.fault-part-row');
+    rows.forEach(function(r, idx) {
+        r.querySelectorAll('input, select').forEach(function(el) {
+            if (el.name) {
+                el.name = el.name.replace(/parts-[0-9]+-/, 'parts-' + idx + '-');
+                el.id = el.id.replace(/parts-[0-9]+-/, 'parts-' + idx + '-');
+            }
+        });
+    });
+    partsFormNum = rows.length;
+    partsTotalForms.value = partsFormNum;
+}
+</script>
+{% endblock %}

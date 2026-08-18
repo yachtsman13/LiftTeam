@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.42.0.
+Views для LiftTeam v2.43.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -28,7 +28,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import (
-    Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
+    Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
     add_months, warranty_cutoff, warranty_months, plural_genitive,
@@ -39,7 +39,7 @@ from .forms import (
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
-    CabinetForm, MyNotificationsForm,
+    CabinetForm, MyNotificationsForm, FaultTypeForm, FaultTypePartFormSet,
 )
 from .utils import (
     generate_qr_image,
@@ -541,6 +541,72 @@ def equipment_model_delete(request, pk):
     return render(request, 'core/equipment/delete.html', {'equipment': model, 'is_model': True})
 
 
+# ==================== ТИПОВЫЕ НЕИСПРАВНОСТИ ====================
+# Права — как у EquipmentModel, ближайшего по смыслу справочника:
+# создание и редактирование открыты любому авторизованному, удаление —
+# только складу и мастеру (роль admin проходит везде через role_required).
+
+@login_required
+def fault_type_list(request):
+    fault_types = (
+        FaultType.objects.select_related('equipment_model')
+        .prefetch_related('parts__part')
+        .order_by('equipment_model__name', 'name')
+    )
+    return render(request, 'core/faults/list.html', {'fault_types': fault_types})
+
+
+@login_required
+def fault_type_create(request):
+    if request.method == 'POST':
+        form = FaultTypeForm(request.POST)
+        formset = FaultTypePartFormSet(request.POST, prefix='parts')
+        if form.is_valid() and formset.is_valid():
+            fault_type = form.save()
+            formset.instance = fault_type
+            formset.save()
+            messages.success(request, 'Типовая неисправность добавлена')
+            return redirect('fault_type_list')
+        messages.error(request, 'Неисправность не сохранена: проверьте отмеченные поля')
+    else:
+        form = FaultTypeForm()
+        formset = FaultTypePartFormSet(prefix='parts')
+    return render(request, 'core/faults/form.html', {
+        'form': form, 'formset': formset, 'title': 'Новая типовая неисправность',
+    })
+
+
+@login_required
+def fault_type_edit(request, pk):
+    fault_type = get_object_or_404(FaultType, pk=pk)
+    if request.method == 'POST':
+        form = FaultTypeForm(request.POST, instance=fault_type)
+        formset = FaultTypePartFormSet(request.POST, instance=fault_type, prefix='parts')
+        if form.is_valid() and formset.is_valid():
+            form.save()
+            formset.save()
+            messages.success(request, 'Типовая неисправность обновлена')
+            return redirect('fault_type_list')
+        messages.error(request, 'Неисправность не сохранена: проверьте отмеченные поля')
+    else:
+        form = FaultTypeForm(instance=fault_type)
+        formset = FaultTypePartFormSet(instance=fault_type, prefix='parts')
+    return render(request, 'core/faults/form.html', {
+        'form': form, 'formset': formset, 'title': 'Редактирование типовой неисправности',
+        'fault_type': fault_type,
+    })
+
+
+@role_required('repair_manager', 'warehouse')
+def fault_type_delete(request, pk):
+    fault_type = get_object_or_404(FaultType, pk=pk)
+    if request.method == 'POST':
+        fault_type.delete()
+        messages.success(request, 'Типовая неисправность удалена')
+        return redirect('fault_type_list')
+    return render(request, 'core/faults/delete.html', {'fault_type': fault_type})
+
+
 # ==================== ЗАКАЗЫ НА РЕМОНТ ====================
 
 def _filter_orders(request):
@@ -779,6 +845,81 @@ def repair_order_edit(request, pk):
     })
 
 
+def _use_repair_order_part(order, part, quantity, employee, history_note):
+    """Списывает деталь со склада и создаёт запись использованной в заказе
+    детали — общая часть добавления детали вручную и применения шаблона
+    неисправности.
+
+    Не форма и не отдельная транзакция: вызывающая сторона решает, сколько
+    таких вызовов войдёт в одну атомарную операцию — единственную деталь
+    (`repair_order_add_detail`) или пачку по шаблону
+    (`apply_fault_templates`), где частичный сбой посреди применения не
+    должен оставить заказ с половиной добавленных деталей.
+
+    Возвращает True, если остатка не хватило и он ушёл в минус.
+    """
+    shortage = part.current_stock < quantity
+    RepairOrderDetail.objects.create(repair_order=order, part=part, quantity_used=quantity)
+    part.current_stock -= quantity
+    part.save(update_fields=['current_stock'])
+    StockMovement.objects.create(
+        part=part,
+        quantity=quantity,
+        movement_type='outgoing',
+        repair_order=order,
+        notes=f'Списано по заказу {order.order_number}',
+        created_by=employee
+    )
+    OrderStatusHistory.objects.create(
+        order=order,
+        status=order.status,
+        changed_by=employee,
+        notes=history_note
+    )
+    return shortage
+
+
+def apply_fault_templates(order, fault_types, employee):
+    """Строит объединённый рецепт деталей по выбранным неисправностям и
+    списывает его одной атомарной транзакцией на все позиции сразу.
+
+    Одна и та же деталь в рецептах нескольких выбранных неисправностей даёт
+    одну позицию с суммарным количеством — а не несколько строк с частями
+    этого количества. С уже имеющимися в заказе деталями (введёнными вручную
+    или добавленными прошлым применением шаблона) слияния нет: шаблон
+    дополняет список, а не пересчитывает его целиком.
+
+    Возвращает (added, shortages): added — список (SparePart, количество)
+    добавленных позиций в порядке первого появления детали среди рецептов;
+    shortages — те из них, на которые не хватило остатка на складе.
+    """
+    merged_qty = {}
+    merged_part = {}
+    order_of_appearance = []
+    for fault in fault_types:
+        for line in fault.parts.select_related('part'):
+            if line.part_id not in merged_qty:
+                merged_qty[line.part_id] = 0
+                merged_part[line.part_id] = line.part
+                order_of_appearance.append(line.part_id)
+            merged_qty[line.part_id] += line.quantity
+
+    added = []
+    shortages = []
+    with transaction.atomic():
+        for part_id in order_of_appearance:
+            part = merged_part[part_id]
+            quantity = merged_qty[part_id]
+            shortage = _use_repair_order_part(
+                order, part, quantity, employee,
+                f'Деталь {part.name} x{quantity} добавлена по шаблону неисправности'
+            )
+            added.append((part, quantity))
+            if shortage:
+                shortages.append(part)
+    return added, shortages
+
+
 @login_required
 @require_POST
 def repair_order_add_detail(request, pk):
@@ -786,41 +927,60 @@ def repair_order_add_detail(request, pk):
     order = get_object_or_404(RepairOrder, pk=pk)
     form = RepairOrderDetailForm(request.POST)
     if form.is_valid():
-        detail = form.save(commit=False)
-        detail.repair_order = order
-        part = detail.part
+        part = form.cleaned_data['part']
+        quantity = form.cleaned_data['quantity_used']
 
-        if part.current_stock < detail.quantity_used:
+        if part.current_stock < quantity:
             messages.warning(request,
                 f'Внимание: недостаточно {part.name} на складе! Текущий остаток: {part.current_stock}. '
                 f'Будет списано с отрицательным остатком.')
 
         with transaction.atomic():
-            detail.save()
-            # Явное списание со склада
-            part.current_stock -= detail.quantity_used
-            part.save(update_fields=['current_stock'])
-            # Создание записи движения
-            StockMovement.objects.create(
-                part=part,
-                quantity=detail.quantity_used,
-                movement_type='outgoing',
-                repair_order=order,
-                notes=f'Списано по заказу {order.order_number}',
-                created_by=request.user
-            )
-            # Создание записи истории статуса
-            OrderStatusHistory.objects.create(
-                order=order,
-                status=order.status,
-                changed_by=request.user,
-                notes=f'Добавлена деталь {part.name} x{detail.quantity_used}'
+            _use_repair_order_part(
+                order, part, quantity, request.user,
+                f'Добавлена деталь {part.name} x{quantity}'
             )
 
         messages.success(request, f'Деталь {part.name} добавлена в заказ')
     else:
         messages.error(request, 'Ошибка при добавлении детали')
     return redirect('repair_order_detail', pk=pk)
+
+
+@login_required
+@require_POST
+def repair_order_apply_fault_template(request, pk):
+    """Применение рецептов деталей выбранных типовых неисправностей.
+
+    Дополняет список использованных в заказе деталей, ничего в нём не
+    заменяя — та же логика списания, что и у ручного добавления детали
+    (см. `_use_repair_order_part`), но одним вызовом на каждую позицию уже
+    слитого по всем выбранным неисправностям словаря и одной транзакцией
+    на всю пачку сразу.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    fault_ids = [v for v in request.POST.getlist('fault_ids') if str(v).isdigit()]
+    fault_types = list(FaultType.objects.filter(pk__in=fault_ids).prefetch_related('parts__part'))
+    if not fault_types:
+        return JsonResponse({
+            'success': False,
+            'error': 'Выберите хотя бы одну неисправность из списка — «Другое» своего рецепта не имеет.'
+        })
+
+    added, shortages = apply_fault_templates(order, fault_types, request.user)
+    if not added:
+        return JsonResponse({
+            'success': False,
+            'error': 'В рецепте выбранных неисправностей деталей не указано.'
+        })
+
+    lines = ', '.join(f'{part.name} ×{quantity}' for part, quantity in added)
+    message = f'Шаблон применён, в заказ добавлено: {lines}.'
+    if shortages:
+        names = ', '.join(sorted({part.name for part in shortages}))
+        message += f' Внимание: не хватило на складе — {names}, списано с отрицательным остатком.'
+
+    return JsonResponse({'success': True, 'message': message, 'count': len(added)})
 
 
 @login_required
@@ -2364,6 +2524,20 @@ def ajax_equipment_history_summary(request, pk):
             reverse('repair_order_detail', args=[warranty.repair_order_id])
             if warranty else ''
         ),
+    })
+
+
+@login_required
+def ajax_equipment_faults(request, pk):
+    """Типовые неисправности модели этой единицы оборудования — для выбора
+    в строке заказа. Список зависит от того, какое оборудование выбрано
+    в конкретной строке, и меняется вместе с ним, поэтому тянется отдельным
+    запросом, а не единым списком по всем моделям сразу."""
+    equipment = get_object_or_404(Equipment.objects.select_related('model'), pk=pk)
+    faults = FaultType.objects.filter(equipment_model_id=equipment.model_id).order_by('name')
+    return JsonResponse({
+        'success': True,
+        'faults': [{'id': fault.id, 'name': fault.name} for fault in faults],
     })
 
 

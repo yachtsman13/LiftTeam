@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оборудование — LiftTeam v2.42.0{% endblock %}
+{% block title %}Оборудование — LiftTeam v2.43.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -8,6 +8,7 @@
     <div>
         <a href="{% url 'equipment_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success me-2"><i class="bi bi-file-earmark-excel me-2"></i>В Excel</a>
         <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-primary me-2"><i class="bi bi-list me-2"></i>Модели</a>
+        <a href="{% url 'fault_type_list' %}" class="btn btn-outline-primary me-2"><i class="bi bi-clipboard2-pulse me-2"></i>Неисправности</a>
         <a href="{% url 'equipment_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новое оборудование</a>
     </div>
 </div>

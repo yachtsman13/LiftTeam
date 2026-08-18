@@ -1,9 +1,9 @@
 """
-Настройка Django Admin для LiftTeam v2.42.0.
+Настройка Django Admin для LiftTeam v2.43.0.
 """
 from django.contrib import admin
 from .models import (
-    Employee, Client, EquipmentModel, Equipment, RepairOrder,
+    Employee, Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
     RepairOrderEquipment, OrderStatusHistory, SparePart, StorageCell, RepairOrderDetail,
     StockMovement, Payment
 )
@@ -40,6 +40,20 @@ class EquipmentAdmin(admin.ModelAdmin):
     list_display = ['model', 'serial_number', 'current_client']
     search_fields = ['serial_number', 'model__name']
     list_filter = ['model']
+
+
+class FaultTypePartInline(admin.TabularInline):
+    model = FaultTypePart
+    extra = 1
+    autocomplete_fields = ['part']
+
+
+@admin.register(FaultType)
+class FaultTypeAdmin(admin.ModelAdmin):
+    list_display = ['name', 'equipment_model']
+    list_filter = ['equipment_model']
+    search_fields = ['name', 'equipment_model__name']
+    inlines = [FaultTypePartInline]
 
 
 class RepairOrderEquipmentInline(admin.TabularInline):

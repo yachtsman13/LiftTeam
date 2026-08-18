@@ -1,12 +1,13 @@
 """
-Формы для LiftTeam v2.42.0.
+Формы для LiftTeam v2.43.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
 from django.core import validators
 from django.forms import inlineformset_factory
 from .models import (
-    Cabinet, Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
+    Cabinet, Client, EquipmentModel, Equipment, FaultType, FaultTypePart,
+    RepairOrder, RepairOrderEquipment,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
 )
@@ -95,6 +96,42 @@ class EquipmentModelForm(forms.ModelForm):
         }
 
 
+class FaultTypeForm(forms.ModelForm):
+    class Meta:
+        model = FaultType
+        fields = ['equipment_model', 'name', 'description']
+        widgets = {
+            'equipment_model': forms.Select(attrs={'class': 'form-select'}),
+            'name': forms.TextInput(attrs={'class': 'form-control'}),
+            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'equipment_model': 'Модель оборудования',
+            'name': 'Неисправность',
+            'description': 'Описание',
+        }
+
+
+class FaultTypePartForm(forms.ModelForm):
+    class Meta:
+        model = FaultTypePart
+        fields = ['part', 'quantity']
+        widgets = {
+            'part': forms.Select(attrs={'class': 'form-select'}),
+            'quantity': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+        }
+        labels = {
+            'part': 'Деталь',
+            'quantity': 'Типовое количество',
+        }
+
+
+FaultTypePartFormSet = inlineformset_factory(
+    FaultType, FaultTypePart, form=FaultTypePartForm,
+    extra=1, can_delete=True
+)
+
+
 class EquipmentForm(forms.ModelForm):
     class Meta:
         model = Equipment
@@ -135,13 +172,31 @@ class RepairOrderForm(forms.ModelForm):
         }
 
 
+class FaultSelectMultiple(forms.SelectMultiple):
+    """Как обычный multiple-select, но с одним не относящимся к модели
+    вариантом — «Другое (не из списка)».
+
+    Он существует только ради интерфейса: сигнализирует, что случая ещё нет
+    в справочнике, и по нему кнопка «Применить шаблон» в форме заказа
+    становится неактивной. Значение выбрасывается до того, как поле формы
+    проверит присланные id по базе — иначе этот псевдо-вариант проверки
+    не прошёл бы и ошибочно завернул сохранение всей строки оборудования.
+    """
+    OTHER_VALUE = 'other'
+
+    def value_from_datadict(self, data, files, name):
+        values = super().value_from_datadict(data, files, name)
+        return [v for v in values if v != self.OTHER_VALUE]
+
+
 class RepairOrderEquipmentForm(forms.ModelForm):
     class Meta:
         model = RepairOrderEquipment
-        fields = ['equipment', 'fault_description', 'work_performed', 'seal_numbers', 'initial_condition', 'repair_cost', 'yandex_disk_folder']
+        fields = ['equipment', 'fault_description', 'faults', 'work_performed', 'seal_numbers', 'initial_condition', 'repair_cost', 'yandex_disk_folder']
         widgets = {
             'equipment': forms.Select(attrs={'class': 'form-select'}),
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Описание неисправности'}),
+            'faults': FaultSelectMultiple(attrs={'class': 'form-select fault-select', 'size': 4}),
             'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Что сделали — попадёт в акт выполненных работ'}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Номера пломб'}),
             'initial_condition': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'placeholder': 'Начальное состояние'}),
@@ -151,12 +206,30 @@ class RepairOrderEquipmentForm(forms.ModelForm):
         labels = {
             'equipment': 'Оборудование',
             'fault_description': 'Неисправность',
+            'faults': 'Типовые неисправности',
             'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'initial_condition': 'Начальное состояние',
             'repair_cost': 'Стоимость ремонта',
             'yandex_disk_folder': 'Папка на Яндекс.Диске',
         }
+
+    def clean(self):
+        """Типовая неисправность выбирается по модели оборудования этой
+        строки; выбор чужой (например, после ручной подмены запроса)
+        не должен молча осесть в базе."""
+        cleaned = super().clean()
+        faults = cleaned.get('faults')
+        equipment = cleaned.get('equipment')
+        if faults and equipment:
+            mismatched = [f for f in faults if f.equipment_model_id != equipment.model_id]
+            if mismatched:
+                names = ', '.join(f.name for f in mismatched)
+                self.add_error(
+                    'faults',
+                    f'Не относится к модели «{equipment.model.name}»: {names}'
+                )
+        return cleaned
 
 
 RepairOrderEquipmentFormSet = inlineformset_factory(

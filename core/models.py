@@ -1,7 +1,8 @@
 """
-Модели данных для LiftTeam v2.42.0.
-Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
-          RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
+Модели данных для LiftTeam v2.43.0.
+Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
+          RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
+          Employee (User extension).
 """
 import calendar
 import re
@@ -454,6 +455,55 @@ class Equipment(models.Model):
         # Порядок по возрастанию даты: последняя запись по единице затирает
         # предыдущие, и в словаре остаётся самый свежий ремонт
         return {visit.equipment_id: visit for visit in visits}
+
+
+class FaultType(models.Model):
+    """Типовая неисправность конкретной модели оборудования.
+
+    Неисправности и набор деталей для их устранения повторяются в рамках
+    одной модели — вместо того чтобы каждый раз вписывать список деталей
+    заново, инженер один раз заводит здесь «рецепт» (см. `FaultTypePart`)
+    и потом применяет его в заказе. Применение только предлагает список —
+    сам рецепт при этом не меняется, см. `FaultTypePart` и
+    `RepairOrderEquipment.faults`.
+    """
+    equipment_model = models.ForeignKey(
+        EquipmentModel, on_delete=models.CASCADE, related_name='fault_types',
+        verbose_name='Модель оборудования'
+    )
+    name = models.CharField('Неисправность', max_length=255)
+    description = models.TextField('Описание', blank=True)
+
+    class Meta:
+        verbose_name = 'Типовая неисправность'
+        verbose_name_plural = 'Типовые неисправности'
+        ordering = ['equipment_model__name', 'name']
+
+    def __str__(self):
+        return f'{self.name} ({self.equipment_model.name})'
+
+
+class FaultTypePart(models.Model):
+    """Строка рецепта: деталь и её типовое количество для одной неисправности.
+
+    Деталь связана строкой, а не парой (неисправность, деталь) в самой
+    `FaultType` — неисправностей с несколькими деталями в рецепте
+    большинство, отсюда и отдельная модель, по образцу `RepairOrderDetail`.
+    """
+    fault_type = models.ForeignKey(
+        FaultType, on_delete=models.CASCADE, related_name='parts',
+        verbose_name='Неисправность'
+    )
+    # Строкой вперёд: SparePart объявлена ниже по файлу
+    part = models.ForeignKey('SparePart', on_delete=models.CASCADE, verbose_name='Деталь')
+    quantity = models.IntegerField('Типовое количество', validators=[MinValueValidator(1)])
+
+    class Meta:
+        verbose_name = 'Деталь в рецепте неисправности'
+        verbose_name_plural = 'Детали в рецепте неисправности'
+
+    def __str__(self):
+        return f'{self.part.name} x{self.quantity}'
 
 
 class RepairOrderQuerySet(models.QuerySet):
@@ -944,6 +994,15 @@ class RepairOrderEquipment(models.Model):
         Equipment, on_delete=models.CASCADE, verbose_name='Оборудование'
     )
     fault_description = models.TextField('Описание неисправности', blank=True)
+    # Типовые неисправности из справочника — необязательные и не заменяют
+    # fault_description: свободный текст остаётся для случаев, которых
+    # в справочнике ещё нет («не из списка»). Выбор отсюда лишь предлагает
+    # типовой рецепт деталей (см. repair_order_apply_fault_template) — сам
+    # список выбранных неисправностей ни на что другое не влияет.
+    faults = models.ManyToManyField(
+        FaultType, blank=True, related_name='order_equipments',
+        verbose_name='Типовые неисправности'
+    )
     # Что сделали — не то же самое, что было заявлено сломанным. В акте
     # выполненных работ должно стоять именно это; пока поля не было,
     # в акт попадала неисправность, то есть неправда в подписываемом документе
