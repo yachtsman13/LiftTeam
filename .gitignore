@@ -36,3 +36,6 @@ env/
 .DS_Store
 Thumbs.db
 *.lnk
+
+# Служебные копии рабочего каталога для фоновых агентов Claude Code
+.claude/worktrees/
