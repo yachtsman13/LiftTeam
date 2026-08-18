@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.50.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.50.1{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -295,10 +295,23 @@ document.addEventListener('click', function(e) {
     if (button) applyFaultTemplate(button);
 });
 
-// Первоначальная фильтрация
-updateEquipmentOptions();
-document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
-document.querySelectorAll('.fault-select').forEach(updateApplyButtonState);
+/* Первоначальная настройка — после разбора страницы, а не сразу.
+ *
+ * Этот скрипт стоит в теле страницы, а общие скрипты подключены ниже, уже
+ * за содержимым. Выполняясь сразу, showEquipmentHistory обращался к
+ * LiftTeamWS, которого в этот момент ещё нет: на странице правки заказа,
+ * где оборудование уже выбрано, подсказка «эта единица уже обслуживалась,
+ * гарантия действует до…» падала с ошибкой и не показывалась вовсе.
+ * На странице нового заказа этого не было видно — там выбирать ещё нечего.
+ *
+ * К DOMContentLoaded подключены все скрипты страницы, поэтому LiftTeamWS
+ * уже на месте.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    updateEquipmentOptions();
+    document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
+    document.querySelectorAll('.fault-select').forEach(updateApplyButtonState);
+});
 
 /*
  * Новая строка берётся из заготовки `formset.empty_form`, а не копируется

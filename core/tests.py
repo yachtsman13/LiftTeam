@@ -1629,7 +1629,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.50.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.26.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -8591,3 +8591,32 @@ class InvoiceProviderChoiceOnTheFormTests(TestCase):
         self.http.force_login(boss)
 
         self.assertEqual(self.http.get(self._url()).status_code, 200)
+
+
+class OrderFormStartupTests(TestCase):
+    """Первоначальная настройка формы заказа ждёт разбора страницы.
+
+    Скрипт формы стоит в теле страницы, а общие скрипты подключены ниже,
+    за содержимым. Выполняясь сразу, он обращался к LiftTeamWS, которого
+    в этот момент ещё нет: на странице правки заказа, где оборудование
+    уже выбрано, подсказка «эта единица уже обслуживалась» падала
+    с ошибкой и не показывалась вовсе. На новом заказе это было незаметно —
+    там выбирать ещё нечего.
+    """
+
+    def setUp(self):
+        self.form = (settings.BASE_DIR / 'core/templates/core/repair_orders/form.html').read_text(
+            encoding='utf-8'
+        )
+
+    def test_startup_waits_for_dom(self):
+        startup = self.form.index("document.querySelectorAll('select[name*=\"-equipment\"]').forEach(showEquipmentHistory)")
+        handler = self.form.index("document.addEventListener('DOMContentLoaded'")
+        self.assertLess(handler, startup,
+                        'первоначальная настройка должна быть внутри DOMContentLoaded')
+
+    def test_shared_scripts_load_before_extra_js(self):
+        """Общие скрипты подключены раньше блока extra_js — иначе перенос
+        настройки в него ничего бы не дал."""
+        base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+        self.assertLess(base.index('js/ws-connection.js'), base.index('{% block extra_js %}'))
