@@ -1,5 +1,5 @@
 """
-Утилиты для LiftTeam v2.44.0.
+Утилиты для LiftTeam v2.45.0.
 """
 import barcode
 from barcode.writer import ImageWriter
@@ -38,7 +38,26 @@ def build_workbook(sheet_title, headers, rows):
     """Книга Excel с одним листом: жирная шапка, закреплённая при прокрутке,
     ширина колонок по содержимому."""
     wb = openpyxl.Workbook()
-    ws = wb.active
+    add_sheet(wb, sheet_title, headers, rows, ws=wb.active)
+    return wb
+
+
+def add_sheet(wb, sheet_title, headers, rows, ws=None):
+    """Ещё один лист в уже существующей книге, с тем же оформлением, что
+    и у листа из `build_workbook` (жирная шапка, закреплена при прокрутке,
+    ширина колонок по содержимому).
+
+    Нужен, когда одна выгрузка — это несколько таблиц сразу с разными
+    столбцами (например, аналитика ремонта: по инженерам, по типу
+    неисправности, по загрузке — свести их в одну таблицу нельзя, у них
+    разный состав колонок).
+
+    `ws` — использовать конкретный лист вместо создания нового; так
+    `build_workbook` заполняет самый первый лист книги, а не добавляет
+    лишний пустой.
+    """
+    if ws is None:
+        ws = wb.create_sheet()
     # Excel не принимает названия листов длиннее 31 символа
     ws.title = sheet_title[:31]
 
@@ -68,7 +87,7 @@ def build_workbook(sheet_title, headers, rows):
         # длинное примечание не растягивало колонку на весь экран
         ws.column_dimensions[get_column_letter(index)].width = min(max(longest + 2, 10), 50)
 
-    return wb
+    return ws
 
 
 def xlsx_response(workbook, filename):

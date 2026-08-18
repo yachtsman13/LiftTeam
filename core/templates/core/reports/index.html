@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Отчёты — LiftTeam v2.44.0{% endblock %}
+{% block title %}Отчёты — LiftTeam v2.45.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -35,6 +35,16 @@
                 <h5>Задолженности</h5>
                 <p class="text-muted">Неоплаченные заказы</p>
                 <a href="{% url 'report_debtors' %}" class="btn btn-danger">Открыть</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-speedometer2 fs-1 text-info mb-3"></i>
+                <h5>Аналитика ремонта</h5>
+                <p class="text-muted">Сроки, загрузка по сотрудникам, типы неисправностей</p>
+                <a href="{% url 'report_repair_analytics' %}" class="btn btn-info">Открыть</a>
             </div>
         </div>
     </div>

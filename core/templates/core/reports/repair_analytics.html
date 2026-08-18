@@ -1,0 +1,142 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Аналитика ремонта — LiftTeam v2.45.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-speedometer2 me-2"></i>Аналитика ремонта</h2>
+    <div>
+        <a href="{% url 'report_repair_analytics_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success"><i class="bi bi-file-earmark-excel me-2"></i>В Excel</a>
+        <a href="{% url 'reports' %}" class="btn btn-outline-secondary ms-2"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+    </div>
+</div>
+
+{% if not is_admin %}
+<div class="alert alert-info">
+    Показаны только ваши собственные показатели — заказы, где вы последним
+    переводили заказ в ремонт (или в диагностику, если до ремонта не дошло).
+</div>
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small text-muted mb-1">С</label>
+                <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small text-muted mb-1">По</label>
+                <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-outline-primary w-100">Фильтр</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted">Завершено заказов за период</div>
+                <div class="display-6">{{ total_orders }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted">Среднее время ремонта, дней</div>
+                <div class="display-6">{% if avg_days is not None %}{{ avg_days }}{% else %}—{% endif %}</div>
+                <div class="small text-muted">от приёма до отгрузки или «ремонт невозможен»</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    {% if is_admin %}
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">По инженерам</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr><th>Сотрудник</th><th>Заказов</th><th>Среднее, дней</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in by_employee %}
+                            <tr>
+                                <td>{{ row.employee.full_name }}</td>
+                                <td>{{ row.orders }}</td>
+                                <td>{{ row.avg_days }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="3" class="text-center text-muted py-4">Нет завершённых заказов с определённым инженером за период</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="{% if is_admin %}col-md-6{% else %}col-md-12{% endif %}">
+        <div class="card h-100">
+            <div class="card-header">По типу неисправности</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr><th>Неисправность</th><th>Заказов</th><th>Среднее, дней</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in by_fault_type %}
+                            <tr>
+                                <td>{{ row.fault_type }}</td>
+                                <td>{{ row.orders }}</td>
+                                <td>{{ row.avg_days }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="3" class="text-center text-muted py-4">За период нет заказов с типовой неисправностью, выбранной из справочника</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-12">
+        <div class="card h-100">
+            <div class="card-header">
+                Текущая загрузка
+                <span class="small text-muted ms-2">открытых заказов сейчас, по последнему, кто их трогал</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr><th>Сотрудник</th><th>Открытых заказов</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in load_rows %}
+                            <tr>
+                                <td>{{ row.employee.full_name }}</td>
+                                <td>{{ row.count }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="2" class="text-center text-muted py-4">Открытых заказов нет</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

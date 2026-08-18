@@ -1,11 +1,12 @@
 """
-Views для LiftTeam v2.44.0.
+Views для LiftTeam v2.45.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
 import re
 import json
-from datetime import timedelta
+from collections import Counter, defaultdict
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 import openpyxl
 from django.shortcuts import render, get_object_or_404, redirect
@@ -43,7 +44,7 @@ from .forms import (
 )
 from .utils import (
     generate_qr_image,
-    build_workbook, xlsx_response, excel_datetime,
+    build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
 from . import messengers, notifications, tbank, updater
@@ -2410,6 +2411,286 @@ def report_debtors_export(request):
 
     wb = build_workbook('Задолженности', headers, rows)
     return xlsx_response(wb, f'Задолженности {timezone.localdate():%Y-%m-%d}.xlsx')
+
+
+# ==================== Аналитика по срокам и загрузке ремонта ====================
+#
+# У заказа нет поля «ответственный инженер» — есть только автор смены
+# статуса (`OrderStatusHistory.changed_by`). Везде ниже «инженер» — это
+# суррогат по этому автору, а не отдельно назначенный человек. Если
+# в модель когда-нибудь добавят настоящее поле ответственного, всю эту
+# группу функций нужно будет заменить на использование поля напрямую,
+# а не достраивать поверх суррогата.
+
+TERMINAL_STATUSES = ('shipped', 'unrepairable')
+
+
+def _repair_analytics_period(request):
+    """Диапазон дат отчёта — по умолчанию последние 30 дней."""
+    default_to = timezone.localdate()
+    default_from = default_to - timedelta(days=30)
+    date_from = parse_date(request.GET.get('date_from', '')) or default_from
+    date_to = parse_date(request.GET.get('date_to', '')) or default_to
+    return date_from, date_to
+
+
+def _completed_orders_in_period(date_from, date_to):
+    """Заказы, завершённые (отгружены или признаны неремонтопригодными)
+    в периоде — {id заказа: запись истории о завершении}.
+
+    Момент завершения берём из истории статусов, а не из полей заказа
+    (`date_completed` / `shipping_date`): они не всегда заполнены
+    единообразно для обоих терминальных статусов, а история переходов —
+    общий надёжный источник для обоих случаев. Если заказ побывал
+    в терминальном статусе несколько раз, берётся самая свежая запись.
+    """
+    start = timezone.make_aware(datetime.combine(date_from, time.min))
+    end = timezone.make_aware(datetime.combine(date_to, time.max))
+    entries = (
+        OrderStatusHistory.objects
+        .filter(status__in=TERMINAL_STATUSES, changed_at__gte=start, changed_at__lte=end)
+        .order_by('order_id', '-changed_at')
+    )
+    latest = {}
+    for entry in entries:
+        latest.setdefault(entry.order_id, entry)
+    return latest
+
+
+def _order_assignees(order_ids):
+    """Сотрудник-суррогат «ответственного инженера» для каждого заказа
+    из `order_ids` — {id заказа: id сотрудника}, без записи для заказов
+    без суррогата.
+
+    Правило (см. заголовок раздела): тот, кто последним перевёл заказ
+    в статус «Ремонт»; если такого перехода не было — тот, кто последним
+    перевёл в «Диагностика» (ремонт признан невозможным без попытки
+    чинить). Если нет и такого перехода — у заказа нет персонального
+    инженера в этой статистике, но он участвует в общих средних без
+    разбивки по человеку.
+    """
+    if not order_ids:
+        return {}
+    entries = (
+        OrderStatusHistory.objects
+        .filter(order_id__in=order_ids, status__in=('repair', 'diagnostic'),
+                changed_by__isnull=False)
+        .order_by('changed_at')
+        .values('order_id', 'status', 'changed_by_id')
+    )
+    repair_by_order = {}
+    diagnostic_by_order = {}
+    for entry in entries:
+        # Записи идут по возрастанию времени, так что более позднее
+        # присвоение в словарь всегда затирает более раннее — в итоге
+        # остаётся именно последний переход в каждый из двух статусов
+        target = repair_by_order if entry['status'] == 'repair' else diagnostic_by_order
+        target[entry['order_id']] = entry['changed_by_id']
+    return {
+        order_id: repair_by_order[order_id] if order_id in repair_by_order
+        else diagnostic_by_order[order_id]
+        for order_id in order_ids
+        if order_id in repair_by_order or order_id in diagnostic_by_order
+    }
+
+
+def _order_fault_types(order_ids):
+    """{id заказа: {id типовой неисправности: название}} — только для
+    единиц оборудования, где неисправность выбрана из справочника
+    (Этап 3, `RepairOrderEquipment.faults`). Заказ, где указан только
+    свободный текст («Другое»), в разбивку по типу не попадает."""
+    if not order_ids:
+        return {}
+    result = defaultdict(dict)
+    roe_qs = (
+        RepairOrderEquipment.objects
+        .filter(repair_order_id__in=order_ids)
+        .prefetch_related('faults')
+    )
+    for roe in roe_qs:
+        for fault in roe.faults.all():
+            result[roe.repair_order_id][fault.id] = str(fault)
+    return result
+
+
+def _repair_analytics_data(date_from, date_to, viewer=None):
+    """Показатели отчёта за период.
+
+    `viewer=None` — полный отчёт по всем сотрудникам (только для роли
+    `admin`). `viewer=<Employee>` — все показатели ограничены заказами,
+    где этот сотрудник — инженер-суррогат (см. `_order_assignees`);
+    у остальных ролей своих коллег в отчёте не видно вовсе.
+    """
+    completions = _completed_orders_in_period(date_from, date_to)
+    order_ids = list(completions.keys())
+    orders = {
+        o.pk: o for o in
+        RepairOrder.objects.filter(pk__in=order_ids).only('pk', 'date_received')
+    }
+    assignees = _order_assignees(order_ids)
+
+    if viewer is not None:
+        order_ids = [oid for oid in order_ids if assignees.get(oid) == viewer.pk]
+
+    fault_types = _order_fault_types(order_ids)
+
+    durations = []
+    by_employee = defaultdict(list)
+    by_fault = defaultdict(list)
+    fault_names = {}
+
+    for order_id in order_ids:
+        order = orders.get(order_id)
+        if order is None or order.date_received is None:
+            continue
+        completion = completions[order_id]
+        duration = (completion.changed_at - order.date_received).total_seconds() / 86400
+        durations.append(duration)
+
+        assignee_id = assignees.get(order_id)
+        if assignee_id:
+            by_employee[assignee_id].append(duration)
+
+        for fault_id, name in fault_types.get(order_id, {}).items():
+            by_fault[fault_id].append(duration)
+            fault_names[fault_id] = name
+
+    def _avg(values):
+        return round(sum(values) / len(values), 1) if values else None
+
+    employees = {e.pk: e for e in Employee.objects.filter(pk__in=by_employee.keys())}
+    by_employee_rows = sorted(
+        (
+            {'employee': employees[emp_id], 'orders': len(vals), 'avg_days': _avg(vals)}
+            for emp_id, vals in by_employee.items() if emp_id in employees
+        ),
+        key=lambda row: row['employee'].full_name,
+    )
+    by_fault_rows = sorted(
+        (
+            {'fault_type': fault_names[fault_id], 'orders': len(vals), 'avg_days': _avg(vals)}
+            for fault_id, vals in by_fault.items()
+        ),
+        key=lambda row: row['fault_type'],
+    )
+
+    return {
+        'total_orders': len(durations),
+        'avg_days': _avg(durations),
+        'by_employee': by_employee_rows,
+        'by_fault_type': by_fault_rows,
+    }
+
+
+def _current_load():
+    """Текущая загрузка — {id сотрудника: число открытых заказов сейчас}.
+
+    «Открытый» — статус из `RepairOrder.OPEN_STATUSES`. Заказ считается
+    закреплённым за сотрудником, который последним оставил запись в его
+    истории статусов, независимо от того, что именно эта запись меняла
+    (статус ремонта, статус оплаты или ничего из этого): кто последним
+    трогал заказ, тот сейчас его и ведёт. Тот же суррогат «ответственного
+    инженера», что и у остальных функций этого раздела, только по
+    другому правилу — здесь неважно, в какой статус был переход.
+    """
+    open_ids = list(RepairOrder.objects.open().values_list('pk', flat=True))
+    if not open_ids:
+        return Counter()
+    entries = (
+        OrderStatusHistory.objects
+        .filter(order_id__in=open_ids)
+        .order_by('order_id', '-changed_at')
+        .values('order_id', 'changed_by_id')
+    )
+    latest_author = {}
+    for entry in entries:
+        latest_author.setdefault(entry['order_id'], entry['changed_by_id'])
+    counts = Counter(latest_author.values())
+    counts.pop(None, None)
+    return counts
+
+
+@login_required
+def report_repair_analytics(request):
+    """Аналитика по срокам ремонта и загрузке инженеров.
+
+    Роль `admin` видит показатели по всем сотрудникам; любая другая роль —
+    только свои собственные (не отчёт целиком и не показатели коллег).
+    «Инженер» здесь — суррогат, см. докстринг раздела выше.
+    """
+    date_from, date_to = _repair_analytics_period(request)
+    is_admin = request.user.role == 'admin'
+    viewer = None if is_admin else request.user
+
+    data = _repair_analytics_data(date_from, date_to, viewer=viewer)
+
+    load_counts = _current_load()
+    if is_admin:
+        load_rows = sorted(
+            (
+                {'employee': e, 'count': load_counts.get(e.pk, 0)}
+                for e in Employee.objects.filter(is_active=True)
+            ),
+            key=lambda row: (-row['count'], row['employee'].full_name),
+        )
+    else:
+        load_rows = [{'employee': request.user, 'count': load_counts.get(request.user.pk, 0)}]
+
+    return render(request, 'core/reports/repair_analytics.html', {
+        'date_from': date_from.isoformat(),
+        'date_to': date_to.isoformat(),
+        'is_admin': is_admin,
+        'total_orders': data['total_orders'],
+        'avg_days': data['avg_days'],
+        'by_employee': data['by_employee'],
+        'by_fault_type': data['by_fault_type'],
+        'load_rows': load_rows,
+    })
+
+
+@login_required
+def report_repair_analytics_export(request):
+    """Та же аналитика в Excel — тремя листами (по инженерам, по типу
+    неисправности, по текущей загрузке). Права доступа те же, что
+    и у страницы отчёта."""
+    date_from, date_to = _repair_analytics_period(request)
+    is_admin = request.user.role == 'admin'
+    viewer = None if is_admin else request.user
+
+    data = _repair_analytics_data(date_from, date_to, viewer=viewer)
+
+    load_counts = _current_load()
+    if is_admin:
+        load_rows = [
+            (e.full_name, load_counts.get(e.pk, 0))
+            for e in Employee.objects.filter(is_active=True).order_by('full_name')
+        ]
+    else:
+        load_rows = [(request.user.full_name, load_counts.get(request.user.pk, 0))]
+
+    wb = build_workbook(
+        'По инженерам',
+        ['Сотрудник', 'Заказов', 'Среднее время ремонта, дней'],
+        [
+            [row['employee'].full_name, row['orders'], row['avg_days']]
+            for row in data['by_employee']
+        ],
+    )
+    add_sheet(
+        wb, 'По типу неисправности',
+        ['Тип неисправности', 'Заказов', 'Среднее время ремонта, дней'],
+        [
+            [row['fault_type'], row['orders'], row['avg_days']]
+            for row in data['by_fault_type']
+        ],
+    )
+    add_sheet(
+        wb, 'Текущая загрузка',
+        ['Сотрудник', 'Открытых заказов'],
+        [[name, count] for name, count in load_rows],
+    )
+
+    return xlsx_response(wb, f'Аналитика ремонта {timezone.localdate():%Y-%m-%d}.xlsx')
 
 
 # ==================== AJAX: Создание из формы заказа ====================

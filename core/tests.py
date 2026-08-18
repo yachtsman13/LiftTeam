@@ -1625,7 +1625,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.44.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.45.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -3717,6 +3717,258 @@ class OrderOverdueTests(TestCase):
         self._order('unrepairable', days_ago=1)
 
         self.assertEqual(list(RepairOrder.objects.open()), [open_order])
+
+
+class RepairAnalyticsTests(TestCase):
+    """Отчёт «Аналитика ремонта»: средние сроки, загрузка, разбивка по
+    типу неисправности, права доступа.
+
+    «Инженер» в отчёте — суррогат вместо отсутствующего поля
+    «ответственный»: сотрудник, который последним перевёл заказ в статус
+    «Ремонт», а если такого перехода не было — в «Диагностика» (см.
+    `core.views._order_assignees`).
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_ra', full_name='Админ', password='pass')
+        self.manager1 = Employee.objects.create_user(
+            username='rm1_ra', full_name='Иванов', password='pass', role='repair_manager')
+        self.manager2 = Employee.objects.create_user(
+            username='rm2_ra', full_name='Петров', password='pass', role='repair_manager')
+        Employee.objects.create_user(
+            username='sklad_ra', full_name='Кладовщик', password='pass', role='warehouse')
+        self.client_http = TestClient()
+
+        self.model = EquipmentModel.objects.create(name='БУАД-аналитика')
+        self.client_obj = ClientModel.objects.create(name='ООО Аналитика')
+        self.fault_a = FaultType.objects.create(equipment_model=self.model, name='Не включается')
+        self.fault_b = FaultType.objects.create(equipment_model=self.model, name='Перегрев')
+
+        self._serial = 0
+
+    def _equipment(self):
+        self._serial += 1
+        return Equipment.objects.create(model=self.model, serial_number=f'SN-RA-{self._serial}')
+
+    def _make_order(self, received_days_ago, transitions, faults=()):
+        """Заказ с управляемой историей: `transitions` — список
+        (статус, сколько дней назад, кто сменил), от старой записи
+        к новой. Дата приёма и `changed_at` каждой записи истории
+        (включая автосозданную при создании) ставятся задним числом —
+        auto_now_add применяет их только при создании, а дальше это
+        делается через queryset.update()."""
+        order = RepairOrder.objects.create(client=self.client_obj, status='accepted')
+        when_received = timezone.now() - datetime.timedelta(days=received_days_ago)
+        RepairOrder.objects.filter(pk=order.pk).update(date_received=when_received)
+        OrderStatusHistory.objects.filter(order=order).update(changed_at=when_received)
+
+        final_status = 'accepted'
+        for status, days_ago, changed_by in transitions:
+            entry = OrderStatusHistory.objects.create(
+                order=order, status=status, changed_by=changed_by)
+            when = timezone.now() - datetime.timedelta(days=days_ago)
+            OrderStatusHistory.objects.filter(pk=entry.pk).update(changed_at=when)
+            final_status = status
+
+        RepairOrder.objects.filter(pk=order.pk).update(status=final_status)
+
+        roe = RepairOrderEquipment.objects.create(repair_order=order, equipment=self._equipment())
+        if faults:
+            roe.faults.set(faults)
+
+        order.refresh_from_db()
+        return order
+
+    def _build_dataset(self):
+        # Заказ 1: диагностика → ремонт → отгружен. Инженер — тот, кто вёл
+        # ремонт (manager1), а не тот, кто отгрузил (manager2).
+        # Приём 10 дн. назад, отгрузка 1 дн. назад — длительность 9 дней.
+        self.order1 = self._make_order(
+            received_days_ago=10,
+            transitions=[
+                ('diagnostic', 9, self.manager1),
+                ('repair', 8, self.manager1),
+                ('shipped', 1, self.manager2),
+            ],
+            faults=[self.fault_a],
+        )
+        # Заказ 2: до ремонта не дошло — диагностика → ремонт невозможен.
+        # Инженер — тот, кто вёл диагностику. Приём 6 дн., завершение 2 дн.
+        # назад — длительность 4 дня. Неисправность не из справочника.
+        self.order2 = self._make_order(
+            received_days_ago=6,
+            transitions=[
+                ('diagnostic', 5, self.manager2),
+                ('unrepairable', 2, self.manager2),
+            ],
+        )
+        # Заказ 3: отгружен без диагностики и ремонта вовсе (редкий, но
+        # возможный случай) — своего инженера в статистике не имеет.
+        # Приём 20 дн., отгрузка 15 дн. назад — длительность 5 дней.
+        self.order3 = self._make_order(
+            received_days_ago=20,
+            transitions=[('shipped', 15, self.manager1)],
+        )
+
+    def _get(self, employee, url='/reports/repair-analytics/', **params):
+        self.client_http.force_login(employee)
+        return self.client_http.get(url, params)
+
+    def test_average_repair_duration_is_computed_correctly(self):
+        self._build_dataset()
+
+        resp = self._get(self.admin, date_from='2000-01-01')
+
+        self.assertEqual(resp.context['total_orders'], 3)
+        # (9 + 4 + 5) / 3 = 6.0
+        self.assertEqual(resp.context['avg_days'], 6.0)
+
+    def test_duration_is_grouped_by_surrogate_engineer(self):
+        self._build_dataset()
+
+        resp = self._get(self.admin, date_from='2000-01-01')
+
+        by_employee = {row['employee'].pk: row for row in resp.context['by_employee']}
+        self.assertEqual(by_employee[self.manager1.pk]['orders'], 1)
+        self.assertEqual(by_employee[self.manager1.pk]['avg_days'], 9.0)
+        self.assertEqual(by_employee[self.manager2.pk]['orders'], 1)
+        self.assertEqual(by_employee[self.manager2.pk]['avg_days'], 4.0)
+
+    def test_an_order_without_a_repair_or_diagnostic_transition_has_no_engineer(self):
+        """Заказ 3 не входит ни в чью персональную разбивку, но входит
+        в общее среднее (проверено выше — там total_orders включает все три)."""
+        self._build_dataset()
+
+        resp = self._get(self.admin, date_from='2000-01-01')
+
+        assigned_orders = sum(row['orders'] for row in resp.context['by_employee'])
+        self.assertEqual(assigned_orders, 2)  # заказ 3 не учтён ни у кого
+
+    def test_fault_type_breakdown_only_counts_orders_with_a_chosen_fault_type(self):
+        self._build_dataset()
+
+        resp = self._get(self.admin, date_from='2000-01-01')
+
+        by_fault = {row['fault_type']: row for row in resp.context['by_fault_type']}
+        self.assertEqual(list(by_fault.keys()), [str(self.fault_a)])
+        self.assertEqual(by_fault[str(self.fault_a)]['orders'], 1)
+        self.assertEqual(by_fault[str(self.fault_a)]['avg_days'], 9.0)
+
+    def test_period_filter_excludes_orders_completed_outside_it(self):
+        self._build_dataset()
+
+        # Только заказ 1 (отгружен 1 день назад) попадает в узкое окно —
+        # заказ 2 (завершён 2 дня назад) уже за его границей
+        today = timezone.localdate()
+        resp = self._get(
+            self.admin,
+            date_from=(today - datetime.timedelta(days=1)).isoformat(),
+            date_to=today.isoformat(),
+        )
+
+        self.assertEqual(resp.context['total_orders'], 1)
+        self.assertEqual(resp.context['avg_days'], 9.0)
+
+    def test_current_load_counts_open_orders_by_the_last_person_who_touched_them(self):
+        self._make_order(
+            received_days_ago=4,
+            transitions=[('diagnostic', 3, self.manager1), ('repair', 2, self.manager1)],
+        )
+        self._make_order(
+            received_days_ago=2,
+            transitions=[('diagnostic', 1, self.manager2)],
+        )
+        # Только что создан, статус ремонта не менялся вовсе — не в чьей
+        # загрузке не отражается (у автосозданной записи истории нет автора)
+        RepairOrder.objects.create(client=self.client_obj, status='accepted')
+
+        resp = self._get(self.admin)
+
+        load = {row['employee'].pk: row['count'] for row in resp.context['load_rows']}
+        self.assertEqual(load[self.manager1.pk], 1)
+        self.assertEqual(load[self.manager2.pk], 1)
+
+    def test_current_load_ignores_completed_orders(self):
+        self._build_dataset()  # все три завершены (отгружены/неремонтопригодны)
+
+        resp = self._get(self.admin)
+
+        load = {row['employee'].pk: row['count'] for row in resp.context['load_rows']}
+        self.assertEqual(load.get(self.manager1.pk, 0), 0)
+        self.assertEqual(load.get(self.manager2.pk, 0), 0)
+
+    def test_admin_sees_the_whole_report(self):
+        self._build_dataset()
+
+        resp = self._get(self.admin, date_from='2000-01-01')
+
+        self.assertTrue(resp.context['is_admin'])
+        self.assertEqual(resp.context['total_orders'], 3)
+        self.assertEqual(len(resp.context['by_employee']), 2)
+
+    def test_a_non_admin_role_sees_only_their_own_figures(self):
+        """Менеджер по ремонту не должен видеть ни отчёт целиком, ни
+        показатели коллеги — только свой заказ 1 (manager2 к нему не
+        имеет отношения, хотя и отгружал его)."""
+        self._build_dataset()
+
+        resp = self._get(self.manager1, date_from='2000-01-01')
+
+        self.assertFalse(resp.context['is_admin'])
+        self.assertEqual(resp.context['total_orders'], 1)
+        self.assertEqual(resp.context['avg_days'], 9.0)
+
+    def test_a_non_admin_role_does_not_see_a_colleagues_load(self):
+        self._make_order(
+            received_days_ago=4,
+            transitions=[('diagnostic', 3, self.manager1), ('repair', 2, self.manager1)],
+        )
+        self._make_order(
+            received_days_ago=2,
+            transitions=[('diagnostic', 1, self.manager2)],
+        )
+
+        resp = self._get(self.manager1)
+
+        self.assertEqual(len(resp.context['load_rows']), 1)
+        self.assertEqual(resp.context['load_rows'][0]['employee'], self.manager1)
+        self.assertEqual(resp.context['load_rows'][0]['count'], 1)
+
+    def test_a_role_with_no_repairs_of_its_own_sees_an_empty_personal_report(self):
+        self._build_dataset()
+        warehouse = Employee.objects.get(username='sklad_ra')
+
+        resp = self._get(warehouse, date_from='2000-01-01')
+
+        self.assertFalse(resp.context['is_admin'])
+        self.assertEqual(resp.context['total_orders'], 0)
+
+    def test_the_report_page_loads_without_error(self):
+        self._build_dataset()
+
+        resp = self._get(self.admin)
+
+        self.assertEqual(resp.status_code, 200)
+
+    def test_export_has_three_sheets_with_the_expected_data(self):
+        self._build_dataset()
+        self.client_http.force_login(self.admin)
+
+        resp = self.client_http.get('/reports/repair-analytics/export/', {'date_from': '2000-01-01'})
+
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        self.assertEqual(
+            set(wb.sheetnames),
+            {'По инженерам', 'По типу неисправности', 'Текущая загрузка'},
+        )
+
+        engineers = {row[0].value: row[1].value for row in wb['По инженерам'].iter_rows(min_row=2)}
+        self.assertEqual(engineers.get('Иванов'), 1)
+
+        faults = {row[0].value: row[1].value for row in wb['По типу неисправности'].iter_rows(min_row=2)}
+        self.assertEqual(faults.get(str(self.fault_a)), 1)
 
 
 class DebtReportTests(TestCase):
