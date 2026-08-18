@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.47.0
+v2.48.0
 """
 from django.urls import path
 from . import views
@@ -10,6 +10,7 @@ urlpatterns = [
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
     path('my-notifications/', views.my_notifications, name='my_notifications'),
+    path('presence/', views.presence, name='presence'),
 
     # Дашборд
     path('', views.dashboard, name='dashboard'),

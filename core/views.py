@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.47.0.
+Views для LiftTeam v2.48.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -111,6 +111,26 @@ def my_notifications(request):
     else:
         form = MyNotificationsForm(instance=request.user)
     return render(request, 'core/my_notifications.html', {'form': form})
+
+
+@login_required
+def presence(request):
+    """Кто из сотрудников сейчас на связи.
+
+    Видно всем вошедшим, роль не проверяем: это не надзор за подчинёнными,
+    а способ не идти через лабораторию к пустому терминалу. Тем же
+    декоратором закрыты склад и кассетницы; role_required оставлен
+    страницам с деньгами.
+
+    Список рисуется сразу из базы, а не ждёт сокета: отметки хранятся
+    в Employee.last_seen и переживают перезапуск сервера. Дальше страницу
+    обновляет ws/presence/.
+    """
+    employees = Employee.objects.filter(is_active=True)
+    return render(request, 'core/presence.html', {
+        'employees': employees,
+        'timeout_seconds': settings.PRESENCE_TIMEOUT_SECONDS,
+    })
 
 
 # ==================== ДАШБОРД ====================

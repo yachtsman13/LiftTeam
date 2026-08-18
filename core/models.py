@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.47.0.
+Модели данных для LiftTeam v2.48.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -177,6 +177,18 @@ class Employee(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)
     date_joined = models.DateTimeField('Дата регистрации', auto_now_add=True)
+    # Присутствие. Отметку обновляет живое WebSocket-соединение браузера
+    # (см. core/consumers.py::PresenceConsumer), а «в сети» — это функция
+    # от неё и таймаута PRESENCE_TIMEOUT_SECONDS, а не отдельный флаг.
+    # Флаг пришлось бы гасить при разрыве, а разрыв неотличим от заминки
+    # в сети; к тому же значение в базе переживает перезапуск сервера,
+    # и страница присутствия верна уже при первой загрузке.
+    #
+    # Обратная сторона: при закрытии браузера или выходе отметка нарочно
+    # не сбрасывается, поэтому человек считается в сети ещё до истечения
+    # таймаута, а затем показывается «был(а) в сети в ЧЧ:ММ». Это не сбой,
+    # а плата за то, что короткий обрыв связи не гасит индикатор.
+    last_seen = models.DateTimeField('Последняя активность', null=True, blank=True, db_index=True)
 
     objects = EmployeeManager()
 
@@ -196,6 +208,34 @@ class Employee(AbstractBaseUser, PermissionsMixin):
 
     def has_module_perms(self, app_label):
         return self.is_superuser
+
+    @staticmethod
+    def presence_cutoff():
+        """Граница «в сети»: отметки старше неё считаются устаревшими."""
+        return timezone.now() - timedelta(seconds=settings.PRESENCE_TIMEOUT_SECONDS)
+
+    @property
+    def is_online(self):
+        """Сотрудник считается в сети, пока отметка активности свежая.
+
+        Одно определение на всех: страница присутствия, рассылка по сокету
+        и тесты спрашивают именно его, чтобы «в сети» нигде не считалось
+        по-своему.
+        """
+        if self.last_seen is None:
+            return False
+        return self.last_seen >= self.presence_cutoff()
+
+    def touch_presence(self):
+        """Отметить активность.
+
+        Обновляем запросом к набору, а не save(): это дешевле, не поднимает
+        сигналы модели и не затирает поля, которые в это же время правит
+        кто-то другой (например, администратор в карточке сотрудника).
+        """
+        now = timezone.now()
+        Employee.objects.filter(pk=self.pk).update(last_seen=now)
+        self.last_seen = now
 
 
 class Organization(models.Model):

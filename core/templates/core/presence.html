@@ -1,0 +1,56 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Кто на связи — LiftTeam v2.48.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-broadcast me-2"></i>Кто на связи</h2>
+</div>
+
+{% comment %}
+    Пол сотрудников системе неизвестен, поэтому «был(а) в сети», а не
+    «был» или «была»: угадывать по имени нельзя, а ошибаться в обращении
+    к своим же коллегам — тем более.
+
+    Строки перерисовывает presence.js по данным из ws/presence/, поэтому
+    у каждой есть data-employee, а у меток — data-presence-dot
+    и data-presence-status. Первый показ считается на сервере, чтобы
+    страница была верной ещё до подключения сокета.
+{% endcomment %}
+<div class="card">
+    <div class="card-header">
+        Сотрудник считается в сети, пока его рабочее место отвечает.
+        Отметка обновляется автоматически, пока открыта любая страница программы.
+    </div>
+    <div class="card-body">
+        <div class="list-group list-group-flush" id="presenceList">
+            {% for employee in employees %}
+            <div class="list-group-item d-flex align-items-center gap-3 px-0" data-employee="{{ employee.pk }}">
+                <span class="presence-dot {% if employee.is_online %}presence-online{% else %}presence-offline{% endif %}" data-presence-dot></span>
+                <div class="flex-grow-1">
+                    <div class="fw-semibold">{{ employee.full_name }}</div>
+                    <div class="text-muted small">{{ employee.get_role_display }}</div>
+                </div>
+                <div class="text-end">
+                    {% if employee.is_online %}
+                    <span class="text-success small" data-presence-status>в сети</span>
+                    {% elif employee.last_seen %}
+                    <span class="text-muted small" data-presence-status>был(а) в сети в {{ employee.last_seen|time:"H:i" }}</span>
+                    {% else %}
+                    <span class="text-muted small" data-presence-status>не в сети — ни разу не заходил(а)</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% empty %}
+            <p class="text-muted mb-0">Сотрудников пока нет.</p>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="card-footer text-muted small">
+        Связь считается потерянной после {{ timeout_seconds }} секунд молчания —
+        это два подряд пропущенных сигнала, чтобы короткий обрыв сети не гасил
+        отметку. Закрытый браузер по этой же причине виден в сети ещё до конца
+        этого срока.
+    </div>
+</div>
+{% endblock %}

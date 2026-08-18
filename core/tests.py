@@ -15,6 +15,7 @@ from unittest.mock import patch
 from urllib import error as urllib_error
 
 import openpyxl
+from channels.db import database_sync_to_async
 from django.conf import settings
 from django.core.management import call_command
 from django.db import connection, transaction
@@ -1626,7 +1627,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.47.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.48.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2411,6 +2412,231 @@ class StockWatchMarkupTests(TestCase):
         content = self.client_http.get('/parts/').content.decode()
         self.assertIn('js/stock-updates.js', content)
         self.assertIn('id="stockToasts"', content)
+
+    def test_reconnect_helper_is_loaded_before_the_stock_script(self):
+        """Логика переподключения вынесена в общий файл и должна грузиться
+        раньше того, кто ей пользуется, — иначе живых обновлений не будет."""
+        content = self.client_http.get('/parts/').content.decode()
+        self.assertIn('js/ws-connection.js', content)
+        self.assertLess(content.index('js/ws-connection.js'), content.index('js/stock-updates.js'))
+
+
+class PresenceStatusTests(TestCase):
+    """Кто сейчас в сети — расчёт статуса от отметки активности.
+
+    Сокет здесь не нужен: «в сети» — это функция от last_seen и таймаута,
+    и проверять её быстрее и честнее прямо на модели.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='presence_user', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+
+    def _seen(self, seconds_ago):
+        Employee.objects.filter(pk=self.employee.pk).update(
+            last_seen=timezone.now() - datetime.timedelta(seconds=seconds_ago)
+        )
+        self.employee.refresh_from_db()
+
+    def test_recent_activity_is_online(self):
+        self._seen(30)
+        self.assertTrue(self.employee.is_online)
+
+    def test_activity_past_timeout_is_offline(self):
+        self._seen(settings.PRESENCE_TIMEOUT_SECONDS + 1)
+        self.assertFalse(self.employee.is_online)
+
+    def test_never_seen_is_offline(self):
+        self.assertIsNone(self.employee.last_seen)
+        self.assertFalse(self.employee.is_online)
+
+    def test_two_missed_heartbeats_are_still_online(self):
+        """Смысл выбранного таймаута: два подряд пропущенных сигнала —
+        ещё не разрыв. Иначе индикатор мигал бы на каждой заминке связи."""
+        heartbeat = settings.PRESENCE_TIMEOUT_SECONDS // 3
+        self._seen(heartbeat * 2 + 1)
+        self.assertTrue(self.employee.is_online)
+
+    def test_touch_presence_writes_without_touching_other_fields(self):
+        Employee.objects.filter(pk=self.employee.pk).update(full_name='Переименован')
+        self.employee.touch_presence()
+
+        fresh = Employee.objects.get(pk=self.employee.pk)
+        self.assertIsNotNone(fresh.last_seen)
+        self.assertTrue(fresh.is_online)
+        # Отметка пишется запросом к набору, поэтому чужая правка не затирается
+        self.assertEqual(fresh.full_name, 'Переименован')
+
+    @override_settings(PRESENCE_TIMEOUT_SECONDS=10)
+    def test_timeout_is_configurable(self):
+        self._seen(30)
+        self.assertFalse(self.employee.is_online)
+
+
+class PresencePageTests(TestCase):
+    """Страница «Кто на связи»: доступ и содержимое."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='presence_page', full_name='Кладовщик Иванов', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+    def test_anonymous_is_redirected_to_login(self):
+        anon = TestClient()
+        resp = anon.get('/presence/')
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_non_admin_role_can_see_presence(self):
+        """Присутствие видно всем вошедшим: это не надзор, а способ
+        не идти через лабораторию к пустому терминалу."""
+        resp = self.client_http.get('/presence/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(self.employee, list(resp.context['employees']))
+
+    def test_page_shows_online_state_from_the_database(self):
+        Employee.objects.filter(pk=self.employee.pk).update(last_seen=timezone.now())
+        content = self.client_http.get('/presence/').content.decode()
+        self.assertIn('presence-online', content)
+        self.assertIn('в сети', content)
+
+    def test_inactive_employee_is_not_listed(self):
+        gone = Employee.objects.create_user(
+            username='presence_gone', full_name='Уволенный', password='pass', is_active=False
+        )
+        resp = self.client_http.get('/presence/')
+        self.assertNotIn(gone, list(resp.context['employees']))
+
+    def test_presence_script_is_loaded_on_every_page(self):
+        """Отметку ставит любая открытая страница, а не только эта:
+        иначе мастер, весь день сидящий в заказах, числился бы ушедшим."""
+        content = self.client_http.get('/repair-orders/').content.decode()
+        self.assertIn('js/presence.js', content)
+
+
+class PresenceSocketTests(TestCase):
+    """Канал присутствия: доступ, отметка активности, рассылка списка."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_user(
+            username='presence_ws', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+
+    def _communicator(self, user=None):
+        from channels.testing import WebsocketCommunicator
+        from lifteam.asgi import websocket_urlpatterns
+        from channels.routing import URLRouter
+
+        communicator = WebsocketCommunicator(URLRouter(websocket_urlpatterns), '/ws/presence/')
+        # Как и в тестах остатков: проверяем потребителя, а не сессионную
+        # прослойку, поэтому пользователя подставляем прямо в scope
+        communicator.scope['user'] = user
+        return communicator
+
+    def test_anonymous_connection_is_refused(self):
+        from asgiref.sync import async_to_sync
+        from django.contrib.auth.models import AnonymousUser
+
+        async def run():
+            communicator = self._communicator(AnonymousUser())
+            connected, _ = await communicator.connect()
+            await communicator.disconnect()
+            return connected
+
+        self.assertFalse(async_to_sync(run)())
+
+    def test_connection_without_user_is_refused(self):
+        from asgiref.sync import async_to_sync
+
+        async def run():
+            communicator = self._communicator(None)
+            connected, _ = await communicator.connect()
+            await communicator.disconnect()
+            return connected
+
+        self.assertFalse(async_to_sync(run)())
+
+    def test_live_connection_makes_employee_online(self):
+        from asgiref.sync import async_to_sync
+
+        async def run():
+            communicator = self._communicator(self.user)
+            connected, _ = await communicator.connect()
+            greeting = await communicator.receive_json_from()
+            roster = await communicator.receive_json_from()
+            await communicator.disconnect()
+            return connected, greeting, roster
+
+        connected, greeting, roster = async_to_sync(run)()
+
+        self.assertTrue(connected)
+        self.assertEqual(greeting['type'], 'connection_established')
+        # Период сигнала задаёт сервер, чтобы он не разошёлся с таймаутом
+        self.assertEqual(greeting['heartbeat_seconds'], settings.PRESENCE_TIMEOUT_SECONDS // 3)
+        self.assertEqual(roster['type'], 'presence_roster')
+
+        entry = [row for row in roster['roster'] if row['id'] == self.user.pk][0]
+        self.assertTrue(entry['online'])
+        self.assertEqual(entry['full_name'], 'Кладовщик')
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_online)
+
+    def test_heartbeat_refreshes_the_mark(self):
+        from asgiref.sync import async_to_sync
+
+        stale = timezone.now() - datetime.timedelta(seconds=settings.PRESENCE_TIMEOUT_SECONDS + 60)
+
+        async def run():
+            communicator = self._communicator(self.user)
+            await communicator.connect()
+            await communicator.receive_json_from()  # приветствие
+            await communicator.receive_json_from()  # список
+            # Состарим отметку, будто соединение молчало дольше таймаута
+            await database_sync_to_async(
+                Employee.objects.filter(pk=self.user.pk).update
+            )(last_seen=stale)
+
+            await communicator.send_json_to({'action': 'ping'})
+            pong = await communicator.receive_json_from()
+            roster = await communicator.receive_json_from()
+            await communicator.disconnect()
+            return pong, roster
+
+        pong, roster = async_to_sync(run)()
+
+        self.assertEqual(pong['type'], 'pong')
+        self.assertEqual(roster['type'], 'presence_roster')
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_online)
+
+    def test_drop_without_logout_expires_by_timeout_only(self):
+        """Обрыв связи не гасит индикатор мгновенно — обрыв неотличим
+        от заминки в сети. Статус снимает истёкший таймаут, и только он.
+        """
+        from asgiref.sync import async_to_sync
+
+        async def run():
+            communicator = self._communicator(self.user)
+            await communicator.connect()
+            await communicator.receive_json_from()
+            await communicator.receive_json_from()
+            await communicator.disconnect()
+
+        async_to_sync(run)()
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_online)
+
+        # ...но и бесконечно «в сети» никто не висит
+        Employee.objects.filter(pk=self.user.pk).update(
+            last_seen=timezone.now() - datetime.timedelta(seconds=settings.PRESENCE_TIMEOUT_SECONDS + 1)
+        )
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_online)
 
 
 class DashboardStatusStatsTests(TestCase):

@@ -9,16 +9,13 @@
  * Скрипт подключается только там, где остатки показаны (есть элементы
  * с data-stock-part), обновляет цифры на месте и предупреждает, когда деталь
  * уходит в дефицит.
+ *
+ * Само подключение с переподключением после обрыва — в ws-connection.js:
+ * оно общее с присутствием сотрудников.
  */
 (function () {
     'use strict';
 
-    var RECONNECT_START_MS = 1000;
-    var RECONNECT_MAX_MS = 30000;
-
-    var socket = null;
-    var reconnectDelay = RECONNECT_START_MS;
-    var reconnectTimer = null;
     var offlineNotice = null;
 
     function stockElements(partId) {
@@ -150,54 +147,17 @@
         }
     }
 
-    function connect() {
-        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-            return;
-        }
-        var scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        socket = new WebSocket(scheme + '://' + window.location.host + '/ws/stock/');
-
-        socket.onopen = function () {
-            reconnectDelay = RECONNECT_START_MS;
-            setOffline(false);
-        };
-
-        socket.onmessage = function (event) {
-            var message;
-            try {
-                message = JSON.parse(event.data);
-            } catch (e) {
-                return;
-            }
-            if (message.type === 'stock_update' && message.data) {
-                handleUpdate(message.data);
-            }
-        };
-
-        socket.onclose = function () {
-            // Связь по Tailscale рвётся при переходе телефона между сетями,
-            // поэтому переподключаемся сами, увеличивая паузу до полуминуты,
-            // чтобы не долбить сервер, когда он действительно выключен.
-            setOffline(true);
-            clearTimeout(reconnectTimer);
-            reconnectTimer = setTimeout(connect, reconnectDelay);
-            reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
-        };
-
-        socket.onerror = function () {
-            if (socket) socket.close();
-        };
-    }
-
     document.addEventListener('DOMContentLoaded', function () {
         if (!watching()) return;
-        connect();
+        if (!window.LiftTeamWS) return;
 
-        // Вкладку открыли снова — не ждём очередной паузы переподключения
-        document.addEventListener('visibilitychange', function () {
-            if (document.visibilityState === 'visible') {
-                reconnectDelay = RECONNECT_START_MS;
-                connect();
+        window.LiftTeamWS.open({
+            path: '/ws/stock/',
+            onOffline: setOffline,
+            onMessage: function (message) {
+                if (message.type === 'stock_update' && message.data) {
+                    handleUpdate(message.data);
+                }
             }
         });
     });
