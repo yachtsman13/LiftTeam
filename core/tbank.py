@@ -28,6 +28,8 @@ from urllib import error, parse, request
 
 from django.conf import settings
 
+from .net import explain
+
 DEFAULT_API_URL = 'https://business.tbank.ru/openapi'
 
 # Пути методов. Версии разные — так они и опубликованы у банка
@@ -112,7 +114,7 @@ def _call(path, params=None, payload=None, timeout=30):
             raise TBankError('Т-Банк не принял токен (401). Проверьте TBANK_TOKEN') from exc
         raise TBankError(f'Т-Банк ответил {exc.code}: {detail}') from exc
     except error.URLError as exc:
-        raise TBankError(f'Т-Банк недоступен: {exc.reason}') from exc
+        raise TBankError(f'Т-Банк недоступен: {explain(exc.reason)}') from exc
     except TimeoutError as exc:
         raise TBankError('Т-Банк не ответил вовремя') from exc
 

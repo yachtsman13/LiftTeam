@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.39.2."""
+        """Печать этикетки оборудования вне заказа убрана в v2.39.3."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5948,3 +5948,76 @@ class OrderEditLabelButtonTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'SN-EDIT-1')
+
+
+class NetworkErrorHintTests(TestCase):
+    """«CERTIFICATE_VERIFY_FAILED» само по себе не говорит, что чинить."""
+
+    def test_a_certificate_failure_names_the_missing_root(self):
+        from core.net import explain
+
+        reason = ('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: '
+                  'unable to get local issuer certificate (_ssl.c:1006)')
+
+        result = explain(reason)
+
+        self.assertIn('CERTIFICATE_VERIFY_FAILED', result)
+        self.assertIn('НУЦ Минцифры', result)
+        self.assertIn('DEPLOY.md', result)
+
+    def test_other_reasons_are_left_alone(self):
+        from core.net import explain
+
+        self.assertEqual(explain('[Errno -3] Temporary failure in name resolution'),
+                         '[Errno -3] Temporary failure in name resolution')
+
+    @override_settings(MAX_BOT_TOKEN='secret-token')
+    def test_the_messenger_error_carries_the_hint(self):
+        """Текст попадает в очередь оповещений — там его и читают."""
+        from urllib import error
+
+        broken = error.URLError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed')
+        with patch('core.messengers.request.urlopen', side_effect=broken):
+            with self.assertRaises(messengers.MaxError) as caught:
+                messengers.send_max_message('user:1', 'текст')
+
+        self.assertIn('НУЦ Минцифры', str(caught.exception))
+
+    @override_settings(TBANK_TOKEN='secret-token')
+    def test_the_bank_error_carries_the_hint(self):
+        from urllib import error
+
+        from core import tbank
+
+        broken = error.URLError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed')
+        with patch('core.tbank.request.urlopen', side_effect=broken):
+            with self.assertRaises(tbank.TBankError) as caught:
+                tbank.get_accounts()
+
+        self.assertIn('НУЦ Минцифры', str(caught.exception))
+
+
+class DryRunOutputTests(TestCase):
+    """`--dry-run` ничего не отправляет, и сказать об этом нужно словами:
+    один раз это стоило вечера поисков причины, по которой «письма не уходят»."""
+
+    def setUp(self):
+        self.note = Notification.objects.create(
+            event='low_stock', recipient='wh@example.com',
+            subject='Дефицит', body='Текст',
+        )
+
+    @override_settings(NOTIFICATIONS_ENABLED=True,
+                       EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_the_dry_run_says_that_nothing_was_sent(self):
+        from django.core import mail
+
+        out = io.StringIO()
+        call_command('send_notifications', dry_run=True, stdout=out, stderr=io.StringIO())
+        output = out.getvalue()
+
+        self.assertIn('НИЧЕГО НЕ ОТПРАВЛЕНО', output)
+        self.assertIn('без --dry-run', output)
+        self.assertEqual(len(mail.outbox), 0)
+        self.note.refresh_from_db()
+        self.assertEqual(self.note.status, 'pending')

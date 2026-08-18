@@ -18,6 +18,8 @@ from urllib import error, parse, request
 
 from django.conf import settings
 
+from .net import explain
+
 MAX_DEFAULT_API_URL = 'https://platform-api2.max.ru'
 TELEGRAM_DEFAULT_API_URL = 'https://api.telegram.org'
 
@@ -63,7 +65,7 @@ def _call(url, *, headers=None, payload=None, timeout=15, error_class=MessengerE
         detail = exc.read().decode('utf-8', errors='replace')[:300]
         raise error_class(f'{name} ответил {exc.code}: {detail}') from exc
     except error.URLError as exc:
-        raise error_class(f'{name} недоступен: {exc.reason}') from exc
+        raise error_class(f'{name} недоступен: {explain(exc.reason)}') from exc
     except TimeoutError as exc:
         raise error_class(f'{name} не ответил вовремя') from exc
 

@@ -67,11 +67,19 @@ class Command(BaseCommand):
         )
 
         if options['dry_run']:
+            # Про то, что это была проверка, нужно сказать словами и в конце:
+            # квадратные скобки в начале строк люди пролистывают, а потом
+            # ищут причину, по которой «письма не уходят»
             for item in queued:
                 self.stdout.write(
                     f'[проверка] {item.get_channel_display()} → {item.recipient}: {item.subject}'
                 )
             self.stdout.write(f'В очереди: {len(queued)}, просрочено: {stale_count}')
+            self.stdout.write(self.style.WARNING(
+                'Это была проверка (--dry-run): НИЧЕГО НЕ ОТПРАВЛЕНО, '
+                'очередь не тронута. Чтобы отправить, запустите ту же команду '
+                'без --dry-run.'
+            ))
             return
 
         sent = failed = 0
