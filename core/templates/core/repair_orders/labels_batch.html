@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Этикетки заказов — LiftTeam v2.49.1{% endblock %}
+{% block title %}Этикетки заказов — LiftTeam v2.49.2{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
@@ -17,7 +17,11 @@
             <button onclick="window.print()" class="btn btn-primary" {% if not labels %}disabled{% endif %}>
                 <i class="bi bi-printer me-2"></i>Печать
             </button>
-            <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">Назад</a>
+            {% comment %}
+                Возврат туда, откуда пришли: из карточки заказа — в неё же,
+                из списка заказов — в список.
+            {% endcomment %}
+            <a href="{% if back_url %}{{ back_url }}{% else %}{% url 'repair_order_list' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
         </div>
     </div>
 

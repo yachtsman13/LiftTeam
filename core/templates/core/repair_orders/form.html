@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.49.1{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.49.2{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -53,150 +53,43 @@
             </div>
 
             <!-- Оборудование в заказе -->
+            {% comment %}
+                Рамка каждой единицы — заметная, а не волосяная линия по
+                умолчанию: полей в строке полтора десятка, и без чёткой
+                границы соседние единицы читались как одна длинная форма.
+            {% endcomment %}
+            <style>
+                /* Рамка задана целиком, а не одной толщиной: сам вид линии
+                   приходит из класса Bootstrap, а он грузится из интернета
+                   и при неполадках со связью не приезжает — тогда от рамки
+                   не осталось бы ничего. */
+                .equipment-row { border: 2px solid #495057 !important; }
+                .equipment-row + .equipment-row { margin-top: 1rem !important; }
+            </style>
             <div class="mt-4">
                 <h5><i class="bi bi-hdd-rack me-2"></i>Оборудование в заказе</h5>
                 <div id="equipmentFormset">
                     {{ formset.management_form }}
                     {% for eq_form in formset %}
-                    <div class="equipment-row border rounded p-3 mb-2">
-                        <div class="row g-2">
-                            <div class="col-md-4">
-                                <label class="form-label small">{{ eq_form.equipment.label }}</label>
-                                <div class="input-group">
-                                    {{ eq_form.equipment }}
-                                    <button type="button" class="btn btn-outline-success" onclick="openCreateEquipmentModal(this)" title="Создать оборудование">
-                                        <i class="bi bi-plus-lg"></i>
-                                    </button>
-                                </div>
-                                {% if eq_form.equipment.errors %}
-                                <div class="text-danger small">{{ eq_form.equipment.errors.0 }}</div>
-                                {% endif %}
-                                {% comment %}
-                                Подсказка о прошлых ремонтах этой единицы. Самый нужный
-                                момент для неё — приём заказа: потом сотрудник уже не
-                                вспомнит, что оборудование здесь уже было.
-                                {% endcomment %}
-                                <div class="equipment-history-hint alert alert-info py-2 px-3 mt-2 mb-0 small d-none"></div>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label small">{{ eq_form.fault_description.label }}</label>
-                                {{ eq_form.fault_description }}
-                                {% if eq_form.fault_description.errors %}
-                                <div class="text-danger small">{{ eq_form.fault_description.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label small">{{ eq_form.work_performed.label }}</label>
-                                {{ eq_form.work_performed }}
-                                {% if eq_form.work_performed.errors %}
-                                <div class="text-danger small">{{ eq_form.work_performed.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label small">{{ eq_form.seal_numbers.label }}</label>
-                                {{ eq_form.seal_numbers }}
-                                {% if eq_form.seal_numbers.errors %}
-                                <div class="text-danger small">{{ eq_form.seal_numbers.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="col-md-2 d-flex align-items-end gap-2">
-                                {% if eq_form.instance.pk %}
-                                <div class="form-check mb-2">
-                                    {{ eq_form.DELETE }}
-                                    <label class="form-check-label small">Удалить</label>
-                                </div>
-                                {% comment %}
-                                    Этикетку чаще всего печатают сразу после того,
-                                    как поправили серийник или пломбы, — возвращаться
-                                    для этого в карточку заказа незачем.
-
-                                    Только у сохранённых единиц: у новой строки ещё
-                                    нет ни номера, ни ссылки, которую можно закодировать.
-                                    Открывается в новой вкладке и печатает сохранённое:
-                                    о правках, не нажатых «Сохранить», она не знает.
-                                {% endcomment %}
-                                <a href="{% url 'repair_order_equipment_label' order.pk eq_form.instance.pk %}"
-                                   class="btn btn-outline-dark btn-sm mb-2" target="_blank"
-                                   title="Этикетка на эту единицу. Печатается по сохранённым данным">
-                                    <i class="bi bi-printer"></i>
-                                </a>
-                                {% else %}
-                                <button type="button" class="btn btn-outline-danger btn-sm remove-equipment" onclick="removeEquipmentRow(this)">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-md-8">
-                                <label class="form-label small">{{ eq_form.faults.label }}</label>
-                                <select name="{{ eq_form.faults.html_name }}" id="{{ eq_form.faults.id_for_label }}"
-                                        class="form-select fault-select" multiple size="4"
-                                        data-selected="{% for f in eq_form.instance.faults.all %}{{ f.pk }}{% if not forloop.last %},{% endif %}{% endfor %}">
-                                    <option value="other">Другое (не из списка)</option>
-                                    {% if eq_form.instance.equipment_id %}
-                                    {% for fault in eq_form.instance.equipment.model.fault_types.all %}
-                                    <option value="{{ fault.pk }}" {% if fault in eq_form.instance.faults.all %}selected{% endif %}>{{ fault.name }}</option>
-                                    {% endfor %}
-                                    {% endif %}
-                                </select>
-                                <div class="form-text">
-                                    Список — только для этой модели оборудования. Несколько
-                                    выбранных неисправностей объединят свои рецепты деталей.
-                                    «Другое» — если случая ещё нет в справочнике; тогда опишите
-                                    его в поле «Неисправность» выше.
-                                </div>
-                                {% if eq_form.faults.errors %}
-                                <div class="text-danger small">{{ eq_form.faults.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            {% comment %}
-                                Применение требует существующего заказа: детали заказа
-                                привязаны к заказу целиком, а не к конкретной единице
-                                оборудования в нём, поэтому кнопка не показывается на
-                                странице создания нового заказа. Активна только тогда,
-                                когда в списке выбрано хоть что-то, кроме «Другое».
-                            {% endcomment %}
-                            {% if order %}
-                            <div class="col-md-4 d-flex align-items-end">
-                                <button type="button" class="btn btn-outline-success btn-sm apply-fault-template w-100" disabled
-                                        data-apply-url="{% url 'repair_order_apply_fault_template' order.pk %}"
-                                        title="Добавит рецепт выбранных неисправностей в список использованных деталей заказа">
-                                    <i class="bi bi-magic me-1"></i>Применить шаблон деталей
-                                </button>
-                            </div>
-                            {% endif %}
-                        </div>
-                        <div class="row g-2 mt-1">
-                            <div class="col-md-4">
-                                <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
-                                {{ eq_form.initial_condition }}
-                                {% if eq_form.initial_condition.errors %}
-                                <div class="text-danger small">{{ eq_form.initial_condition.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label small">{{ eq_form.repair_cost.label }}</label>
-                                {{ eq_form.repair_cost }}
-                                {% if eq_form.repair_cost.errors %}
-                                <div class="text-danger small">{{ eq_form.repair_cost.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="col-md-5">
-                                <label class="form-label small">{{ eq_form.yandex_disk_folder.label }}</label>
-                                {{ eq_form.yandex_disk_folder }}
-                                {% if eq_form.yandex_disk_folder.errors %}
-                                <div class="text-danger small">{{ eq_form.yandex_disk_folder.errors.0 }}</div>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% for hidden in eq_form.hidden_fields %}{{ hidden }}{% endfor %}
-                    </div>
+                    {% include "core/repair_orders/_equipment_row.html" %}
                     {% endfor %}
                 </div>
                 <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="addEquipmentRow()">
                     <i class="bi bi-plus-lg me-1"></i>Добавить оборудование
                 </button>
+
+                {% comment %}
+                    Заготовка новой строки. Django отдаёт её с индексом
+                    __prefix__ вместо номера — скрипт подставляет туда
+                    следующий номер. Внутри <template> разметка не оживает,
+                    поэтому пустые поля не попадают в отправку формы, пока
+                    строку не добавили.
+                {% endcomment %}
+                <template id="equipmentEmptyForm">
+                    {% with eq_form=formset.empty_form %}
+                    {% include "core/repair_orders/_equipment_row.html" %}
+                    {% endwith %}
+                </template>
             </div>
 
             <div class="mt-4">
@@ -407,58 +300,59 @@ updateEquipmentOptions();
 document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
 document.querySelectorAll('.fault-select').forEach(updateApplyButtonState);
 
+/*
+ * Новая строка берётся из заготовки `formset.empty_form`, а не копируется
+ * с уже стоящей на странице.
+ *
+ * Копирование ломало сразу два случая. Копировали всегда первую строку
+ * (querySelector возвращает её, а не последнюю), а имена полей в копии
+ * заменяли, считая, что у образца индекс formNum-1. У первой строки индекс
+ * всегда 0, поэтому со второго нажатия замена не срабатывала вовсе, и
+ * копия уходила на сервер с именами первой строки: Django видел два
+ * значения одного поля и сохранял одно — в заказе оставалось не всё
+ * оборудование. При правке заказа не совпадало уже с первого нажатия
+ * (индексов там столько, сколько единиц), поэтому кнопка «+» выглядела
+ * неработающей. Вдобавок копия уносила скрытый id сохранённой единицы —
+ * очистка значений пропускала hidden-поля, — и новая единица переписывала
+ * собой первую.
+ *
+ * У заготовки таких мест нет: индекс в ней помечен __prefix__, а id пуст.
+ */
 function addEquipmentRow() {
     const container = document.getElementById('equipmentFormset');
-    const template = container.querySelector('.equipment-row');
+    const template = document.getElementById('equipmentEmptyForm');
     if (!template) return;
 
-    const newRow = template.cloneNode(true);
+    const holder = document.createElement('div');
+    holder.innerHTML = template.innerHTML.split('__prefix__').join(formNum);
 
-    // Обновляем индексы
-    const oldPrefix = 'equipments-' + (formNum - 1) + '-';
-    const newPrefix = 'equipments-' + formNum + '-';
-    newRow.innerHTML = newRow.innerHTML.split(oldPrefix).join(newPrefix);
-
-    // Очищаем значения
-    newRow.querySelectorAll('input, select, textarea').forEach(function(el) {
-        if (el.type !== 'hidden' && el.name.indexOf('DELETE') === -1) {
-            el.value = '';
-        }
-    });
-
-    // Убираем checkbox удаления для новых строк
-    const deleteCheck = newRow.querySelector('.form-check');
-    if (deleteCheck) {
-        deleteCheck.innerHTML = '<button type="button" class="btn btn-outline-danger btn-sm" onclick="removeEquipmentRow(this)"><i class="bi bi-trash"></i></button>';
-    }
-
-    // Клон унаследовал варианты неисправностей исходной строки — новой
-    // единице оборудования они не подходят, пока не выбрано её оборудование
-    const clonedFaultSelect = newRow.querySelector('.fault-select');
-    if (clonedFaultSelect) {
-        clonedFaultSelect.innerHTML = '<option value="other">Другое (не из списка)</option>';
-        clonedFaultSelect.removeAttribute('data-selected');
-    }
-    const clonedApplyButton = newRow.querySelector('.apply-fault-template');
-    if (clonedApplyButton) clonedApplyButton.disabled = true;
+    const newRow = holder.querySelector('.equipment-row');
+    if (!newRow) return;
 
     container.appendChild(newRow);
     formNum++;
     totalForms.value = formNum;
 
-    // Обновляем фильтрацию option-ов
     updateEquipmentOptions();
 }
 
+/*
+ * Убрать можно только строку, которую ещё не сохраняли: у сохранённых
+ * стоит галочка «Удалить», и снимает их сам Django. Поэтому пересчёт
+ * индексов ниже не трогает порядок сохранённых строк — они идут первыми
+ * и своими скрытыми id остаются при своих записях.
+ */
 function removeEquipmentRow(btn) {
     const row = btn.closest('.equipment-row');
     row.remove();
-    // Пересчитываем индексы
+
     const rows = document.querySelectorAll('.equipment-row');
     rows.forEach(function(r, idx) {
         r.querySelectorAll('input, select, textarea').forEach(function(el) {
             if (el.name) {
                 el.name = el.name.replace(/equipments-[0-9]+-/, 'equipments-' + idx + '-');
+            }
+            if (el.id) {
                 el.id = el.id.replace(/equipments-[0-9]+-/, 'equipments-' + idx + '-');
             }
         });
@@ -466,7 +360,6 @@ function removeEquipmentRow(btn) {
     formNum = rows.length;
     totalForms.value = formNum;
 
-    // Обновляем фильтрацию option-ов
     updateEquipmentOptions();
 }
 

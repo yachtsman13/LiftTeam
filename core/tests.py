@@ -1627,7 +1627,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.49.1."""
+        """Печать этикетки оборудования вне заказа убрана в v2.49.2."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -7948,3 +7948,137 @@ class ConnectionResilienceTests(TestCase):
         form = staff.get('/repair-orders/create/').content.decode()
         self.assertIn('LiftTeamWS.fetch(', form)
         self.assertNotIn("alert('Ошибка: ' + err)", form)
+
+
+class OrderEquipmentLabelsSelectionTests(TestCase):
+    """Печать этикеток из карточки заказа: на всё оборудование либо
+    на отмеченное."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_eq_labels', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='ООО Эпсилон')
+        model = EquipmentModel.objects.create(name='БУАД-7')
+        self.order = RepairOrder.objects.create(client=client_obj)
+        self.units = [
+            RepairOrderEquipment.objects.create(
+                repair_order=self.order,
+                equipment=Equipment.objects.create(model=model, serial_number=f'SN-30{i}'),
+            )
+            for i in range(1, 4)
+        ]
+
+    def test_without_selection_prints_every_unit(self):
+        response = self.http.get(f'/repair-orders/{self.order.pk}/labels/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['labels']), 3)
+
+    def test_selection_prints_only_marked_units(self):
+        response = self.http.get(
+            f'/repair-orders/{self.order.pk}/labels/',
+            {'roe': [self.units[1].pk]},
+        )
+        labels = response.context['labels']
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]['roe'].pk, self.units[1].pk)
+
+    def test_position_keeps_place_in_order_not_in_selection(self):
+        """Наклейка на вторую единицу остаётся «/2», даже когда печатают
+        её одну: номер — это место в заказе, а не в отобранном списке."""
+        response = self.http.get(
+            f'/repair-orders/{self.order.pk}/labels/',
+            {'roe': [self.units[2].pk]},
+        )
+        self.assertEqual(response.context['labels'][0]['position'], 3)
+
+    def test_detail_page_offers_checkboxes_and_print_button(self):
+        page = self.http.get(f'/repair-orders/{self.order.pk}/').content.decode()
+        self.assertIn('equipmentLabelsForm', page)
+        self.assertIn('equipmentCheckAll', page)
+        self.assertEqual(page.count('class="form-check-input equipment-check"'), 3)
+
+    def test_broken_selection_does_not_crash(self):
+        response = self.http.get(
+            f'/repair-orders/{self.order.pk}/labels/', {'roe': ['не число']}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['labels']), 3)
+
+
+class OrderEquipmentFormsetRowTests(TestCase):
+    """Новая строка оборудования берётся из заготовки Django, а не
+    копированием строки со страницы.
+
+    Копирование ломало два случая сразу: со второго нажатия в новом заказе
+    копия уходила с именами первой строки, и Django сохранял только одно
+    значение — в заказе оставалось не всё оборудование; а при правке заказа
+    копия уносила ещё и скрытый id сохранённой единицы и переписывала её
+    собой.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_formset_row', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='ООО Дзета')
+        model = EquipmentModel.objects.create(name='БУАД-9')
+        self.order = RepairOrder.objects.create(client=client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-401'),
+        )
+
+    def test_create_page_carries_empty_form_template(self):
+        page = self.http.get('/repair-orders/create/').content.decode()
+        self.assertIn('id="equipmentEmptyForm"', page)
+        self.assertIn('equipments-__prefix__-equipment', page)
+
+    def test_edit_page_carries_empty_form_template(self):
+        page = self.http.get(f'/repair-orders/{self.order.pk}/edit/').content.decode()
+        self.assertIn('id="equipmentEmptyForm"', page)
+        self.assertIn('equipments-__prefix__-equipment', page)
+
+    def test_row_markup_lives_in_one_place(self):
+        """Заготовка и строки на странице — один и тот же файл: разойдись
+        они, добавленная строка отличалась бы от уже стоящих."""
+        form = (settings.BASE_DIR / 'core/templates/core/repair_orders/form.html').read_text(encoding='utf-8')
+        self.assertEqual(form.count('_equipment_row.html'), 2)
+        self.assertNotIn('cloneNode', form)
+
+    def test_empty_form_row_has_no_saved_id(self):
+        """У заготовки скрытый id пуст — иначе новая единица переписала бы
+        собой уже сохранённую."""
+        page = self.http.get(f'/repair-orders/{self.order.pk}/edit/').content.decode()
+        template = page.split('id="equipmentEmptyForm"')[1]
+        self.assertIn('equipments-__prefix__-id', template)
+        self.assertNotIn('equipments-__prefix__-id" value="', template)
+
+
+class PrintingChromeTests(TestCase):
+    """На бумагу уходит только документ.
+
+    Страница этикетки задаёт размер листа 43 мм, браузер считал это узким
+    экраном и включал мобильную вёрстку — на наклейку выезжала кнопка меню.
+    А скрытые диалоги прячет Bootstrap, который грузится из интернета:
+    при неполадках со связью он не приезжает, и окно уходило на печать.
+    """
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+
+    def test_mobile_layout_is_limited_to_screen(self):
+        self.assertIn('@media screen and (max-width: 768px)', self.base)
+        self.assertNotIn('@media (max-width: 768px)', self.base)
+
+    def test_print_hides_menu_button_and_backdrop(self):
+        self.assertIn('.sidebar-toggle, .sidebar-backdrop { display: none !important; }', self.base)
+
+    def test_print_hides_dialogs_without_bootstrap(self):
+        self.assertIn('.modal, .modal-backdrop', self.base)

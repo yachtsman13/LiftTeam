@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.49.1.
+Views для LiftTeam v2.49.2.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -2473,6 +2473,44 @@ def repair_order_labels_batch(request):
         'limit': MAX_LABELS_PER_BATCH,
         'qr_base': base_url,
         'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+    })
+
+
+@login_required
+def repair_order_equipment_labels(request, pk):
+    """Этикетки на оборудование одного заказа: на отмеченные единицы либо,
+    если ничего не отмечено, на все.
+
+    Отдельно от `repair_order_labels_batch`: та печатает по отмеченным
+    заказам целиком из списка, а отсюда, из карточки заказа, выбирают
+    единицы внутри одного заказа — печатать заново весь заказ ради одной
+    переклеенной наклейки не нужно.
+
+    Номер позиции берётся по месту единицы в полном списке заказа, а не
+    по месту в отобранном: наклейка на вторую единицу должна остаться
+    «/2» и тогда, когда печатают её одну.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    roe_list = list(
+        order.order_equipments.select_related('equipment__model').order_by('id')
+    )
+
+    selected = {value for value in request.GET.getlist('roe') if value.isdigit()}
+    base_url = label_base_url(request)
+    labels = [
+        _order_equipment_label(order, roe, position, base_url)
+        for position, roe in enumerate(roe_list, start=1)
+        if not selected or str(roe.pk) in selected
+    ][:MAX_LABELS_PER_BATCH]
+
+    return render(request, 'core/repair_orders/labels_batch.html', {
+        'labels': labels,
+        'layout': _batch_layout(request),
+        'limit': MAX_LABELS_PER_BATCH,
+        'qr_base': base_url,
+        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+        'order': order,
+        'back_url': reverse('repair_order_detail', args=[order.pk]),
     })
 
 

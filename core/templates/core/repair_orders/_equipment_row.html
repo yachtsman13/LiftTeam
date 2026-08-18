@@ -1,0 +1,154 @@
+{% comment %}
+Одна единица оборудования в форме заказа.
+
+Вынесено в отдельный файл, чтобы кнопка «Добавить оборудование» брала
+разметку новой строки отсюда же (`formset.empty_form` в шаблоне ниже),
+а не клонировала первую строку на странице. Клонирование и было причиной
+двух ошибок сразу: у копии оставались имена полей первой строки, поэтому
+Django видел два значения одного поля и сохранял только одно, а вместе
+с именами копировался и скрытый id уже сохранённой единицы — новая
+единица переписывала собой первую.
+
+Ожидает: eq_form, order (может отсутствовать — на странице создания).
+{% endcomment %}
+                    <div class="equipment-row border rounded p-3 mb-2">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.equipment.label }}</label>
+                                <div class="input-group">
+                                    {{ eq_form.equipment }}
+                                    <button type="button" class="btn btn-outline-success" onclick="openCreateEquipmentModal(this)" title="Создать оборудование">
+                                        <i class="bi bi-plus-lg"></i>
+                                    </button>
+                                </div>
+                                {% if eq_form.equipment.errors %}
+                                <div class="text-danger small">{{ eq_form.equipment.errors.0 }}</div>
+                                {% endif %}
+                                {% comment %}
+                                Подсказка о прошлых ремонтах этой единицы. Самый нужный
+                                момент для неё — приём заказа: потом сотрудник уже не
+                                вспомнит, что оборудование здесь уже было.
+                                {% endcomment %}
+                                <div class="equipment-history-hint alert alert-info py-2 px-3 mt-2 mb-0 small d-none"></div>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.fault_description.label }}</label>
+                                {{ eq_form.fault_description }}
+                                {% if eq_form.fault_description.errors %}
+                                <div class="text-danger small">{{ eq_form.fault_description.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.work_performed.label }}</label>
+                                {{ eq_form.work_performed }}
+                                {% if eq_form.work_performed.errors %}
+                                <div class="text-danger small">{{ eq_form.work_performed.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">{{ eq_form.seal_numbers.label }}</label>
+                                {{ eq_form.seal_numbers }}
+                                {% if eq_form.seal_numbers.errors %}
+                                <div class="text-danger small">{{ eq_form.seal_numbers.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end gap-2">
+                                {% if eq_form.instance.pk %}
+                                <div class="form-check mb-2">
+                                    {{ eq_form.DELETE }}
+                                    <label class="form-check-label small">Удалить</label>
+                                </div>
+                                {% comment %}
+                                    Этикетку чаще всего печатают сразу после того,
+                                    как поправили серийник или пломбы, — возвращаться
+                                    для этого в карточку заказа незачем.
+
+                                    Только у сохранённых единиц: у новой строки ещё
+                                    нет ни номера, ни ссылки, которую можно закодировать.
+                                    Открывается в новой вкладке и печатает сохранённое:
+                                    о правках, не нажатых «Сохранить», она не знает.
+                                {% endcomment %}
+                                <a href="{% url 'repair_order_equipment_label' order.pk eq_form.instance.pk %}"
+                                   class="btn btn-outline-dark btn-sm mb-2" target="_blank"
+                                   title="Этикетка на эту единицу. Печатается по сохранённым данным">
+                                    <i class="bi bi-printer"></i>
+                                </a>
+                                {% else %}
+                                <button type="button" class="btn btn-outline-danger btn-sm remove-equipment" onclick="removeEquipmentRow(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-md-8">
+                                <label class="form-label small">{{ eq_form.faults.label }}</label>
+                                <select name="{{ eq_form.faults.html_name }}" id="{{ eq_form.faults.id_for_label }}"
+                                        class="form-select fault-select" multiple size="4"
+                                        {% comment %}
+                                            Только у сохранённой единицы: у ещё
+                                            не сохранённой обращение к faults.all
+                                            падает — связь многие-ко-многим до
+                                            появления id не работает, а заготовка
+                                            новой строки — как раз такой случай.
+                                        {% endcomment %}
+                                        data-selected="{% if eq_form.instance.pk %}{% for f in eq_form.instance.faults.all %}{{ f.pk }}{% if not forloop.last %},{% endif %}{% endfor %}{% endif %}">
+                                    <option value="other">Другое (не из списка)</option>
+                                    {% if eq_form.instance.equipment_id %}
+                                    {% for fault in eq_form.instance.equipment.model.fault_types.all %}
+                                    <option value="{{ fault.pk }}" {% if fault in eq_form.instance.faults.all %}selected{% endif %}>{{ fault.name }}</option>
+                                    {% endfor %}
+                                    {% endif %}
+                                </select>
+                                <div class="form-text">
+                                    Список — только для этой модели оборудования. Несколько
+                                    выбранных неисправностей объединят свои рецепты деталей.
+                                    «Другое» — если случая ещё нет в справочнике; тогда опишите
+                                    его в поле «Неисправность» выше.
+                                </div>
+                                {% if eq_form.faults.errors %}
+                                <div class="text-danger small">{{ eq_form.faults.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            {% comment %}
+                                Применение требует существующего заказа: детали заказа
+                                привязаны к заказу целиком, а не к конкретной единице
+                                оборудования в нём, поэтому кнопка не показывается на
+                                странице создания нового заказа. Активна только тогда,
+                                когда в списке выбрано хоть что-то, кроме «Другое».
+                            {% endcomment %}
+                            {% if order %}
+                            <div class="col-md-4 d-flex align-items-end">
+                                <button type="button" class="btn btn-outline-success btn-sm apply-fault-template w-100" disabled
+                                        data-apply-url="{% url 'repair_order_apply_fault_template' order.pk %}"
+                                        title="Добавит рецепт выбранных неисправностей в список использованных деталей заказа">
+                                    <i class="bi bi-magic me-1"></i>Применить шаблон деталей
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-md-4">
+                                <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
+                                {{ eq_form.initial_condition }}
+                                {% if eq_form.initial_condition.errors %}
+                                <div class="text-danger small">{{ eq_form.initial_condition.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">{{ eq_form.repair_cost.label }}</label>
+                                {{ eq_form.repair_cost }}
+                                {% if eq_form.repair_cost.errors %}
+                                <div class="text-danger small">{{ eq_form.repair_cost.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label small">{{ eq_form.yandex_disk_folder.label }}</label>
+                                {{ eq_form.yandex_disk_folder }}
+                                {% if eq_form.yandex_disk_folder.errors %}
+                                <div class="text-danger small">{{ eq_form.yandex_disk_folder.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% for hidden in eq_form.hidden_fields %}{{ hidden }}{% endfor %}
+                    </div>
