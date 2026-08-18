@@ -28,7 +28,8 @@ from . import messengers, notifications, tbank, views
 from .forms import RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
-    FaultType, FaultTypePart, Notification, Organization, OrderCost, OrderStatusHistory, Payment,
+    FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
+    OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
     StorageCell, parse_layout, plural_genitive, format_spec,
 )
@@ -1625,7 +1626,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.46.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.47.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -7324,3 +7325,297 @@ class ProfitReportTests(TestCase):
         self.assertEqual(response.status_code, 200)
         wb = openpyxl.load_workbook(io.BytesIO(response.content))
         self.assertEqual(wb.sheetnames, ['Итог за период', 'По заказчикам'])
+
+
+class InventorySessionTests(TestCase):
+    """Инвентаризация кассетницы: старт по одной кассетнице (в проекте нет
+    понятия «весь склад» или «зона»), ввод посчитанного, применение
+    расхождений. Недостача — обычное списание, распределённое по партиям
+    FIFO (`StockAllocation.allocate`), как и любой другой расход в проекте
+    — ручного выбора партии под недостачу сознательно нет. Избыток —
+    приход без цены (находка — не покупка) с обязательным комментарием."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='wh_inv', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+        self.cabinet = Cabinet.objects.create(number=901, name='Инвентаризация')
+        self.cabinet.apply_layout([3])
+        self.cell_a, self.cell_b, self.cell_c = list(self.cabinet.cells.order_by('cell_row'))
+
+        # current_stock=10/5 соответствует одной партии прихода на каждую —
+        # так expected_quantity на старте сессии совпадает с тем, что реально
+        # можно списать/распределить по партиям
+        self.part_a = SparePart.objects.create(
+            part_number='INV-A', name='Деталь A', current_stock=10, min_stock=0)
+        self.part_b = SparePart.objects.create(
+            part_number='INV-B', name='Деталь B', current_stock=5, min_stock=0)
+        self.cell_a.parts.add(self.part_a)
+        self.cell_b.parts.add(self.part_b)
+        # cell_c намеренно остаётся пустой — деталей в ней нет, строки инвентаризации быть не должно
+
+        StockMovement.objects.create(
+            part=self.part_a, quantity=10, movement_type='incoming', unit_price=Decimal('3.00'))
+        StockMovement.objects.create(
+            part=self.part_b, quantity=5, movement_type='incoming', unit_price=Decimal('7.00'))
+
+    def _start(self, follow=True):
+        response = self.client_http.post(f'/inventory/start/{self.cabinet.pk}/', follow=follow)
+        session = InventorySession.objects.filter(cabinet=self.cabinet, status='in_progress').first()
+        return session, response
+
+    def _count(self, session, counted):
+        data = {f'counted_{line.pk}': str(qty) for line, qty in counted}
+        return self.client_http.post(f'/inventory/{session.pk}/count/', data, follow=True)
+
+    def _confirm(self, session, comments=None):
+        data = {}
+        if comments:
+            for line, text in comments.items():
+                data[f'comment_{line.pk}'] = text
+        return self.client_http.post(f'/inventory/{session.pk}/confirm/', data, follow=True)
+
+    # --- старт сессии ---
+
+    def test_anonymous_user_is_redirected_to_login(self):
+        response = TestClient().get('/inventory/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response.url)
+
+    def test_start_creates_lines_only_for_parts_placed_in_a_cell(self):
+        session, response = self._start()
+
+        self.assertRedirects(response, f'/inventory/{session.pk}/count/')
+        parts_in_lines = set(session.lines.values_list('part__part_number', flat=True))
+        self.assertEqual(parts_in_lines, {'INV-A', 'INV-B'})
+
+    def test_expected_quantity_is_a_snapshot_of_current_stock_at_start(self):
+        session, _ = self._start()
+
+        line_a = session.lines.get(part=self.part_a)
+        self.assertEqual(line_a.expected_quantity, 10)
+
+    def test_starting_again_redirects_to_the_already_running_session(self):
+        """Не даём открыть вторую параллельную сессию на ту же кассетницу —
+        ведём к уже идущей."""
+        first_session, _ = self._start()
+
+        response = self.client_http.post(f'/inventory/start/{self.cabinet.pk}/', follow=False)
+
+        self.assertEqual(InventorySession.objects.filter(cabinet=self.cabinet).count(), 1)
+        self.assertRedirects(response, f'/inventory/{first_session.pk}/count/')
+
+    # --- расхождение как число ---
+
+    def test_discrepancy_is_counted_minus_expected(self):
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+
+        line_a.counted_quantity = 7
+        self.assertEqual(line_a.discrepancy, -3)
+
+        line_a.counted_quantity = 13
+        self.assertEqual(line_a.discrepancy, 3)
+
+        line_a.counted_quantity = None
+        self.assertIsNone(line_a.discrepancy)
+
+    # --- применение недостачи ---
+
+    def test_deficit_allocates_from_the_oldest_batch_and_reflects_its_price(self):
+        """Недостача списывается как обычный расход и уходит по FIFO —
+        сначала со старейшей партии; себестоимость расхождения — это
+        себестоимость именно задействованной партии."""
+        part = SparePart.objects.create(part_number='INV-FIFO', name='Деталь FIFO', current_stock=8, min_stock=0)
+        self.cell_c.parts.add(part)
+        old_batch = StockMovement.objects.create(
+            part=part, quantity=5, movement_type='incoming', unit_price=Decimal('10'))
+        StockMovement.objects.create(
+            part=part, quantity=3, movement_type='incoming', unit_price=Decimal('20'))
+
+        session, _ = self._start()
+        line = session.lines.get(part=part)
+        self._count(session, [(line, 3)])  # посчитано 3 при учтённых 8 → недостача 5
+
+        response = self._confirm(session)
+        self.assertEqual(response.status_code, 200)
+
+        part.refresh_from_db()
+        line.refresh_from_db()
+        self.assertEqual(part.current_stock, 3)
+        movement = line.movement
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.movement_type, 'outgoing')
+        self.assertEqual(movement.quantity, 5)
+        self.assertIn('Инвентаризация', movement.notes)
+
+        allocations = {a.incoming_id: a.quantity for a in movement.allocations.all()}
+        self.assertEqual(allocations, {old_batch.pk: 5})  # только старая партия, новую не трогает
+        self.assertEqual(views._cost_from_allocations(movement), Decimal('50'))  # 5 шт. по цене старой партии
+
+    def test_deficit_does_not_require_a_comment(self):
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        self._count(session, [(line_a, 6)])  # недостача 4
+
+        response = self._confirm(session)  # без комментария
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_COMPLETED)
+        line_a.refresh_from_db()
+        self.assertIsNotNone(line_a.movement)
+
+    # --- применение избытка ---
+
+    def test_surplus_creates_incoming_movement_without_price_and_does_not_touch_part_price(self):
+        self.part_b.price = Decimal('7.00')
+        self.part_b.save(update_fields=['price'])
+
+        session, _ = self._start()
+        line_b = session.lines.get(part=self.part_b)
+        self._count(session, [(line_b, 8)])  # излишек 3
+
+        response = self._confirm(session, comments={line_b: 'Найден лишний пакет на полке'})
+        self.assertEqual(response.status_code, 200)
+
+        self.part_b.refresh_from_db()
+        line_b.refresh_from_db()
+        self.assertEqual(self.part_b.current_stock, 8)
+        self.assertEqual(self.part_b.price, Decimal('7.00'))  # цену не тронули — находка не покупка
+        movement = line_b.movement
+        self.assertEqual(movement.movement_type, 'incoming')
+        self.assertIsNone(movement.unit_price)
+        self.assertIn('Найден лишний пакет на полке', movement.notes)
+        self.assertIn('Инвентаризация', movement.notes)
+
+    def test_surplus_without_a_comment_blocks_the_whole_apply(self):
+        """Избыток без причины не проходит — и не проходит целиком: даже
+        строка с недостачей в той же сессии не применяется, пока не
+        заполнен комментарий у строки с избытком."""
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        line_b = session.lines.get(part=self.part_b)
+        self._count(session, [(line_a, 6), (line_b, 8)])  # a: недостача 4, b: излишек 3
+
+        response = self._confirm(session)  # комментарий для b не передан
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_IN_PROGRESS)
+        line_a.refresh_from_db()
+        line_b.refresh_from_db()
+        self.assertIsNone(line_a.movement)
+        self.assertIsNone(line_b.movement)
+        self.part_a.refresh_from_db()
+        self.part_b.refresh_from_db()
+        self.assertEqual(self.part_a.current_stock, 10)
+        self.assertEqual(self.part_b.current_stock, 5)
+        self.assertFalse(StockMovement.objects.filter(notes__icontains='Инвентаризация').exists())
+
+        # Заполнив комментарий, ту же сессию можно применить следующим запросом
+        ok_response = self._confirm(session, comments={line_b: 'Пересортица при прошлой поставке'})
+        self.assertEqual(ok_response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_COMPLETED)
+
+    # --- расхождение против живого остатка, а не снимка на старте (снос по времени) ---
+
+    def test_apply_uses_live_stock_at_confirm_time_not_the_stale_start_snapshot(self):
+        """Между стартом сессии и подтверждением остаток мог измениться
+        другим движением (второй сотрудник на складе). Показанное и
+        применённое расхождение должно быть против ЖИВОГО остатка —
+        после применения current_stock равен ровно посчитанному, а не
+        тому, что предполагал снимок на начало сессии."""
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        self.assertEqual(line_a.expected_quantity, 10)
+
+        self._count(session, [(line_a, 10)])  # сотрудник вводит число, совпадающее со снимком
+
+        # Пока считали, кто-то успел списать 2 шт. этой же детали в заказ —
+        # против снимка (10) расхождения нет, но против живого остатка (8) есть
+        self.part_a.current_stock = 8
+        self.part_a.save(update_fields=['current_stock'])
+
+        confirm_page = self.client_http.get(f'/inventory/{session.pk}/confirm/')
+        row = next(r for r in confirm_page.context['rows'] if r['line'].pk == line_a.pk)
+        self.assertTrue(row['drifted'])
+        self.assertEqual(row['discrepancy'], 2)  # 10 (посчитано) − 8 (живой остаток)
+
+        blocked = self._confirm(session)  # излишек против живого остатка, комментария ещё нет
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_IN_PROGRESS)
+
+        applied = self._confirm(session, comments={line_a: 'Расхождение из-за параллельного списания'})
+        self.assertEqual(applied.status_code, 200)
+
+        self.part_a.refresh_from_db()
+        line_a.refresh_from_db()
+        session.refresh_from_db()
+        self.assertEqual(self.part_a.current_stock, 10)  # ровно посчитанное
+        self.assertEqual(session.status, InventorySession.STATUS_COMPLETED)
+        self.assertEqual(line_a.movement.movement_type, 'incoming')
+        self.assertEqual(line_a.movement.quantity, 2)  # разница против живого (8), а не против снимка (10)
+
+    # --- непосчитанные строки и завершение сессии ---
+
+    def test_uncounted_lines_stay_untouched_and_session_still_completes(self):
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        line_b = session.lines.get(part=self.part_b)
+        self._count(session, [(line_a, 10)])  # только A посчитана, расхождения нет; B не тронута
+
+        response = self._confirm(session)
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_COMPLETED)
+        line_b.refresh_from_db()
+        self.assertIsNone(line_b.counted_quantity)
+        self.assertIsNone(line_b.movement)
+        self.part_b.refresh_from_db()
+        self.assertEqual(self.part_b.current_stock, 5)
+
+    # --- удаление черновика ---
+
+    def test_draft_session_can_be_deleted_before_anything_is_applied(self):
+        session, _ = self._start()
+
+        response = self.client_http.post(f'/inventory/{session.pk}/delete/', follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(InventorySession.objects.filter(pk=session.pk).exists())
+
+    def test_session_with_applied_movements_cannot_be_deleted(self):
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        self._count(session, [(line_a, 6)])
+        self._confirm(session)
+        session.refresh_from_db()
+        self.assertEqual(session.status, InventorySession.STATUS_COMPLETED)
+
+        response = self.client_http.post(f'/inventory/{session.pk}/delete/', follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(InventorySession.objects.filter(pk=session.pk).exists())
+
+    # --- история ---
+
+    def test_history_list_reports_surplus_and_deficit_line_counts(self):
+        session, _ = self._start()
+        line_a = session.lines.get(part=self.part_a)
+        line_b = session.lines.get(part=self.part_b)
+        self._count(session, [(line_a, 6), (line_b, 8)])
+        self._confirm(session, comments={line_b: 'Излишек при пересчёте'})
+
+        response = self.client_http.get('/inventory/')
+
+        self.assertEqual(response.status_code, 200)
+        row = next(s for s in response.context['sessions'] if s.pk == session.pk)
+        self.assertEqual(row.deficit_count, 1)
+        self.assertEqual(row.surplus_count, 1)

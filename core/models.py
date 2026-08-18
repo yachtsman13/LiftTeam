@@ -1,8 +1,9 @@
 """
-Модели данных для LiftTeam v2.46.0.
+Модели данных для LiftTeam v2.47.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
-          StockAllocation, OrderCost, Payment, Employee (User extension).
+          StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
+          Employee (User extension).
 """
 import calendar
 import re
@@ -1838,5 +1839,128 @@ class OrderCost(models.Model):
     def __str__(self):
         amount_text = f'{self.amount} ₽' if self.amount is not None else 'сумма неизвестна'
         return f'{self.get_category_display()} по {self.repair_order.order_number}: {amount_text}'
+
+
+class InventorySession(models.Model):
+    """Сессия инвентаризации одной кассетницы целиком.
+
+    Область — всегда одна `Cabinet`, а не склад целиком и не произвольная
+    «зона»: в проекте нет отдельного понятия зоны, а кассетница уже задаёт
+    физическую границу пересчёта. Одновременно на одну кассетницу может
+    идти только одна незавершённая сессия — это проверяет вызывающий код
+    при старте, а не модель.
+    """
+    STATUS_IN_PROGRESS = 'in_progress'
+    STATUS_COMPLETED = 'completed'
+    STATUS_CHOICES = [
+        (STATUS_IN_PROGRESS, 'В процессе'),
+        (STATUS_COMPLETED, 'Завершена'),
+    ]
+
+    cabinet = models.ForeignKey(
+        Cabinet, on_delete=models.CASCADE, related_name='inventory_sessions',
+        verbose_name='Кассетница'
+    )
+    status = models.CharField(
+        'Статус', max_length=15, choices=STATUS_CHOICES,
+        default=STATUS_IN_PROGRESS, db_index=True
+    )
+    started_at = models.DateTimeField('Начата', auto_now_add=True)
+    completed_at = models.DateTimeField('Завершена', null=True, blank=True)
+    started_by = models.ForeignKey(
+        Employee, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='inventory_sessions_started', verbose_name='Кем начата'
+    )
+    completed_by = models.ForeignKey(
+        Employee, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='inventory_sessions_completed', verbose_name='Кем завершена'
+    )
+
+    class Meta:
+        verbose_name = 'Сессия инвентаризации'
+        verbose_name_plural = 'Сессии инвентаризации'
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f'Инвентаризация кассетницы {self.cabinet.number} от {self.started_at:%d.%m.%Y}'
+
+    @property
+    def is_in_progress(self):
+        return self.status == self.STATUS_IN_PROGRESS
+
+    @property
+    def can_be_deleted(self):
+        """Удалить можно только черновик: сессию в процессе, по которой
+        ещё ничего не применено. Применённые движения склада — это уже
+        аудиторский след, и его не отменяют удалением сессии."""
+        return self.is_in_progress and not self.lines.filter(movement__isnull=False).exists()
+
+
+class InventorySessionLine(models.Model):
+    """Одна деталь в сессии инвентаризации: сколько числилось на начало
+    и сколько фактически насчитали.
+
+    `expected_quantity` — снимок `SparePart.current_stock` на момент
+    создания строки (начало сессии), нужен только для информации и для
+    предупреждения об «утечке» остатка за время сессии. Применяемое
+    расхождение считается не по этому снимку, а по живому остатку на
+    момент подтверждения (см. `views._apply_inventory_discrepancy`) — это
+    гарантирует, что после применения `current_stock` детали равен ровно
+    посчитанному, даже если между началом сессии и подтверждением прошло
+    другое движение по той же детали (в проекте есть параллельные
+    пользователи по Tailscale).
+    """
+    session = models.ForeignKey(
+        InventorySession, on_delete=models.CASCADE, related_name='lines',
+        verbose_name='Сессия'
+    )
+    part = models.ForeignKey(
+        SparePart, on_delete=models.CASCADE, related_name='inventory_lines',
+        verbose_name='Деталь'
+    )
+    # Ячейка на момент начала сессии. SET_NULL, а не CASCADE: перекладка
+    # раскладки кассетницы не должна стирать уже готовую строку аудита
+    cell = models.ForeignKey(
+        StorageCell, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='inventory_lines', verbose_name='Ячейка'
+    )
+    expected_quantity = models.IntegerField('Учтено на начало сессии', validators=[MinValueValidator(0)])
+    counted_quantity = models.IntegerField(
+        'Посчитано фактически', null=True, blank=True, validators=[MinValueValidator(0)]
+    )
+    # Обязателен только при избытке (проверяет представление при подтверждении,
+    # не форма и не модель — на момент ввода количества знак расхождения ещё
+    # не известен окончательно, он пересчитывается против живого остатка)
+    comment = models.CharField('Комментарий при избытке', max_length=255, blank=True)
+    # Движение склада, которым расхождение применено. Пусто, пока не
+    # применено, и пусто навсегда, если расхождения не было (посчитанное
+    # совпало с остатком на момент подтверждения) — специальной
+    # parallel-сущности корректировки в проекте нет, только обычный
+    # StockMovement с пояснением в notes
+    movement = models.ForeignKey(
+        StockMovement, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='inventory_lines', verbose_name='Движение склада'
+    )
+
+    class Meta:
+        verbose_name = 'Строка инвентаризации'
+        verbose_name_plural = 'Строки инвентаризации'
+        ordering = ['cell__row_number', 'cell__cell_row', 'part__part_number']
+
+    def __str__(self):
+        return f'{self.part.part_number} в сессии №{self.session_id}'
+
+    @property
+    def discrepancy(self):
+        """Расхождение против учтённого на начало сессии (посчитано минус
+        учтено). None, пока деталь не посчитана.
+
+        Это информационное число для экрана ввода — окончательное
+        расхождение, которое действительно применяется, считается против
+        живого остатка на момент подтверждения и может от этого отличаться,
+        если остаток успел измениться (см. docstring класса)."""
+        if self.counted_quantity is None:
+            return None
+        return self.counted_quantity - self.expected_quantity
 
 

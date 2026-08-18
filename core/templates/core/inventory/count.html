@@ -1,0 +1,74 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.47.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard-check me-2"></i>Инвентаризация кассетницы {{ session.cabinet.number }}</h2>
+    <div>
+        <a href="{% url 'inventory_delete' session.pk %}" class="btn btn-outline-danger me-2">
+            <i class="bi bi-x-lg me-2"></i>Отменить черновик
+        </a>
+        <a href="{% url 'inventory_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-2"></i>К истории
+        </a>
+    </div>
+</div>
+
+{% comment %}
+    Учётное количество — снимок остатка на момент начала сессии, только
+    для справки. Ничего не применяется прямо здесь: сохранение переводит
+    к следующему шагу, где расхождения показаны против текущего остатка
+    и требуют подтверждения.
+{% endcomment %}
+<div class="alert alert-info">
+    Впишите фактически посчитанное количество по каждой детали. Пустые
+    строки останутся непосчитанными — их можно будет досчитать позже,
+    вернувшись на эту страницу. После сохранения откроется экран
+    с расхождениями, где нужно будет подтвердить применение.
+</div>
+
+{% if not lines %}
+<p class="text-muted">В этой кассетнице нет ни одной размещённой детали.</p>
+{% else %}
+<form method="post">
+    {% csrf_token %}
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Ячейка</th>
+                            <th>Артикул</th>
+                            <th>Название</th>
+                            <th class="text-end">Учтено на начало</th>
+                            <th style="width: 10rem;">Посчитано фактически</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for line in lines %}
+                        <tr>
+                            <td>{{ line.cell.address|default:"—" }}</td>
+                            <td class="fw-bold">{{ line.part.part_number }}</td>
+                            <td>{{ line.part.name }}</td>
+                            <td class="text-end">{{ line.expected_quantity }}</td>
+                            <td>
+                                <input type="number" min="0" class="form-control form-control-sm"
+                                       name="counted_{{ line.pk }}"
+                                       value="{{ line.counted_quantity|default_if_none:'' }}"
+                                       placeholder="—">
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-arrow-right-circle me-2"></i>Сохранить и посмотреть расхождения
+            </button>
+        </div>
+    </div>
+</form>
+{% endif %}
+{% endblock %}

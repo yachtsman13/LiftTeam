@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.46.0.
+Views для LiftTeam v2.47.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -33,6 +33,7 @@ from .models import (
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
+    InventorySession, InventorySessionLine,
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
@@ -1999,6 +2000,271 @@ def storage_cell_remove_part(request, pk):
     part = get_object_or_404(SparePart, pk=part_id)
     cell.parts.remove(part)
     return JsonResponse({'success': True, 'message': f'Деталь {part.part_number} удалена из ячейки {cell.address}'})
+
+
+# ==================== ИНВЕНТАРИЗАЦИЯ ====================
+
+def _apply_inventory_discrepancy(line, discrepancy, employee):
+    """Применяет расхождение по одной строке инвентаризации.
+
+    `discrepancy` — фактически посчитанное минус ЖИВОЙ остаток детали на
+    момент применения; вызывающая сторона (`inventory_confirm`) уже
+    пересчитала его против `line.part.current_stock`, здесь это не
+    делается повторно, чтобы несколько строк в одной сессии применялись
+    против согласованного набора чисел, а не каждая против своего момента.
+
+    Расхождение создаёт обычный `StockMovement` — не отдельную сущность
+    корректировки — и для недостачи распределяется по партиям прихода
+    (FIFO) точно так же, как любое другое списание в проекте (см.
+    `_use_repair_order_part`, `part_stock_outgoing`,
+    `StockAllocation.allocate`): решение задачи сознательно не даёт
+    вручную выбирать партию под недостачу — причина расхождения
+    (пересортица, утеря, ошибка ввода) ни с одной конкретной партией
+    не связана сильнее прочих.
+
+    Избыток заводится приходом без цены (находка — не покупка, угадывать
+    её нельзя) и поэтому не должен обновлять `SparePart.price` — тот же
+    аккуратный флажок, что уже есть в `part_stock_incoming`.
+
+    После применения `part.current_stock` равен ровно
+    `line.counted_quantity`, что бы ни случилось с остатком раньше.
+    """
+    part = line.part
+    session = line.session
+    where = line.cell.address if line.cell else part.part_number
+
+    if discrepancy > 0:
+        movement = StockMovement.objects.create(
+            part=part,
+            quantity=discrepancy,
+            movement_type='incoming',
+            unit_price=None,
+            notes=f'{line.comment} (причина: Инвентаризация) — сессия №{session.pk}, {where}',
+            created_by=employee,
+        )
+        part.current_stock += discrepancy
+        part.save(update_fields=['current_stock'])
+        # unit_price не заполнен — цену детали не трогаем, см. part_stock_incoming
+    else:
+        qty = -discrepancy
+        movement = StockMovement.objects.create(
+            part=part,
+            quantity=qty,
+            movement_type='outgoing',
+            notes=f'Недостача при инвентаризации (причина: Инвентаризация) — сессия №{session.pk}, {where}',
+            created_by=employee,
+        )
+        part.current_stock -= qty
+        part.save(update_fields=['current_stock'])
+        StockAllocation.allocate(movement)
+
+    line.movement = movement
+    line.save(update_fields=['movement', 'comment'])
+    return movement
+
+
+@login_required
+@require_POST
+def inventory_start(request, pk):
+    """Начинает инвентаризацию кассетницы `pk`.
+
+    Если по ней уже идёт незавершённая сессия — не открываем вторую
+    параллельно, а ведём к уже идущей. Строки заводятся по деталям,
+    у которых сейчас есть ячейка внутри этой кассетницы: у пустых ячеек
+    сверять нечего.
+    """
+    cabinet = get_object_or_404(Cabinet, pk=pk)
+    existing = InventorySession.objects.filter(
+        cabinet=cabinet, status=InventorySession.STATUS_IN_PROGRESS
+    ).first()
+    if existing:
+        messages.info(request, f'По кассетнице {cabinet.number} уже идёт инвентаризация — продолжаем её')
+        return redirect('inventory_count', pk=existing.pk)
+
+    with transaction.atomic():
+        session = InventorySession.objects.create(cabinet=cabinet, started_by=request.user)
+        cells = cabinet.cells.prefetch_related('parts').order_by('row_number', 'cell_row')
+        new_lines = [
+            InventorySessionLine(session=session, part=part, cell=cell, expected_quantity=part.current_stock)
+            for cell in cells
+            for part in cell.parts.all()
+        ]
+        InventorySessionLine.objects.bulk_create(new_lines)
+
+    if not new_lines:
+        messages.warning(
+            request, f'В кассетнице {cabinet.number} нет ни одной размещённой детали — сверять нечего')
+    else:
+        messages.success(
+            request,
+            f'Инвентаризация кассетницы {cabinet.number} начата, деталей к пересчёту: {len(new_lines)}'
+        )
+    return redirect('inventory_count', pk=session.pk)
+
+
+@login_required
+def inventory_count(request, pk):
+    """Ввод фактически посчитанного количества по каждой строке сессии.
+
+    Учётное количество (снимок на начало сессии) показывается для
+    справки; сохранение не пересчитывает и не применяет ничего — это
+    делает следующий шаг, `inventory_confirm`.
+    """
+    session = get_object_or_404(
+        InventorySession.objects.select_related('cabinet'), pk=pk)
+    if not session.is_in_progress:
+        return redirect('inventory_detail', pk=session.pk)
+
+    lines = session.lines.select_related('part', 'cell').order_by(
+        'cell__row_number', 'cell__cell_row', 'part__part_number')
+
+    if request.method == 'POST':
+        with transaction.atomic():
+            for line in lines:
+                raw = request.POST.get(f'counted_{line.pk}', '').strip()
+                if raw == '':
+                    continue
+                try:
+                    value = int(raw)
+                except ValueError:
+                    continue
+                if value < 0:
+                    continue
+                line.counted_quantity = value
+                line.save(update_fields=['counted_quantity'])
+        messages.success(request, 'Количества сохранены')
+        return redirect('inventory_confirm', pk=session.pk)
+
+    return render(request, 'core/inventory/count.html', {
+        'session': session,
+        'lines': lines,
+    })
+
+
+@login_required
+def inventory_confirm(request, pk):
+    """Показывает расхождения, посчитанные против ЖИВОГО остатка (не
+    против учтённого на начало сессии — см. docstring
+    `InventorySessionLine`), и по подтверждению применяет их.
+
+    Избыток без заполненного комментария блокирует применение целиком —
+    ни одно движение не создаётся, пока причина не указана по каждой
+    строке с превышением.
+    """
+    session = get_object_or_404(
+        InventorySession.objects.select_related('cabinet'), pk=pk)
+    if not session.is_in_progress:
+        return redirect('inventory_detail', pk=session.pk)
+
+    counted_lines = list(
+        session.lines.select_related('part', 'cell')
+        .filter(counted_quantity__isnull=False)
+        .order_by('cell__row_number', 'cell__cell_row', 'part__part_number')
+    )
+    uncounted = session.lines.filter(counted_quantity__isnull=True).count()
+
+    rows = [
+        {
+            'line': line,
+            'live_stock': line.part.current_stock,
+            'discrepancy': line.counted_quantity - line.part.current_stock,
+            'drifted': line.part.current_stock != line.expected_quantity,
+        }
+        for line in counted_lines
+    ]
+
+    if request.method == 'POST':
+        comment_values = {
+            row['line'].pk: request.POST.get(f"comment_{row['line'].pk}", '').strip()
+            for row in rows if row['discrepancy'] > 0
+        }
+        missing_comment_ids = {pk_ for pk_, text in comment_values.items() if not text}
+
+        if missing_comment_ids:
+            for row in rows:
+                row['comment_value'] = comment_values.get(row['line'].pk, '')
+            messages.error(
+                request,
+                'Укажите причину избытка по каждой отмеченной строке — без неё заявка не применена'
+            )
+            return render(request, 'core/inventory/confirm.html', {
+                'session': session, 'rows': rows, 'uncounted': uncounted,
+                'missing_comment_ids': missing_comment_ids,
+            })
+
+        to_apply = [(row['line'], row['discrepancy']) for row in rows if row['discrepancy'] != 0]
+        for line, _ in to_apply:
+            if line.pk in comment_values:
+                line.comment = comment_values[line.pk]
+
+        with transaction.atomic():
+            for line, discrepancy in to_apply:
+                _apply_inventory_discrepancy(line, discrepancy, request.user)
+            session.status = InventorySession.STATUS_COMPLETED
+            session.completed_at = timezone.now()
+            session.completed_by = request.user
+            session.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        if to_apply:
+            messages.success(request, f'Инвентаризация завершена. Применено расхождений: {len(to_apply)}')
+        else:
+            messages.success(request, 'Инвентаризация завершена. Расхождений не найдено')
+        return redirect('inventory_detail', pk=session.pk)
+
+    return render(request, 'core/inventory/confirm.html', {
+        'session': session, 'rows': rows, 'uncounted': uncounted,
+    })
+
+
+@login_required
+def inventory_list(request):
+    """История сессий инвентаризации по всем кассетницам — для аудита."""
+    sessions = (
+        InventorySession.objects
+        .select_related('cabinet', 'started_by', 'completed_by')
+        .annotate(
+            surplus_count=Count(
+                'lines', filter=Q(lines__movement__movement_type='incoming'), distinct=True),
+            deficit_count=Count(
+                'lines', filter=Q(lines__movement__movement_type='outgoing'), distinct=True),
+        )
+    )
+    return render(request, 'core/inventory/list.html', {
+        'sessions': sessions,
+        'cabinets': Cabinet.objects.all(),
+    })
+
+
+@login_required
+def inventory_detail(request, pk):
+    """Одна сессия инвентаризации целиком — для истории/аудита, и как
+    экран продолжения незавершённой сессии."""
+    session = get_object_or_404(
+        InventorySession.objects.select_related('cabinet', 'started_by', 'completed_by'), pk=pk)
+    lines = session.lines.select_related('part', 'cell', 'movement').order_by(
+        'cell__row_number', 'cell__cell_row', 'part__part_number')
+    return render(request, 'core/inventory/detail.html', {
+        'session': session,
+        'lines': lines,
+    })
+
+
+@login_required
+def inventory_delete(request, pk):
+    """Удаление черновика инвентаризации: только пока сессия в процессе
+    и по ней ещё ничего не применено — иначе это уже аудиторский след."""
+    session = get_object_or_404(InventorySession.objects.select_related('cabinet'), pk=pk)
+    if not session.can_be_deleted:
+        messages.error(request, 'Эту сессию удалить нельзя: по ней уже применены движения склада')
+        return redirect('inventory_detail', pk=session.pk)
+
+    if request.method == 'POST':
+        cabinet_number = session.cabinet.number
+        session.delete()
+        messages.success(request, f'Черновик инвентаризации кассетницы {cabinet_number} удалён')
+        return redirect('inventory_list')
+
+    return render(request, 'core/inventory/delete.html', {'session': session})
 
 
 def _label_specs(part):

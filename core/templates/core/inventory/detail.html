@@ -1,0 +1,101 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Инвентаризация {{ session.cabinet.number }} — LiftTeam v2.47.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard-check me-2"></i>Инвентаризация кассетницы {{ session.cabinet.number }}</h2>
+    <div>
+        {% if session.is_in_progress %}
+        <a href="{% url 'inventory_count' session.pk %}" class="btn btn-primary me-2">
+            <i class="bi bi-arrow-right-circle me-2"></i>Продолжить
+        </a>
+        {% if session.can_be_deleted %}
+        <a href="{% url 'inventory_delete' session.pk %}" class="btn btn-outline-danger me-2">
+            <i class="bi bi-x-lg me-2"></i>Отменить черновик
+        </a>
+        {% endif %}
+        {% endif %}
+        <a href="{% url 'inventory_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-2"></i>К истории
+        </a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-3">Статус</dt>
+            <dd class="col-sm-9">
+                {% if session.is_in_progress %}
+                <span class="badge bg-warning text-dark">В процессе</span>
+                {% else %}
+                <span class="badge bg-success">Завершена</span>
+                {% endif %}
+            </dd>
+            <dt class="col-sm-3">Начата</dt>
+            <dd class="col-sm-9">{{ session.started_at|date:"d.m.Y H:i" }}{% if session.started_by %} — {{ session.started_by.full_name }}{% endif %}</dd>
+            {% if session.completed_at %}
+            <dt class="col-sm-3">Завершена</dt>
+            <dd class="col-sm-9">{{ session.completed_at|date:"d.m.Y H:i" }}{% if session.completed_by %} — {{ session.completed_by.full_name }}{% endif %}</dd>
+            {% endif %}
+        </dl>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Строки инвентаризации</div>
+    <div class="card-body">
+        {% if not lines %}
+        <p class="text-muted mb-0">В этой кассетнице не было размещённых деталей.</p>
+        {% else %}
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Ячейка</th>
+                        <th>Артикул</th>
+                        <th>Название</th>
+                        <th class="text-end">Учтено на начало</th>
+                        <th class="text-end">Посчитано</th>
+                        <th class="text-end">Расхождение</th>
+                        <th>Комментарий</th>
+                        <th>Движение</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in lines %}
+                    <tr>
+                        <td>{{ line.cell.address|default:"—" }}</td>
+                        <td class="fw-bold">{{ line.part.part_number }}</td>
+                        <td>{{ line.part.name }}</td>
+                        <td class="text-end">{{ line.expected_quantity }}</td>
+                        <td class="text-end">{{ line.counted_quantity|default_if_none:"—" }}</td>
+                        <td class="text-end fw-bold">
+                            {% if line.discrepancy is None %}
+                            <span class="text-muted">не посчитано</span>
+                            {% elif line.discrepancy > 0 %}
+                            <span class="text-success">+{{ line.discrepancy }}</span>
+                            {% elif line.discrepancy < 0 %}
+                            <span class="text-danger">{{ line.discrepancy }}</span>
+                            {% else %}0{% endif %}
+                        </td>
+                        <td>{{ line.comment|default:"—" }}</td>
+                        <td>
+                            {% if line.movement %}
+                            <span class="badge {% if line.movement.movement_type == 'incoming' %}bg-success{% else %}bg-danger{% endif %}">
+                                {{ line.movement.get_movement_type_display }} {{ line.movement.quantity }}
+                            </span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

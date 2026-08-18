@@ -1,0 +1,94 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Инвентаризация — подтверждение — LiftTeam v2.47.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-clipboard-check me-2"></i>Расхождения — кассетница {{ session.cabinet.number }}</h2>
+    <a href="{% url 'inventory_count' session.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>Назад к вводу
+    </a>
+</div>
+
+{% comment %}
+    Расхождение здесь — против ЖИВОГО остатка на момент открытия этой
+    страницы, а не против учтённого на начало сессии: если между стартом
+    инвентаризации и этим экраном по детали прошло другое движение
+    (второй сотрудник на складе), знак и величина расхождения могут
+    отличаться от того, что казалось на шаге ввода. Строка с таким
+    отличием отмечена отдельно.
+{% endcomment %}
+{% if uncounted %}
+<div class="alert alert-warning">
+    Не посчитано ещё {{ uncounted }} дет. — им расхождение не покажется
+    и они не будут применены. Можно вернуться и досчитать, либо подтвердить
+    как есть — недосчитанные останутся ждать следующей сессии.
+</div>
+{% endif %}
+
+{% if not rows %}
+<p class="text-muted">Ни одна деталь ещё не посчитана — возвращайтесь на ввод количеств.</p>
+{% else %}
+<form method="post">
+    {% csrf_token %}
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Ячейка</th>
+                            <th>Артикул</th>
+                            <th>Название</th>
+                            <th class="text-end">Учтено на начало</th>
+                            <th class="text-end">Остаток сейчас</th>
+                            <th class="text-end">Посчитано</th>
+                            <th class="text-end">Расхождение</th>
+                            <th>Комментарий (обязателен при избытке)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                        <tr class="{% if row.discrepancy > 0 %}table-success{% elif row.discrepancy < 0 %}table-danger{% endif %}">
+                            <td>{{ row.line.cell.address|default:"—" }}</td>
+                            <td class="fw-bold">{{ row.line.part.part_number }}</td>
+                            <td>{{ row.line.part.name }}</td>
+                            <td class="text-end">{{ row.line.expected_quantity }}</td>
+                            <td class="text-end">
+                                {{ row.live_stock }}
+                                {% if row.drifted %}
+                                <br><span class="badge bg-warning text-dark" title="Остаток изменился с начала сессии">изменился</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end">{{ row.line.counted_quantity }}</td>
+                            <td class="text-end fw-bold">
+                                {% if row.discrepancy > 0 %}+{{ row.discrepancy }}
+                                {% elif row.discrepancy < 0 %}{{ row.discrepancy }}
+                                {% else %}0{% endif %}
+                            </td>
+                            <td style="min-width: 14rem;">
+                                {% if row.discrepancy > 0 %}
+                                <input type="text" class="form-control form-control-sm {% if row.line.pk in missing_comment_ids %}is-invalid{% endif %}"
+                                       name="comment_{{ row.line.pk }}"
+                                       value="{{ row.comment_value|default:row.line.comment }}"
+                                       placeholder="Причина избытка">
+                                {% if row.line.pk in missing_comment_ids %}
+                                <div class="invalid-feedback">Обязательно при избытке</div>
+                                {% endif %}
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <button type="submit" class="btn btn-success">
+                <i class="bi bi-check-circle me-2"></i>Подтвердить и применить
+            </button>
+        </div>
+    </div>
+</form>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Отмена инвентаризации — LiftTeam v2.47.0{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <i class="bi bi-trash me-2"></i>Отменить черновик инвентаризации
+            </div>
+            <div class="card-body">
+                <p>
+                    Черновик инвентаризации кассетницы
+                    <strong>{{ session.cabinet.label }}</strong>,
+                    начатый {{ session.started_at|date:"d.m.Y H:i" }}, будет удалён вместе
+                    со всеми введёнными количествами. Отменить это будет нельзя.
+                </p>
+                <form method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash me-2"></i>Удалить черновик
+                    </button>
+                    <a href="{% url 'inventory_count' session.pk %}" class="btn btn-outline-secondary">Отмена</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
