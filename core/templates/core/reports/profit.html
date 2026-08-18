@@ -1,0 +1,104 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Прибыль по заказам — LiftTeam v2.46.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-graph-up-arrow me-2"></i>Прибыль по заказам</h2>
+    <div>
+        <a href="{% url 'report_profit_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success"><i class="bi bi-file-earmark-excel me-2"></i>В Excel</a>
+        <a href="{% url 'reports' %}" class="btn btn-outline-secondary ms-2"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small text-muted mb-1">С</label>
+                <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small text-muted mb-1">По</label>
+                <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-outline-primary w-100">Фильтр</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="small text-muted mb-3">
+    Выручка — по дате поступления платежа, себестоимость — по дате списания детали.
+    Заказ, где деньги пришли и детали списались в разные периоды, попадает в оба
+    отчёта своей частью, а не целиком в один из них.
+</div>
+
+{% if unknown_cost_count %}
+<div class="alert alert-warning">
+    По {{ unknown_cost_count }} списани{{ unknown_cost_count|pluralize:"ю,ям" }} деталей за период себестоимость
+    неизвестна (партия прихода без цены или на момент списания не хватило остатка ни в одной партии).
+    Показанная ниже себестоимость и прибыль — по известной части; реальная прибыль ниже.
+</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted">Выручка за период</div>
+                <div class="display-6">{{ revenue_total|floatformat:2 }} ₽</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted">Себестоимость деталей{% if unknown_cost_count %}, известная часть{% endif %}</div>
+                <div class="display-6">{{ known_cost_total|floatformat:2 }} ₽</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted">Прибыль{% if unknown_cost_count %} (по известной себестоимости){% endif %}</div>
+                <div class="display-6">{{ profit_total|floatformat:2 }} ₽</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">По заказчикам</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Заказчик</th>
+                        <th>Выручка, ₽</th>
+                        <th>Себестоимость, ₽</th>
+                        <th>Без известной цены</th>
+                        <th>Прибыль, ₽</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.client }}</td>
+                        <td>{{ row.revenue|floatformat:2 }}</td>
+                        <td>{{ row.known_cost|floatformat:2 }}</td>
+                        <td>{% if row.unknown_cost_count %}<span class="text-warning">{{ row.unknown_cost_count }}</span>{% else %}—{% endif %}</td>
+                        <td>{{ row.profit|floatformat:2 }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="5" class="text-center text-muted py-4">За период нет ни платежей, ни списаний деталей по заказам</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

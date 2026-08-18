@@ -17,7 +17,7 @@ from urllib import error as urllib_error
 import openpyxl
 from django.conf import settings
 from django.core.management import call_command
-from django.db import connection
+from django.db import connection, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test import Client as TestClient
 from django.test.utils import CaptureQueriesContext
@@ -28,8 +28,8 @@ from . import messengers, notifications, tbank, views
 from .forms import RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
-    FaultType, FaultTypePart, Notification, Organization, OrderStatusHistory, Payment,
-    RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockMovement,
+    FaultType, FaultTypePart, Notification, Organization, OrderCost, OrderStatusHistory, Payment,
+    RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
     StorageCell, parse_layout, plural_genitive, format_spec,
 )
 
@@ -1625,7 +1625,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.45.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.46.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -7023,3 +7023,304 @@ class FaultTypeAdminTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn('/login/', response.url)
+
+
+class StockAllocationTests(TestCase):
+    """Распределение расхода по партиям прихода (FIFO): каждый расход должен
+    ссылаться на конкретную партию, из которой он физически списан."""
+
+    def setUp(self):
+        self.part = SparePart.objects.create(part_number='BATCH-1', name='Диод')
+
+    def _incoming(self, quantity, price):
+        return StockMovement.objects.create(
+            part=self.part, quantity=quantity, movement_type='incoming', unit_price=price
+        )
+
+    def _outgoing(self, quantity):
+        return StockMovement.objects.create(
+            part=self.part, quantity=quantity, movement_type='outgoing'
+        )
+
+    def test_a_single_batch_covers_the_request(self):
+        batch = self._incoming(5, Decimal('10'))
+        outgoing = self._outgoing(3)
+
+        fully_covered = StockAllocation.allocate(outgoing)
+
+        self.assertTrue(fully_covered)
+        allocations = list(outgoing.allocations.all())
+        self.assertEqual(len(allocations), 1)
+        self.assertEqual(allocations[0].incoming, batch)
+        self.assertEqual(allocations[0].quantity, 3)
+        self.assertEqual(batch.remaining_in_batch, 2)
+
+    def test_a_request_bigger_than_the_oldest_batch_spills_into_the_next(self):
+        """Запрошенное количество больше самой старой партии — распределяется
+        по датам поступления, старейшая партия расходуется первой."""
+        old_batch = self._incoming(5, Decimal('10'))
+        new_batch = self._incoming(5, Decimal('20'))
+        outgoing = self._outgoing(8)
+
+        fully_covered = StockAllocation.allocate(outgoing)
+
+        self.assertTrue(fully_covered)
+        by_batch = {a.incoming_id: a.quantity for a in outgoing.allocations.all()}
+        self.assertEqual(by_batch, {old_batch.pk: 5, new_batch.pk: 3})
+        self.assertEqual(old_batch.remaining_in_batch, 0)
+        self.assertEqual(new_batch.remaining_in_batch, 2)
+
+    def test_insufficient_stock_across_all_batches_leaves_a_remainder(self):
+        """Партий вместе не хватает — известная часть распределяется как
+        обычно, а на недостачу партии не хватает ни одной."""
+        batch = self._incoming(5, Decimal('10'))
+        outgoing = self._outgoing(8)
+
+        fully_covered = StockAllocation.allocate(outgoing)
+
+        self.assertFalse(fully_covered)
+        allocations = list(outgoing.allocations.all())
+        self.assertEqual(len(allocations), 1)
+        self.assertEqual(allocations[0].incoming, batch)
+        self.assertEqual(allocations[0].quantity, 5)
+
+    def test_a_later_call_in_the_same_transaction_does_not_see_the_batch_as_still_full(self):
+        """Два расхода подряд (как при нескольких вызовах
+        `_use_repair_order_part` в одной транзакции) не должны оба списаться
+        с полного остатка партии — второй обязан увидеть то, что уже забрал
+        первый."""
+        batch = self._incoming(5, Decimal('10'))
+
+        with transaction.atomic():
+            first = self._outgoing(3)
+            StockAllocation.allocate(first)
+            second = self._outgoing(2)
+            StockAllocation.allocate(second)
+
+        self.assertEqual(batch.remaining_in_batch, 0)
+        self.assertEqual(StockAllocation.objects.filter(incoming=batch).count(), 2)
+        self.assertEqual(
+            sorted(StockAllocation.objects.filter(incoming=batch).values_list('quantity', flat=True)),
+            [2, 3],
+        )
+
+
+class OrderCostFromAllocationsTests(TestCase):
+    """`_use_repair_order_part` заводит `OrderCost` (category='parts') по
+    фактически задействованным партиям — не по средней/текущей цене."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_user(
+            username='wh_cost', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+        self.client_obj = ClientModel.objects.create(name='ООО Себестоимость')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        self.part = SparePart.objects.create(part_number='COST-1', name='Стабилизатор')
+
+    def _incoming(self, quantity, price):
+        return StockMovement.objects.create(
+            part=self.part, quantity=quantity, movement_type='incoming', unit_price=price
+        )
+
+    def _add_detail(self, quantity):
+        return self.client_http.post(
+            f'/repair-orders/{self.order.pk}/add-detail/',
+            {'part': self.part.pk, 'quantity_used': quantity},
+        )
+
+    def test_cost_from_a_single_priced_batch(self):
+        self._incoming(10, Decimal('50'))
+
+        self._add_detail(4)
+
+        cost = OrderCost.objects.get(repair_order=self.order, category='parts')
+        self.assertEqual(cost.amount, Decimal('200'))
+
+    def test_cost_split_across_two_differently_priced_batches(self):
+        self._incoming(3, Decimal('50'))
+        self._incoming(10, Decimal('80'))
+
+        self._add_detail(5)
+
+        cost = OrderCost.objects.get(repair_order=self.order, category='parts')
+        # 3 шт. по 50 из первой партии + 2 шт. по 80 из второй
+        self.assertEqual(cost.amount, Decimal('150') + Decimal('160'))
+
+    def test_cost_is_unknown_when_a_batch_has_no_price(self):
+        self._incoming(10, None)
+
+        self._add_detail(4)
+
+        cost = OrderCost.objects.get(repair_order=self.order, category='parts')
+        self.assertIsNone(cost.amount)
+
+    def test_cost_is_unknown_not_partial_when_stock_runs_short(self):
+        """Недостаточно остатка — известная часть распределяется, но сумма
+        затраты — None целиком, а не по покрытой части."""
+        self._incoming(3, Decimal('50'))
+
+        self._add_detail(5)  # спишется в минус, предупреждение уже проверено в других тестах
+
+        cost = OrderCost.objects.get(repair_order=self.order, category='parts')
+        self.assertIsNone(cost.amount)
+        # Известная часть партий всё равно распределена
+        self.assertEqual(StockAllocation.objects.filter(outgoing__repair_order=self.order).count(), 1)
+
+    def test_repeated_calls_in_one_transaction_do_not_double_dip_a_batch(self):
+        """Применение шаблона неисправности несколькими деталями подряд
+        вызывает `_use_repair_order_part` несколько раз в одной транзакции —
+        распределение по партиям должно учитывать уже списанное предыдущим
+        вызовом, а не увидеть партию как ещё полную."""
+        self._incoming(5, Decimal('10'))
+
+        with transaction.atomic():
+            views._use_repair_order_part(self.order, self.part, 3, self.user, 'первый вызов')
+            views._use_repair_order_part(self.order, self.part, 2, self.user, 'второй вызов')
+
+        costs = list(OrderCost.objects.filter(repair_order=self.order, category='parts'))
+        self.assertEqual(len(costs), 2)
+        self.assertEqual({c.amount for c in costs}, {Decimal('30'), Decimal('20')})
+
+    def test_manual_stock_outgoing_allocates_but_creates_no_order_cost(self):
+        """Ручное списание не привязано к заказу — партии распределяются
+        (для будущей себестоимости), но `OrderCost` не заводится."""
+        self._incoming(10, Decimal('50'))
+
+        self.client_http.post(
+            f'/parts/{self.part.pk}/stock-outgoing/',
+            {'quantity': 4, 'reason': 'consumption', 'notes': '', 'document_number': ''},
+        )
+
+        movement = StockMovement.objects.get(part=self.part, movement_type='outgoing')
+        self.assertEqual(movement.allocations.count(), 1)
+        self.assertEqual(movement.allocations.first().quantity, 4)
+        self.assertEqual(OrderCost.objects.count(), 0)
+
+
+class RepairOrderPartsCostAndProfitTests(TestCase):
+    """`RepairOrder.parts_cost` / `.profit` — прибыль = поступившие платежи
+    минус себестоимость списанных деталей (не выставленная стоимость
+    ремонта)."""
+
+    def setUp(self):
+        self.client_obj = ClientModel.objects.create(name='ООО Прибыль')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+
+    def test_an_order_with_no_cost_records_has_zero_parts_cost(self):
+        self.assertEqual(self.order.parts_cost, Decimal('0'))
+        self.assertEqual(self.order.profit, Decimal('0'))
+
+    def test_parts_cost_sums_known_amounts(self):
+        OrderCost.objects.create(repair_order=self.order, category='parts', amount=Decimal('100'))
+        OrderCost.objects.create(repair_order=self.order, category='parts', amount=Decimal('50'))
+
+        self.assertEqual(self.order.parts_cost, Decimal('150'))
+
+    def test_a_single_unknown_cost_record_makes_the_whole_parts_cost_unknown(self):
+        OrderCost.objects.create(repair_order=self.order, category='parts', amount=Decimal('100'))
+        OrderCost.objects.create(repair_order=self.order, category='parts', amount=None)
+
+        self.assertIsNone(self.order.parts_cost)
+        self.assertIsNone(self.order.profit)
+
+    def test_profit_is_payments_minus_parts_cost_not_the_quoted_repair_price(self):
+        model = EquipmentModel.objects.create(name='БУАД-профит')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-PROFIT'),
+            repair_cost=Decimal('10000'),
+        )
+        Payment.objects.create(repair_order=self.order, amount=Decimal('4000'))
+        Payment.objects.create(repair_order=self.order, amount=Decimal('1000'))
+        OrderCost.objects.create(repair_order=self.order, category='parts', amount=Decimal('1200'))
+
+        # Оплачено всего 5000 из выставленных 10000 — прибыль считается
+        # именно от поступивших денег, а не от total_repair_cost
+        self.assertEqual(self.order.paid_amount, Decimal('5000'))
+        self.assertEqual(self.order.profit, Decimal('3800'))
+
+
+class ProfitReportTests(TestCase):
+    """Отчёт «Прибыль по заказам»: агрегаты за период и разбивка по
+    заказчику, доступ только бухгалтерии."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_profit', full_name='Бухгалтер', password='pass', role='accountant'
+        )
+        self.warehouse = Employee.objects.create_user(
+            username='wh_profit', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.today = datetime.date.today()
+
+        self.client_a = ClientModel.objects.create(name='ООО Альфа')
+        self.client_b = ClientModel.objects.create(name='ООО Бета')
+        self.order_a = RepairOrder.objects.create(client=self.client_a)
+        self.order_b = RepairOrder.objects.create(client=self.client_b)
+
+        Payment.objects.create(repair_order=self.order_a, amount=Decimal('5000'), payment_date=self.today)
+        Payment.objects.create(repair_order=self.order_b, amount=Decimal('3000'), payment_date=self.today)
+        OrderCost.objects.create(repair_order=self.order_a, category='parts', amount=Decimal('1200'))
+        OrderCost.objects.create(repair_order=self.order_b, category='parts', amount=None)
+
+    def test_role_without_accounting_access_is_denied(self):
+        client = TestClient()
+        client.force_login(self.warehouse)
+
+        response = client.get('/reports/profit/', follow=True)
+
+        self.assertRedirects(response, '/')
+
+    def test_an_anonymous_user_is_sent_to_login(self):
+        response = TestClient().get('/reports/profit/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response.url)
+
+    def test_totals_and_the_unknown_cost_count(self):
+        response = self.client_http.get('/reports/profit/')
+
+        self.assertEqual(response.context['revenue_total'], Decimal('8000'))
+        self.assertEqual(response.context['known_cost_total'], Decimal('1200'))
+        self.assertEqual(response.context['unknown_cost_count'], 1)
+        self.assertEqual(response.context['profit_total'], Decimal('6800'))
+
+    def test_breakdown_by_client(self):
+        response = self.client_http.get('/reports/profit/')
+
+        rows = {row['client']: row for row in response.context['rows']}
+        self.assertEqual(rows['ООО Альфа']['revenue'], Decimal('5000'))
+        self.assertEqual(rows['ООО Альфа']['profit'], Decimal('3800'))
+        self.assertEqual(rows['ООО Бета']['revenue'], Decimal('3000'))
+        self.assertEqual(rows['ООО Бета']['unknown_cost_count'], 1)
+        # Известная часть себестоимости у Беты — 0, платёж известен полностью
+        self.assertEqual(rows['ООО Бета']['profit'], Decimal('3000'))
+
+    def test_a_period_outside_the_range_is_excluded(self):
+        old_date = self.today - datetime.timedelta(days=90)
+        Payment.objects.create(repair_order=self.order_a, amount=Decimal('9999'), payment_date=old_date)
+
+        response = self.client_http.get('/reports/profit/')
+
+        # 90 дней назад — за пределами окна по умолчанию (30 дней)
+        self.assertEqual(response.context['revenue_total'], Decimal('8000'))
+
+    def test_export_is_accountant_only(self):
+        client = TestClient()
+        client.force_login(self.warehouse)
+
+        response = client.get('/reports/profit/export/', follow=True)
+
+        self.assertRedirects(response, '/')
+
+    def test_export_produces_a_workbook_with_two_sheets(self):
+        response = self.client_http.get('/reports/profit/export/')
+
+        self.assertEqual(response.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(response.content))
+        self.assertEqual(wb.sheetnames, ['Итог за период', 'По заказчикам'])

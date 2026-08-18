@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.45.0
+v2.46.0
 """
 from django.urls import path
 from . import views
@@ -129,6 +129,8 @@ urlpatterns = [
     path('reports/debtors/export/', views.report_debtors_export, name='report_debtors_export'),
     path('reports/repair-analytics/', views.report_repair_analytics, name='report_repair_analytics'),
     path('reports/repair-analytics/export/', views.report_repair_analytics_export, name='report_repair_analytics_export'),
+    path('reports/profit/', views.report_profit, name='report_profit'),
+    path('reports/profit/export/', views.report_profit_export, name='report_profit_export'),
 
     # AJAX: создание модели, оборудования и заказчика из формы заказа
     path('ajax/equipment-model/create/', views.ajax_equipment_model_create, name='ajax_equipment_model_create'),

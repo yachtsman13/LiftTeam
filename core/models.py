@@ -1,8 +1,8 @@
 """
-Модели данных для LiftTeam v2.45.0.
+Модели данных для LiftTeam v2.46.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
-          Employee (User extension).
+          StockAllocation, OrderCost, Payment, Employee (User extension).
 """
 import calendar
 import re
@@ -767,6 +767,41 @@ class RepairOrder(models.Model):
             total=Sum('repair_cost')
         )['total']
         return total or 0
+
+    @property
+    def parts_cost(self):
+        """Себестоимость деталей, списанных на этот заказ (сумма по партиям
+        прихода, из которых они фактически списаны — см. `StockAllocation`).
+
+        None — неизвестна целиком: хотя бы одна запись затрат по деталям
+        (`OrderCost`, category='parts') не смогла посчитать сумму, потому
+        что задействованная партия без цены или часть расхода осталась
+        без партии (нехватка остатка на момент списания). Это не то же
+        самое, что 0 — как и `SparePart.price`, пустая сумма не означает
+        бесплатно.
+
+        Заказов без единой записи `OrderCost` (детали не списывались, либо
+        списание было до появления этого учёта — см. CHANGELOG) считается
+        0, а не None: по ним достоверно известно, что запись затрат
+        отсутствует, а не что она не смогла посчитать сумму.
+        """
+        amounts = list(self.costs.filter(category='parts').values_list('amount', flat=True))
+        if not amounts:
+            return Decimal('0')
+        if any(amount is None for amount in amounts):
+            return None
+        return sum(amounts, Decimal('0'))
+
+    @property
+    def profit(self):
+        """Прибыль по заказу: реально поступившие деньги (`paid_amount`,
+        не выставленная/оценочная `total_repair_cost`) минус себестоимость
+        списанных деталей. None — себестоимость неизвестна, см. `parts_cost`.
+        """
+        parts_cost = self.parts_cost
+        if parts_cost is None:
+            return None
+        return self.paid_amount - parts_cost
 
     def quote_rows(self):
         """Строки коммерческого предложения — по единице оборудования.
@@ -1675,6 +1710,133 @@ class StockMovement(models.Model):
             return None
         return self.unit_price * self.quantity
 
+    @property
+    def remaining_in_batch(self):
+        """Остаток этой партии (только для приходов) — сколько из неё ещё
+        не списано ни одним расходом. None — для расходов остаток не имеет
+        смысла.
 
+        Считается на лету по `StockAllocation`, не хранится отдельным полем:
+        объём данных в проекте небольшой, а хранимое поле означало бы
+        синхронизацию с распределением по партиям в двух местах.
+        """
+        if self.movement_type != 'incoming':
+            return None
+        used = self.batch_allocations.aggregate(total=Sum('quantity'))['total'] or 0
+        return self.quantity - used
+
+
+class StockAllocation(models.Model):
+    """Из какой партии прихода физически списан расход (полностью или
+    частично) — себестоимость считается по конкретной партии, а не по
+    средней/текущей цене детали.
+
+    Партия — это сама входящая запись `StockMovement`: у неё уже есть
+    `unit_price` и дата поступления, отдельная модель `Batch` не нужна.
+    Одному расходу может соответствовать несколько таких записей, если
+    для него не хватило одной партии — расход разбивается по нескольким.
+
+    Распределение всегда идёт по датам поступления (FIFO, см.
+    `StockAllocation.allocate`): деталь не бывает «свежее» физически
+    в одной партии против другой, так что естественный порядок — списывать
+    то, что лежит дольше.
+    """
+    outgoing = models.ForeignKey(
+        StockMovement, on_delete=models.CASCADE, related_name='allocations',
+        limit_choices_to={'movement_type': 'outgoing'}, verbose_name='Расход'
+    )
+    incoming = models.ForeignKey(
+        StockMovement, on_delete=models.PROTECT, related_name='batch_allocations',
+        limit_choices_to={'movement_type': 'incoming'}, verbose_name='Партия прихода'
+    )
+    quantity = models.PositiveIntegerField(
+        'Списано из партии', validators=[MinValueValidator(1)]
+    )
+
+    class Meta:
+        verbose_name = 'Распределение расхода по партии'
+        verbose_name_plural = 'Распределения расхода по партиям'
+        ordering = ['incoming__movement_date']
+
+    def __str__(self):
+        return f'{self.quantity} шт. из партии №{self.incoming_id} на расход №{self.outgoing_id}'
+
+    @staticmethod
+    def allocate(outgoing):
+        """Распределяет уже созданную исходящую запись `outgoing` по партиям
+        прихода той же детали, строго по датам поступления (FIFO, старейшая
+        первая), создавая по одной `StockAllocation` на каждую задействованную
+        партию, пока не наберётся всё запрошенное количество.
+
+        Если остатка по всем партиям вместе не хватает (в проекте это уже
+        разрешённая ситуация — списание в минус, не блокировка), известная
+        часть распределяется как обычно, а недостающая остаётся без партии:
+        себестоимость этой части неизвестна, а не нулевая и не средняя по
+        прошлым партиям.
+
+        Остаток каждой партии считается заново при каждом вызове — поэтому
+        повторный вызов в той же транзакции (например, применение шаблона
+        неисправности несколькими деталями подряд, каждая — свой вызов
+        `_use_repair_order_part`) видит списания, сделанные предыдущими
+        вызовами, и не может списать с партии больше, чем в ней осталось.
+
+        Возвращает True, если распределено полностью, False — если часть
+        количества осталась без партии.
+        """
+        remaining = outgoing.quantity
+        batches = (
+            StockMovement.objects
+            .filter(part_id=outgoing.part_id, movement_type='incoming')
+            .annotate(used=Coalesce(Sum('batch_allocations__quantity'), Value(0)))
+            .order_by('movement_date', 'pk')
+        )
+        for batch in batches:
+            if remaining <= 0:
+                break
+            available = batch.quantity - batch.used
+            if available <= 0:
+                continue
+            take = min(available, remaining)
+            StockAllocation.objects.create(outgoing=outgoing, incoming=batch, quantity=take)
+            remaining -= take
+        return remaining <= 0
+
+
+class OrderCost(models.Model):
+    """Затрата по заказу — обобщённая запись, а не жёстко «стоимость заказа
+    = сумма партий деталей»: структура должна оставлять место под труд
+    и накладные расходы позже без переделки.
+
+    Сейчас заполняется автоматически только категория `parts` — себестоимость
+    деталей, списанных на заказ через `_use_repair_order_part` (одна запись
+    на каждое такое списание, сумма — по фактически задействованным партиям).
+    `labor` и `overhead` зарезервированы под будущие этапы и пока нигде
+    не создаются и не показываются как интерфейс.
+    """
+    CATEGORY_CHOICES = [
+        ('parts', 'Детали'),
+        ('labor', 'Труд'),
+        ('overhead', 'Накладные расходы'),
+    ]
+
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.CASCADE, related_name='costs', verbose_name='Заказ'
+    )
+    category = models.CharField('Категория', max_length=20, choices=CATEGORY_CHOICES)
+    # Пусто — сумма неизвестна (партия без цены, либо часть расхода осталась
+    # без партии из-за нехватки остатка), а не 0: см. `SparePart.price`
+    amount = models.DecimalField(
+        'Сумма, ₽', max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    created_at = models.DateTimeField('Создано', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Затрата по заказу'
+        verbose_name_plural = 'Затраты по заказу'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        amount_text = f'{self.amount} ₽' if self.amount is not None else 'сумма неизвестна'
+        return f'{self.get_category_display()} по {self.repair_order.order_number}: {amount_text}'
 
 

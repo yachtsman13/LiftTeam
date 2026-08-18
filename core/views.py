@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.45.0.
+Views для LiftTeam v2.46.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -30,7 +30,8 @@ from channels.layers import get_channel_layer
 
 from .models import (
     Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
-    SparePart, StorageCell, StockMovement, RepairOrderDetail, OrderStatusHistory, Employee,
+    SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
+    OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
@@ -846,6 +847,25 @@ def repair_order_edit(request, pk):
     })
 
 
+def _cost_from_allocations(movement):
+    """Себестоимость исходящего движения `movement` по фактически задействованным
+    партиям (`StockAllocation`), уже созданным для него.
+
+    None — сумма неизвестна целиком: либо часть количества осталась без
+    партии (нехватка остатка на момент списания), либо хотя бы у одной
+    задействованной партии не заполнена цена. Частичная сумма без учёта
+    неизвестного остатка не возвращается — она вводила бы в заблуждение,
+    будто себестоимость посчитана полностью.
+    """
+    allocations = list(movement.allocations.select_related('incoming'))
+    covered = sum(a.quantity for a in allocations)
+    if covered < movement.quantity:
+        return None
+    if any(a.incoming.unit_price is None for a in allocations):
+        return None
+    return sum((a.quantity * a.incoming.unit_price for a in allocations), Decimal('0'))
+
+
 def _use_repair_order_part(order, part, quantity, employee, history_note):
     """Списывает деталь со склада и создаёт запись использованной в заказе
     детали — общая часть добавления детали вручную и применения шаблона
@@ -857,19 +877,28 @@ def _use_repair_order_part(order, part, quantity, employee, history_note):
     (`apply_fault_templates`), где частичный сбой посреди применения не
     должен оставить заказ с половиной добавленных деталей.
 
+    Списание распределяется по партиям прихода (FIFO — см.
+    `StockAllocation.allocate`), и по нему заводится запись затраты
+    (`OrderCost`, category='parts') — этим и отличается от ручного
+    списания (`part_stock_outgoing`), не привязанного к заказу.
+
     Возвращает True, если остатка не хватило и он ушёл в минус.
     """
     shortage = part.current_stock < quantity
     RepairOrderDetail.objects.create(repair_order=order, part=part, quantity_used=quantity)
     part.current_stock -= quantity
     part.save(update_fields=['current_stock'])
-    StockMovement.objects.create(
+    movement = StockMovement.objects.create(
         part=part,
         quantity=quantity,
         movement_type='outgoing',
         repair_order=order,
         notes=f'Списано по заказу {order.order_number}',
         created_by=employee
+    )
+    StockAllocation.allocate(movement)
+    OrderCost.objects.create(
+        repair_order=order, category='parts', amount=_cost_from_allocations(movement)
     )
     OrderStatusHistory.objects.create(
         order=order,
@@ -1539,7 +1568,7 @@ def part_stock_outgoing(request, pk):
         with transaction.atomic():
             part.current_stock -= qty
             part.save(update_fields=['current_stock'])
-            StockMovement.objects.create(
+            movement = StockMovement.objects.create(
                 part=part,
                 quantity=qty,
                 movement_type='outgoing',
@@ -1547,6 +1576,10 @@ def part_stock_outgoing(request, pk):
                 notes=f'{notes} (причина: {dict(form.fields["reason"].choices).get(reason)})',
                 created_by=request.user
             )
+            # Не привязано к заказу — OrderCost для ручного списания не
+            # заводится (нет заказа, на который отнести затрату), только
+            # распределение по партиям для будущей себестоимости
+            StockAllocation.allocate(movement)
         messages.success(request, f'Списано {qty} {part.name} ({reason})')
     else:
         messages.error(request, 'Ошибка при оформлении списания')
@@ -2691,6 +2724,141 @@ def report_repair_analytics_export(request):
     )
 
     return xlsx_response(wb, f'Аналитика ремонта {timezone.localdate():%Y-%m-%d}.xlsx')
+
+
+# ==================== ПРИБЫЛЬ ПО ЗАКАЗАМ ====================
+
+def _profit_period(request):
+    """Диапазон дат отчёта о прибыли — по умолчанию последние 30 дней,
+    как и у аналитики ремонта (`_repair_analytics_period`)."""
+    default_to = timezone.localdate()
+    default_from = default_to - timedelta(days=30)
+    date_from = parse_date(request.GET.get('date_from', '')) or default_from
+    date_to = parse_date(request.GET.get('date_to', '')) or default_to
+    return date_from, date_to
+
+
+def _profit_data(date_from, date_to):
+    """Выручка, себестоимость деталей и прибыль за период — итог и разбивка
+    по заказчику.
+
+    Выручка считается по дате поступления денег (`Payment.payment_date`),
+    себестоимость деталей — по дате её записи (`OrderCost.created_at`,
+    заводится в момент списания детали заказа, см. `_use_repair_order_part`).
+    Это два независимых события одного заказа, и они не обязаны попасть
+    в один период — платёж и списание детали по одному заказу обычно
+    и происходят в разные дни; отчёт складывает то, что случилось
+    в периоде, для каждого из событий по отдельности, а не подбирает
+    себестоимость под период платежа или наоборот.
+
+    Себестоимость известна не всегда (`OrderCost.amount` может быть пустым
+    — см. модель). Известная и неизвестная часть считаются раздельно, как
+    и в плане закупок (`_purchase_plan_totals`): сумма по известным записям
+    плюс отдельно количество записей без суммы. Прибыль здесь — прибыль
+    по известной себестоимости; если неизвестных записей в периоде нет,
+    она точна, если есть — реальная прибыль ниже показанной на неизвестную
+    часть, и это явно видно по count'у, а не скрыто молчаливым `None`
+    на весь отчёт (в отличие от `RepairOrder.parts_cost` для одного заказа,
+    где именно такое молчаливое скрытие и было бы вводящим в заблуждение).
+    """
+    payments = Payment.objects.filter(payment_date__gte=date_from, payment_date__lte=date_to)
+    costs = OrderCost.objects.filter(
+        category='parts', created_at__date__gte=date_from, created_at__date__lte=date_to,
+    )
+
+    revenue_total = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    known_cost_total = costs.filter(amount__isnull=False).aggregate(
+        total=Sum('amount'))['total'] or Decimal('0')
+    unknown_cost_count = costs.filter(amount__isnull=True).count()
+
+    by_client = defaultdict(lambda: {
+        'revenue': Decimal('0'), 'known_cost': Decimal('0'), 'unknown_cost_count': 0,
+    })
+    client_names = {}
+
+    for payment in payments.select_related('repair_order__client'):
+        client = payment.repair_order.client
+        by_client[client.pk]['revenue'] += payment.amount
+        client_names[client.pk] = client.name
+
+    for cost in costs.select_related('repair_order__client'):
+        client = cost.repair_order.client
+        if cost.amount is None:
+            by_client[client.pk]['unknown_cost_count'] += 1
+        else:
+            by_client[client.pk]['known_cost'] += cost.amount
+        client_names[client.pk] = client.name
+
+    rows = sorted(
+        (
+            {
+                'client': client_names[client_id],
+                'revenue': values['revenue'],
+                'known_cost': values['known_cost'],
+                'unknown_cost_count': values['unknown_cost_count'],
+                'profit': values['revenue'] - values['known_cost'],
+            }
+            for client_id, values in by_client.items()
+        ),
+        key=lambda row: row['client'],
+    )
+
+    return {
+        'revenue_total': revenue_total,
+        'known_cost_total': known_cost_total,
+        'unknown_cost_count': unknown_cost_count,
+        'profit_total': revenue_total - known_cost_total,
+        'rows': rows,
+    }
+
+
+@role_required('accountant')
+def report_profit(request):
+    """Прибыль по заказам за период: поступившие деньги минус себестоимость
+    деталей, списанных по конкретным партиям прихода (не по средней
+    и не по текущей цене детали), плюс разбивка по заказчику.
+
+    Права — только `accountant` (`admin` проходит декоратором всегда), как
+    у остальных финансовых разделов (`repair_order_add_payment`,
+    `bank_operations`): это деньги заказа, складу и мастеру они не нужны.
+    """
+    date_from, date_to = _profit_period(request)
+    data = _profit_data(date_from, date_to)
+    return render(request, 'core/reports/profit.html', {
+        'date_from': date_from.isoformat(),
+        'date_to': date_to.isoformat(),
+        **data,
+    })
+
+
+@role_required('accountant')
+def report_profit_export(request):
+    """Тот же отчёт в Excel — двумя листами (итог за период, разбивка
+    по заказчику). Права доступа те же, что и у страницы отчёта."""
+    date_from, date_to = _profit_period(request)
+    data = _profit_data(date_from, date_to)
+
+    wb = build_workbook(
+        'Итог за период',
+        ['Показатель', 'Значение'],
+        [
+            ['Выручка (поступившие платежи), ₽', data['revenue_total']],
+            ['Себестоимость деталей, известная часть, ₽', data['known_cost_total']],
+            ['Списаний деталей без известной себестоимости, шт.', data['unknown_cost_count']],
+            ['Прибыль по известной себестоимости, ₽', data['profit_total']],
+        ],
+    )
+    add_sheet(
+        wb, 'По заказчикам',
+        ['Заказчик', 'Выручка, ₽', 'Себестоимость (известная), ₽',
+         'Списаний без цены, шт.', 'Прибыль (известная), ₽'],
+        [
+            [row['client'], row['revenue'], row['known_cost'],
+             row['unknown_cost_count'], row['profit']]
+            for row in data['rows']
+        ],
+    )
+    return xlsx_response(wb, f'Прибыль {date_from:%Y-%m-%d} - {date_to:%Y-%m-%d}.xlsx')
 
 
 # ==================== AJAX: Создание из формы заказа ====================
