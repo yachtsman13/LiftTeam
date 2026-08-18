@@ -1,17 +1,39 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Реквизиты — LiftTeam v2.49.2{% endblock %}
+{% block title %}Реквизиты — LiftTeam v2.50.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-building me-2"></i>Реквизиты организации</h2>
-    <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+    <div class="d-flex gap-2">
+        <a href="?new=1" class="btn btn-outline-primary">
+            <i class="bi bi-plus-lg me-1"></i>Добавить юрлицо
+        </a>
+        <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+    </div>
 </div>
 
 <div class="alert alert-secondary">
     Эти данные печатаются в шапке актов и коммерческих предложений.
     Пока они не заполнены, документы печатаются без реквизитов.
+    В актах и предложениях всегда стоит <strong>основное</strong> юрлицо;
+    остальные нужны для счетов, выставляемых через свой банк.
 </div>
+
+{% if organizations|length > 1 or is_new %}
+<div class="list-group mb-3" style="max-width: 760px">
+    {% for item in organizations %}
+    <a href="?id={{ item.pk }}"
+       class="list-group-item list-group-item-action d-flex justify-content-between align-items-center{% if item.pk == organization.pk %} active{% endif %}">
+        <span>{{ item }}</span>
+        <span>
+            {% if item.is_default %}<span class="badge text-bg-primary">основное</span>{% endif %}
+            {% if item.provider %}<span class="badge text-bg-secondary">{{ item.get_provider_display }}</span>{% endif %}
+        </span>
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
 
 <div class="card" style="max-width: 760px">
     <div class="card-body">
@@ -95,6 +117,29 @@
                     <label class="form-label">{{ form.tax_note.label }}</label>
                     {{ form.tax_note }}
                     <div class="form-text">{{ form.tax_note.help_text }}</div>
+                </div>
+
+                {% comment %}
+                    Банк и пометка «основное» — не реквизиты, а связи:
+                    первый говорит, чьи счета выставляются через этот банк,
+                    вторая — чьё имя стоит в печатных актах.
+                {% endcomment %}
+                <div class="col-12">
+                    <hr class="my-2">
+                    <div class="text-muted small">Роль этого юрлица в программе</div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.provider.label }}</label>
+                    {{ form.provider }}
+                    <div class="form-text">{{ form.provider.help_text }}</div>
+                    {% if form.provider.errors %}<div class="text-danger small">{{ form.provider.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 d-flex align-items-center">
+                    <div class="form-check mt-4">
+                        {{ form.is_default }}
+                        <label class="form-check-label">{{ form.is_default.label }}</label>
+                        <div class="form-text">{{ form.is_default.help_text }}</div>
+                    </div>
                 </div>
             </div>
             <div class="mt-4">

@@ -1,10 +1,10 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.49.2{% endblock %}
+{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.50.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-receipt me-2"></i>Выставить счёт через Т-Банк</h2>
+    <h2><i class="bi bi-receipt me-2"></i>Выставить счёт через {{ provider_label }}</h2>
     <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
         <i class="bi bi-arrow-left me-2"></i>К заказу {{ order.order_number }}
     </a>
@@ -12,17 +12,39 @@
 
 {% if not configured %}
 <div class="alert alert-warning">
-    Т-Банк не настроен: не задан <code>TBANK_TOKEN</code>. См. DEPLOY.md.
+    {{ provider_label }} не настроен{% if missing_settings %}: не заполнено
+    {% for name in missing_settings %}<code>{{ name }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}.
+    См. DEPLOY.md.
 </div>
 {% elif not enabled %}
 <div class="alert alert-warning">
-    Выставление счетов выключено: <code>TBANK_INVOICE_ENABLED=False</code>.
+    Выставление счетов через {{ provider_label }} выключено:
+    <code>{{ provider.enable_setting }}=False</code>.
     Это отправка документа заказчику от лица фирмы — включать её нужно
     осознанно, а не «оно само после обновления». См. DEPLOY.md.
 </div>
 {% endif %}
 
-{% if order.tbank_invoice_sent_at %}
+{% comment %}
+    От какого юрлица уйдёт счёт. Юрлиц несколько, у каждого свой банк
+    и свой ряд номеров, и бухгалтер должен видеть, чьё имя он ставит,
+    до отправки, а не после.
+{% endcomment %}
+{% if organization_is_bound %}
+<div class="alert alert-light border">
+    Счёт от юрлица <strong>{{ organization }}</strong>{% if organization.inn %},
+    ИНН {{ organization.inn }}{% endif %}. Ряд номеров у него свой.
+</div>
+{% else %}
+<div class="alert alert-warning">
+    За банком «{{ provider_label }}» не закреплено ни одно юрлицо.
+    Счёт будет записан на основное — <strong>{{ organization }}</strong>, —
+    и номер посчитан по его ряду. Закрепить банк за нужным юрлицом можно
+    в разделе «Реквизиты организации».
+</div>
+{% endif %}
+
+{% if order.invoice_sent_at %}
 {% comment %}
     Счёт по этому заказу уже уходил. Повторное выставление не запрещаем —
     бывает и нужно, — но сказать об этом обязаны: второй счёт заказчику
@@ -30,17 +52,18 @@
 {% endcomment %}
 <div class="alert alert-info">
     По этому заказу уже выставлен счёт <strong>№ {{ order.invoice_number }}</strong>
-    от {{ order.tbank_invoice_sent_at|date:"d.m.Y H:i" }}.
-    {% if order.tbank_invoice_pdf_url %}
-    <a href="{{ order.tbank_invoice_pdf_url }}" target="_blank" rel="noopener">Открыть PDF</a>.
+    от {{ order.invoice_sent_at|date:"d.m.Y H:i" }}{% if order.invoice_provider %}
+    через {{ order.get_invoice_provider_display }}{% endif %}.
+    {% if order.invoice_pdf_url %}
+    <a href="{{ order.invoice_pdf_url }}" target="_blank" rel="noopener">Открыть PDF</a>.
     {% endif %}
     Отправка ещё раз создаст в банке второй счёт.
 </div>
 {% endif %}
 
-{% if order.tbank_invoice_error %}
+{% if order.invoice_error %}
 <div class="alert alert-danger">
-    Прошлая попытка не удалась: {{ order.tbank_invoice_error }}
+    Прошлая попытка не удалась: {{ order.invoice_error }}
 </div>
 {% endif %}
 
@@ -113,13 +136,27 @@
                     счёт уходит заказчику, и отменить это из программы нельзя.
                 {% endcomment %}
                 <form method="post"
-                      onsubmit="return confirm('Выставить счёт в Т-Банке? Отменить это можно будет только в личном кабинете банка.');">
+                      onsubmit="return confirm('Выставить счёт? Отменить это можно будет только в личном кабинете банка.');">
                     {% csrf_token %}
                     {% if form.non_field_errors %}
                     <div class="alert alert-danger">
                         {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
                     </div>
                     {% endif %}
+                    {% comment %}
+                        Банк — обычное поле выбора. Подставлен банк из
+                        карточки сотрудника, но менять его можно: бухгалтеры
+                        подменяют друг друга, и спрятанное поле означало бы
+                        счёт, молча ушедший не от того юрлица.
+                    {% endcomment %}
+                    <div class="mb-3">
+                        <label class="form-label">{{ form.provider.label }}</label>
+                        {{ form.provider }}
+                        <div class="form-text">{{ form.provider.help_text }}</div>
+                        {% if form.provider.errors %}
+                        <div class="text-danger small">{{ form.provider.errors.0 }}</div>
+                        {% endif %}
+                    </div>
                     <div class="mb-3">
                         <label class="form-label">{{ form.invoice_number.label }}</label>
                         {{ form.invoice_number }}
@@ -158,7 +195,7 @@
                         <i class="bi bi-send me-2"></i>Выставить счёт
                     </button>
                     <div class="form-text mt-2">
-                        Счёт будет создан в Т-Банке{% if form.emails.value %} и отправлен заказчику{% endif %}.
+                        Счёт будет создан в банке «{{ provider_label }}»{% if form.emails.value %} и отправлен заказчику{% endif %}.
                         Отменить это из программы нельзя — только в личном кабинете банка.
                     </div>
                 </form>

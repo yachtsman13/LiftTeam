@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.49.2.
+Модели данных для LiftTeam v2.50.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -17,6 +17,8 @@ from django.db.models.functions import Coalesce
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from django.utils import timezone
+
+from . import invoicing
 
 
 def warranty_months():
@@ -173,6 +175,15 @@ class Employee(AbstractBaseUser, PermissionsMixin):
     notify_by_email = models.BooleanField('Оповещения на почту', default=True)
     notify_by_max = models.BooleanField('Оповещения в MAX', default=True)
     notify_by_telegram = models.BooleanField('Оповещения в Telegram', default=True)
+    # Банк, из которого этот бухгалтер обычно выставляет счета. Бухгалтеров
+    # двое, и банки у них разные, но подменять друг друга они могут —
+    # поэтому это только подсказка: на форме счёта банк подставляется
+    # отсюда и остаётся доступным для правки, а не прибивается намертво
+    default_provider = models.CharField(
+        'Банк по умолчанию', max_length=20, blank=True,
+        choices=invoicing.PROVIDER_CHOICES,
+        help_text='Подставляется в форму счёта. Поменять можно на самой форме.'
+    )
     role = models.CharField('Роль', max_length=20, choices=ROLE_CHOICES, default='repair_manager')
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)
@@ -239,12 +250,22 @@ class Employee(AbstractBaseUser, PermissionsMixin):
 
 
 class Organization(models.Model):
-    """Реквизиты своей фирмы — шапка печатных документов.
+    """Реквизиты своего юрлица — шапка печатных документов и счетов.
 
-    Одна запись на всю программу: фирма одна. Отдельная модель, а не строки
-    в настройках, потому что менять их приходится владельцу — переехали,
-    сменился директор, — а лазить для этого по SSH в файл настроек он не
-    должен.
+    Отдельная модель, а не строки в настройках, потому что менять их
+    приходится владельцу — переехали, сменился директор, — а лазить для
+    этого по SSH в файл настроек он не должен.
+
+    С v2.50.0 записей может быть несколько. Причина: бухгалтеров двое,
+    и работают они от разных юрлиц с разными банками. Одна из записей
+    помечена основной (`is_default`) — она и стоит в печатных актах
+    и в коммерческом предложении, как стояла единственная запись раньше.
+    Выбор юрлица для печатных документов по каждому заказу отдельно
+    пока не сделан: это отдельное решение владельца.
+
+    Связь с банком — поле `provider`, по одному банку на юрлицо и не
+    больше одного юрлица на банк. Именно по нему счёт, выставляемый
+    через Точку, получает реквизиты второго ИП, а не первого ООО.
     """
     name = models.CharField('Полное название', max_length=255,
                             help_text='ООО «Название» — как в документах')
@@ -280,22 +301,81 @@ class Organization(models.Model):
         help_text='Печатается под итогом коммерческого предложения'
     )
 
+    # Через какой банк это юрлицо выставляет счета. Пусто — ни через какой:
+    # такое юрлицо в печатных документах участвует, а в счетах нет.
+    # Один банк — одно юрлицо: иначе по выбранному на форме банку нельзя
+    # было бы понять, чьи реквизиты ставить в счёт
+    provider = models.CharField(
+        'Банк для счетов', max_length=20, blank=True,
+        choices=invoicing.PROVIDER_CHOICES,
+        help_text='Через какой банк это юрлицо выставляет счета. '
+                  'Один банк можно закрепить только за одним юрлицом.'
+    )
+    # Основное юрлицо — то, что печатается в актах и предложении. Ровно
+    # одно: «основных» два — это два разных бланка на один заказ
+    is_default = models.BooleanField(
+        'Основное юрлицо', default=False,
+        help_text='Его реквизиты стоят в актах и коммерческом предложении'
+    )
+
     class Meta:
-        verbose_name = 'Реквизиты организации'
-        verbose_name_plural = 'Реквизиты организации'
+        verbose_name = 'Юрлицо'
+        verbose_name_plural = 'Юрлица'
+        ordering = ['-is_default', 'name']
+        constraints = [
+            # Один банк — не больше чем у одного юрлица. Пустое значение
+            # под ограничение не попадает: юрлиц без банка может быть сколько
+            # угодно
+            models.UniqueConstraint(
+                fields=['provider'], condition=~models.Q(provider=''),
+                name='unique_organization_per_provider',
+            ),
+        ]
 
     def __str__(self):
         return self.name or 'Реквизиты не заполнены'
 
+    def save(self, *args, **kwargs):
+        """Следит за тем, чтобы основное юрлицо было ровно одно.
+
+        Иначе «основное» перестаёт что-либо значить, и в акт попадает
+        то юрлицо, которое первым вернула база.
+        """
+        super().save(*args, **kwargs)
+        if self.is_default:
+            type(self).objects.exclude(pk=self.pk).filter(
+                is_default=True).update(is_default=False)
+        elif not type(self).objects.filter(is_default=True).exists():
+            # Ни одного основного не осталось — им становится эта запись.
+            # Печатать документы без шапки хуже, чем печатать с чужой
+            type(self).objects.filter(pk=self.pk).update(is_default=True)
+            self.is_default = True
+
     @classmethod
     def get_solo(cls):
-        """Единственная запись. Создаётся пустой, если её ещё нет: печатать
+        """Основное юрлицо — то, чьи реквизиты идут в печатные документы.
+
+        Имя осталось прежним: до v2.50.0 запись была одна, и все печатные
+        формы зовут её так. Создаётся пустой, если её ещё нет: печатать
         документы можно и с незаполненной шапкой — хуже, чем не напечатать
-        вовсе, это не будет."""
-        organization = cls.objects.first()
+        вовсе, это не будет.
+        """
+        organization = cls.objects.filter(is_default=True).first() or cls.objects.first()
         if organization is None:
-            organization = cls.objects.create()
+            organization = cls.objects.create(is_default=True)
         return organization
+
+    @classmethod
+    def for_provider(cls, code):
+        """Юрлицо, закреплённое за этим банком, или None.
+
+        None здесь — не поломка, а рабочее состояние: банк настроен,
+        а карточку юрлица к нему ещё не завели. Бухгалтеру об этом
+        говорят словами, счёт не выставляется.
+        """
+        if not code:
+            return None
+        return cls.objects.filter(provider=code).first()
 
     @property
     def is_filled(self):
@@ -673,16 +753,32 @@ class RepairOrder(models.Model):
     payment_status = models.CharField('Статус оплаты', max_length=20, choices=PAYMENT_STATUS_CHOICES, default='unpaid')
     status = models.CharField('Статус', max_length=20, choices=STATUS_CHOICES, default='accepted')
 
-    # --- Счёт, выставленный через API Т-Банка ---
+    # --- Счёт, выставленный через API банка ---
     # Номер и дата лежат в тех же invoice_number / invoice_date, что и у счёта,
     # выставленного руками: для долгов и напоминаний разницы нет, и заводить
-    # им отдельные поля значило бы раздвоить понятие «счёт выставлен»
-    tbank_invoice_sent_at = models.DateTimeField(
+    # им отдельные поля значило бы раздвоить понятие «счёт выставлен».
+    #
+    # До v2.50.0 эти три поля назывались tbank_invoice_*: банк был один.
+    # Банков стало два, и приставка стала врать — какой именно банк выставил
+    # счёт, теперь написано в invoice_provider
+    invoice_sent_at = models.DateTimeField(
         'Счёт выставлен через банк', null=True, blank=True
     )
-    tbank_invoice_pdf_url = models.URLField('Ссылка на PDF счёта', max_length=500, blank=True)
-    tbank_invoice_error = models.CharField(
+    invoice_pdf_url = models.URLField('Ссылка на PDF счёта', max_length=500, blank=True)
+    invoice_error = models.CharField(
         'Последняя ошибка выставления', max_length=500, blank=True
+    )
+    # Какой банк выставил счёт. Из него же выводится юрлицо заказа —
+    # см. legal_entity(): печатные акты и предложение должны быть от того
+    # же лица, от которого выставлен счёт, иначе заказчик получает
+    # документы от двух разных фирм по одной работе
+    invoice_provider = models.CharField(
+        'Банк счёта', max_length=20, blank=True, choices=invoicing.PROVIDER_CHOICES
+    )
+    # Идентификатор счёта в банке. Т-Банк его не возвращает, Точка
+    # возвращает documentId — по нему из банка забирается PDF и статус
+    invoice_external_id = models.CharField(
+        'Идентификатор счёта в банке', max_length=100, blank=True
     )
 
     # --- Коммерческое предложение ---
@@ -887,6 +983,10 @@ class RepairOrder(models.Model):
         не может — поэтому номер на странице выставления открыт для правки,
         а не подставлен молча. Банк номер не выдаёт: он приходит от нас
         и попадает в документ как есть.
+
+        Ряд один на всю программу и при двух юрлицах: так решил владелец.
+        Разводить ряды по юрлицам не надо — за сквозной нумерацией всё
+        равно следит человек, и два ряда он свёл бы труднее одного.
         """
         biggest = 0
         numbers = cls.objects.exclude(invoice_number='').values_list(
@@ -901,6 +1001,31 @@ class RepairOrder(models.Model):
 
         start = getattr(settings, 'TBANK_INVOICE_NUMBER_START', 1)
         return str(max(biggest + 1, start))
+
+    def legal_entity(self):
+        """От какого юрлица идут документы по этому заказу.
+
+        Одно место на всю программу, а не по ветке в каждом печатном
+        представлении: акты приёма, выполненных работ, дефектации и
+        коммерческое предложение обязаны быть от того же лица, что и счёт.
+        Иначе заказчик получает по одной работе документы от двух разных
+        фирм — и вправе не принять ни те, ни другие.
+
+        Порядок такой:
+
+        1. выставлен счёт — берём юрлицо того банка, через который он
+           выставлен;
+        2. счёта нет (обычное состояние нового заказа и всех заказов
+           до v2.50.0) — основное юрлицо, ровно как печаталось раньше;
+        3. банк записан, а юрлица за ним нет — снова основное. Пустая
+           шапка на печатном документе хуже, чем чужая: с чужой заметят
+           и позовут, с пустой отправят заказчику как есть.
+        """
+        if self.invoice_provider:
+            bound = Organization.for_provider(self.invoice_provider)
+            if bound is not None:
+                return bound
+        return Organization.get_solo()
 
     def invoice_items(self):
         """Позиции счёта — по единице оборудования на строку.

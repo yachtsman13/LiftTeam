@@ -1,10 +1,11 @@
 """
-Формы для LiftTeam v2.49.2.
+Формы для LiftTeam v2.50.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
 from django.core import validators
 from django.forms import inlineformset_factory
+from . import invoicing
 from .models import (
     Cabinet, Client, EquipmentModel, Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
@@ -391,14 +392,35 @@ class SparePartForm(forms.ModelForm):
 
 
 class OrganizationForm(forms.ModelForm):
-    """Реквизиты своей фирмы — шапка и подписи печатных актов."""
+    """Реквизиты юрлица — шапка и подписи печатных актов, счета банка."""
+
+    def clean_provider(self):
+        """Один банк — одно юрлицо.
+
+        Иначе по выбранному на форме счёта банку нельзя понять, чьи
+        реквизиты ставить в документ, и он ушёл бы заказчику от чужого
+        имени.
+        """
+        provider = self.cleaned_data.get('provider') or ''
+        if not provider:
+            return provider
+        taken = Organization.objects.filter(provider=provider)
+        if self.instance.pk:
+            taken = taken.exclude(pk=self.instance.pk)
+        other = taken.first()
+        if other is not None:
+            raise forms.ValidationError(
+                f'Этот банк уже закреплён за юрлицом «{other}». '
+                f'Сначала освободите его там.'
+            )
+        return provider
 
     class Meta:
         model = Organization
         fields = ['name', 'inn', 'kpp', 'ogrn', 'address', 'city', 'phone', 'email',
                   'signatory_position', 'signatory_name',
                   'bank_name', 'bank_bik', 'bank_account', 'corr_account',
-                  'tax_note']
+                  'tax_note', 'provider', 'is_default']
         widgets = {
             'name': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'ООО «Название»'}),
@@ -417,6 +439,8 @@ class OrganizationForm(forms.ModelForm):
             'bank_bik': forms.TextInput(attrs={'class': 'form-control'}),
             'bank_account': forms.TextInput(attrs={'class': 'form-control'}),
             'corr_account': forms.TextInput(attrs={'class': 'form-control'}),
+            'provider': forms.Select(attrs={'class': 'form-select'}),
+            'is_default': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'tax_note': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'Без НДС, применяется УСН'}),
         }
@@ -569,12 +593,23 @@ QuoteLineFormSet = inlineformset_factory(
 
 
 class InvoiceSendForm(forms.Form):
-    """Подтверждение выставления счёта через API Т-Банка.
+    """Подтверждение выставления счёта через API банка.
 
     Обычная форма, а не ModelForm: часть полей уходит в банк и в заказе
     не хранится, а номер счёта человек правит перед самой отправкой —
     программа не знает, какие номера уже заняты счетами из личного кабинета.
+
+    Банк — обычное поле выбора: оно подставляется по карточке сотрудника,
+    но остаётся видимым и доступным для правки. Спрятать его при наличии
+    подстановки нельзя: бухгалтеры подменяют друг друга, и тогда счёт
+    молча ушёл бы не от того юрлица.
     """
+    provider = forms.ChoiceField(
+        label='Банк', choices=invoicing.PROVIDER_CHOICES,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+        help_text='Подставлен банк, указанный у вас в карточке сотрудника. '
+                  'Счёт уйдёт от того юрлица, за которым закреплён этот банк.'
+    )
     invoice_number = forms.CharField(
         label='Номер счёта', max_length=50,
         widget=forms.TextInput(attrs={'class': 'form-control'}),
@@ -692,7 +727,7 @@ class EmployeeForm(forms.ModelForm):
     class Meta:
         model = Employee
         fields = ['username', 'full_name', 'email', 'max_user_id', 'telegram_chat_id',
-                  'role', 'is_active',
+                  'role', 'is_active', 'default_provider',
                   'notify_by_email', 'notify_by_max', 'notify_by_telegram']
         widgets = {
             'username': forms.TextInput(attrs={'class': 'form-control'}),
@@ -704,6 +739,7 @@ class EmployeeForm(forms.ModelForm):
                                                        'inputmode': 'numeric'}),
             'role': forms.Select(attrs={'class': 'form-select'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'default_provider': forms.Select(attrs={'class': 'form-select'}),
             'notify_by_email': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'notify_by_max': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'notify_by_telegram': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
@@ -716,6 +752,7 @@ class EmployeeForm(forms.ModelForm):
             'telegram_chat_id': 'ID в Telegram',
             'role': 'Роль',
             'is_active': 'Активен',
+            'default_provider': 'Банк по умолчанию',
             'notify_by_email': 'Оповещения на почту',
             'notify_by_max': 'Оповещения в MAX',
             'notify_by_telegram': 'Оповещения в Telegram',
@@ -724,6 +761,9 @@ class EmployeeForm(forms.ModelForm):
             'max_user_id': 'Число. Узнаётся командой max_updates после того, '
                            'как сотрудник напишет боту (см. DEPLOY.md)',
             'telegram_chat_id': 'Число. Узнаётся командой telegram_updates',
+            'default_provider': 'Из какого банка этот бухгалтер обычно '
+                                'выставляет счета. Только подсказка: банк '
+                                'на форме счёта можно поменять',
             'notify_by_email': 'Внутренние оповещения — дефицит деталей, '
                                'задолженности. Личных оповещений заказчикам '
                                'это не касается',

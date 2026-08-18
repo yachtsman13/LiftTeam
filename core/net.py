@@ -23,3 +23,37 @@ def explain(reason):
     if 'CERTIFICATE_VERIFY_FAILED' in text:
         return f'{text}. Похоже, {CERTIFICATE_HINT}'
     return text
+
+
+# Секреты в журнале. Токен банка, попавший в лог, живёт там до ротации
+# и уезжает в резервную копию — то есть перестаёт быть секретом. Поэтому
+# всё, что уходит в журнал, проходит через redact: он вырезает известные
+# значения токенов и заголовок Authorization целиком.
+REDACTED = '***'
+
+# Заголовки, значение которых не пишется в журнал никогда — даже если
+# конкретного токена нет в списке известных
+SECRET_HEADERS = ('authorization', 'x-api-key', 'cookie', 'set-cookie')
+
+
+def redact(text, *secrets):
+    """Текст для журнала: известные секреты заменены на «***».
+
+    Короткие и пустые значения пропускаются намеренно: замена строки
+    из двух символов испортила бы сообщение, ничего не скрыв.
+    """
+    result = str(text)
+    for secret in secrets:
+        secret = str(secret or '')
+        if len(secret) < 8:
+            continue
+        result = result.replace(secret, REDACTED)
+    return result
+
+
+def safe_headers(headers):
+    """Заголовки для журнала: значения секретных заменены на «***»."""
+    return {
+        name: (REDACTED if str(name).lower() in SECRET_HEADERS else value)
+        for name, value in dict(headers).items()
+    }

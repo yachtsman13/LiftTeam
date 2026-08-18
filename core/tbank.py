@@ -22,13 +22,16 @@ v3 bank-accounts живут одновременно). Ошибиться в и�
 в списке и разнесёт руками.
 """
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from urllib import error, parse, request
 
 from django.conf import settings
 
-from .net import explain
+from .net import explain, redact, safe_headers
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = 'https://business.tbank.ru/openapi'
 
@@ -103,11 +106,18 @@ def _call(path, params=None, payload=None, timeout=30):
     if data is not None:
         req.add_header('Content-Type', 'application/json')
 
+    # В журнал — адрес, метод и заголовки без секретов. Токен в лог
+    # попасть не должен: журнал живёт до ротации и уезжает в резервную
+    # копию, то есть токен в нём перестаёт быть секретом
+    logger.info('Т-Банк: %s %s, заголовки %s',
+                req.get_method(), url, safe_headers(req.headers))
+
     try:
         with request.urlopen(req, timeout=timeout) as response:
             body = response.read().decode('utf-8', errors='replace')
     except error.HTTPError as exc:
-        detail = exc.read().decode('utf-8', errors='replace')[:300]
+        detail = redact(exc.read().decode('utf-8', errors='replace')[:300], token())
+        logger.warning('Т-Банк ответил %s: %s', exc.code, detail)
         # 401 стоит назвать своим именем: чаще всего это просроченный токен,
         # и человек должен понять, что чинить, не читая кода ответа
         if exc.code == 401:
@@ -121,7 +131,7 @@ def _call(path, params=None, payload=None, timeout=30):
     try:
         return json.loads(body) if body else {}
     except ValueError:
-        raise TBankError(f'Т-Банк вернул не JSON: {body[:200]}')
+        raise TBankError(f'Т-Банк вернул не JSON: {redact(body[:200], token())}')
 
 
 def get_accounts(timeout=30):

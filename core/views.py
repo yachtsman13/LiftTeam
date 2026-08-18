@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.49.2.
+Views для LiftTeam v2.50.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -49,7 +49,7 @@ from .utils import (
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import messengers, notifications, tbank, updater
+from . import invoicing, messengers, notifications, tbank, updater
 
 
 def _send_stock_update(part):
@@ -3516,7 +3516,9 @@ def _act_context(pk):
     )
     return {
         'order': order,
-        'organization': Organization.get_solo(),
+        # Юрлицо заказа, а не всегда основное: документы должны быть
+        # от того же лица, от которого выставлен счёт
+        'organization': order.legal_entity(),
         'order_equipments': list(
             order.order_equipments.select_related('equipment__model').order_by('id')
         ),
@@ -3598,7 +3600,7 @@ def repair_order_act_defect(request, order_pk, roe_pk):
     return render(request, 'core/repair_orders/act_defect.html', {
         'order': order_equipment.repair_order,
         'order_equipment': order_equipment,
-        'organization': Organization.get_solo(),
+        'organization': order_equipment.repair_order.legal_entity(),
         'act_date': order_equipment.defect_act_date or timezone.localdate(),
     })
 
@@ -3643,24 +3645,46 @@ def repair_order_quote(request, pk):
     order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
     return render(request, 'core/repair_orders/quote.html', {
         'order': order,
-        'organization': Organization.get_solo(),
+        'organization': order.legal_entity(),
         'rows': order.quote_rows(),
         'total': order.quote_total,
         'quote_date': order.quote_date or timezone.localdate(),
     })
 
 
-# ==================== СЧЁТ ЧЕРЕЗ API Т-БАНКА ====================
+# ==================== СЧЁТ ЧЕРЕЗ API БАНКА ====================
 
 # Единственное место в программе, которое что-то создаёт в банке. Поэтому:
 # отправка только по нажатию человека, только со страницы, где он видит
-# всё, что уйдёт, и только при включённом TBANK_INVOICE_ENABLED.
-# По расписанию счета не выставляются нигде и никогда.
+# всё, что уйдёт, и только при включённом выключателе того банка,
+# который выбран. По расписанию счета не выставляются нигде и никогда.
+#
+# Банков два, и с v2.50.0 представление не знает, с каким именно работает:
+# всё идёт через общий интерфейс из `core/invoicing.py`. Разницу между
+# банками знают только их собственные модули.
 
-def _invoice_payload(order, form_data):
+
+def _invoice_organization(provider_code):
+    """Юрлицо, от которого уйдёт счёт этого банка.
+
+    Возвращает пару «юрлицо, закреплено ли оно за банком». Если за банком
+    юрлица нет, берётся основное, а вторым значением приходит False —
+    чтобы страница честно сказала бухгалтеру, чьи реквизиты подставлены
+    и по какому ряду считается номер. Отказывать в выставлении из-за
+    этого не за что: реквизиты юрлица в запрос к банку не уходят вовсе,
+    документ банк рисует по своему счёту. А вот ряд номеров окажется
+    чужим — и об этом надо предупредить.
+    """
+    bound = Organization.for_provider(provider_code)
+    if bound is not None:
+        return bound, True
+    return Organization.get_solo(), False
+
+
+def _invoice_payload(provider, order, form_data):
     """Тело запроса к банку — то самое, что показано на странице."""
     client = order.client
-    return tbank.build_invoice(
+    return provider.build_invoice(
         number=form_data['invoice_number'],
         items=order.invoice_items(),
         payer={'name': client.name, 'inn': client.inn, 'kpp': client.kpp},
@@ -3672,7 +3696,7 @@ def _invoice_payload(order, form_data):
 
 @role_required('accountant')
 def repair_order_invoice(request, pk):
-    """Выставление счёта заказчику через API Т-Банка.
+    """Выставление счёта заказчику через API банка.
 
     GET показывает, что именно уйдёт в банк; POST отправляет. Разделение
     не формальность: счёт уходит заказчику, и «подтверждаю» должно означать
@@ -3680,63 +3704,89 @@ def repair_order_invoice(request, pk):
     """
     order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
     items = order.invoice_items()
-    default_emails = order.client.email
 
     if request.method == 'POST':
         form = InvoiceSendForm(request.POST)
         if form.is_valid():
             return _send_invoice(request, order, form)
+        chosen = (request.POST.get('provider')
+                  or invoicing.default_provider_for(request.user))
     else:
+        chosen = invoicing.default_provider_for(request.user)
         today = timezone.localdate()
         form = InvoiceSendForm(initial={
+            'provider': chosen,
             'invoice_number': order.invoice_number or RepairOrder.next_invoice_number(),
             'invoice_date': today,
-            'due_date': today + timedelta(
-                days=getattr(settings, 'TBANK_INVOICE_DUE_DAYS', 14)),
-            'emails': default_emails,
+            'due_date': today + timedelta(days=invoicing.due_days(chosen)),
+            'emails': order.client.email,
         })
+
+    organization, bound = _invoice_organization(chosen)
+    try:
+        provider = invoicing.get_provider(chosen)
+        enabled = provider.invoice_enabled()
+        configured = provider.is_configured()
+        missing = provider.missing_settings()
+    except invoicing.InvoiceError:
+        provider, enabled, configured, missing = None, False, False, []
 
     return render(request, 'core/bank/invoice.html', {
         'order': order,
         'form': form,
         'items': items,
         'items_total': sum(Decimal(str(item['price'])) for item in items),
-        'enabled': tbank.invoice_enabled(),
-        'configured': tbank.is_configured(),
+        'provider': provider,
+        'provider_label': invoicing.provider_label(chosen),
+        'organization': organization,
+        'organization_is_bound': bound,
+        'enabled': enabled,
+        'configured': configured,
+        'missing_settings': missing,
     })
 
 
 def _send_invoice(request, order, form):
     """Отправка счёта в банк и запись следов в заказе."""
-    payload = _invoice_payload(order, form.cleaned_data)
+    chosen = form.cleaned_data['provider']
 
     try:
-        response = tbank.send_invoice(payload)
-    except tbank.TBankError as exc:
+        provider = invoicing.get_provider(chosen)
+        payload = _invoice_payload(provider, order, form.cleaned_data)
+        response = provider.send_invoice(payload, emails=form.cleaned_data['emails'])
+    except invoicing.InvoiceError as exc:
         # Ошибку храним в заказе, а не только в сообщении на экране:
         # человек уйдёт со страницы, а причина отказа понадобится потом
-        order.tbank_invoice_error = str(exc)[:500]
-        order.save(update_fields=['tbank_invoice_error'])
+        order.invoice_error = str(exc)[:500]
+        order.save(update_fields=['invoice_error'])
         messages.error(request, f'Счёт не выставлен. {exc}')
         return redirect('repair_order_invoice', pk=order.pk)
 
     order.invoice_number = form.cleaned_data['invoice_number']
     order.invoice_date = form.cleaned_data['invoice_date']
-    order.tbank_invoice_sent_at = timezone.now()
-    order.tbank_invoice_pdf_url = tbank.invoice_pdf_url(response)
-    order.tbank_invoice_error = ''
+    order.invoice_sent_at = timezone.now()
+    order.invoice_pdf_url = provider.invoice_pdf_url(response)
+    order.invoice_external_id = provider.external_id(response)
+    order.invoice_provider = chosen
+    order.invoice_error = ''
     order.save(update_fields=[
-        'invoice_number', 'invoice_date', 'tbank_invoice_sent_at',
-        'tbank_invoice_pdf_url', 'tbank_invoice_error',
+        'invoice_number', 'invoice_date', 'invoice_sent_at',
+        'invoice_pdf_url', 'invoice_external_id', 'invoice_provider',
+        'invoice_error',
     ])
 
     OrderStatusHistory.objects.create(
         order=order,
         changed_by=request.user,
-        notes=f'Выставлен счёт № {order.invoice_number} через Т-Банк'
+        notes=f'Выставлен счёт № {order.invoice_number} через {provider.label}'
               + (f', отправлен: {", ".join(form.cleaned_data["emails"])}'
                  if form.cleaned_data['emails'] else ' (без отправки по почте)'),
     )
+
+    # Счёт выставлен, а письмо не ушло — это не отказ, и выдавать одно
+    # за другое нельзя: счёт в банке уже есть, и повторять его не надо
+    for failure in (response.get('emailErrors') or ()) if isinstance(response, dict) else ():
+        messages.warning(request, f'Счёт выставлен, но письмо не ушло — {failure}')
 
     messages.success(request, f'Счёт № {order.invoice_number} выставлен')
     return redirect('repair_order_detail', pk=order.pk)
@@ -3881,18 +3931,39 @@ def _bank_payment_note(operation):
 
 @role_required('admin')
 def admin_organization(request):
-    """Реквизиты своей фирмы — шапка и подписи печатных актов."""
-    organization = Organization.get_solo()
+    """Справочник своих юрлиц: реквизиты, подписи, банк для счетов.
+
+    Записей может быть несколько — бухгалтеров двое, и работают они
+    от разных юрлиц. Без указания, какую правим, открывается основная:
+    так же, как открывалась единственная запись до v2.50.0.
+    """
+    organization = _chosen_organization(request)
     if request.method == 'POST':
         form = OrganizationForm(request.POST, instance=organization)
         if form.is_valid():
-            form.save()
+            saved = form.save()
             messages.success(request, 'Реквизиты сохранены')
-            return redirect('admin_organization')
+            return redirect(f"{reverse('admin_organization')}?id={saved.pk}")
         messages.error(request, 'Реквизиты не сохранены: проверьте отмеченные поля')
     else:
         form = OrganizationForm(instance=organization)
-    return render(request, 'core/admin/organization.html', {'form': form})
+
+    return render(request, 'core/admin/organization.html', {
+        'form': form,
+        'organization': organization,
+        'organizations': list(Organization.objects.all()),
+        'is_new': organization.pk is None,
+    })
+
+
+def _chosen_organization(request):
+    """Какое юрлицо правим. Без указания — основное, как было раньше."""
+    if request.GET.get('new'):
+        return Organization()
+    chosen = request.GET.get('id') or request.POST.get('id')
+    if chosen:
+        return get_object_or_404(Organization, pk=chosen)
+    return Organization.get_solo()
 
 
 # ==================== КОРОТКИЕ АДРЕСА ДЛЯ QR-КОДОВ ====================

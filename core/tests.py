@@ -25,8 +25,10 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import resolve
 from django.utils import timezone
 
-from . import messengers, notifications, tbank, views
-from .forms import RepairOrderEquipmentForm
+from django import forms
+
+from . import invoicing, messengers, net, notifications, tbank, tochka, views
+from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
@@ -1627,7 +1629,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.49.2."""
+        """Печать этикетки оборудования вне заказа убрана в v2.50.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -4232,8 +4234,12 @@ class DebtReportTests(TestCase):
         )
         resp = self.client_http.get('/reports/debtors/')
 
+        # localdate, а не date.today(): вторая берёт дату по часам сервера
+        # (UTC), а last_reminder приводится к Europe/Moscow — и с 21:00 UTC
+        # до полуночи эти две даты разные, отчего тест падал каждую ночь
         self.assertEqual(
-            resp.context['orders'][0].last_reminder.date(), datetime.date.today())
+            timezone.localtime(resp.context['orders'][0].last_reminder).date(),
+            timezone.localdate())
 
     def test_the_report_shows_the_remainder(self):
         Payment.objects.create(repair_order=self.order, amount=1000)
@@ -5422,6 +5428,7 @@ class TBankInvoiceSendingTests(TestCase):
 
     def _post(self, **overrides):
         data = {
+            'provider': 'tbank',
             'invoice_number': '943',
             'invoice_date': '2026-08-13',
             'due_date': '2026-08-27',
@@ -5440,9 +5447,9 @@ class TBankInvoiceSendingTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.invoice_number, '943')
         self.assertEqual(self.order.invoice_date, datetime.date(2026, 8, 13))
-        self.assertEqual(self.order.tbank_invoice_pdf_url, 'https://example.org/1.pdf')
-        self.assertIsNotNone(self.order.tbank_invoice_sent_at)
-        self.assertEqual(self.order.tbank_invoice_error, '')
+        self.assertEqual(self.order.invoice_pdf_url, 'https://example.org/1.pdf')
+        self.assertIsNotNone(self.order.invoice_sent_at)
+        self.assertEqual(self.order.invoice_error, '')
         self.assertEqual(send.call_count, 1)
 
     @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
@@ -5472,8 +5479,8 @@ class TBankInvoiceSendingTests(TestCase):
             self._post()
 
         self.order.refresh_from_db()
-        self.assertIn('нет прав', self.order.tbank_invoice_error)
-        self.assertIsNone(self.order.tbank_invoice_sent_at)
+        self.assertIn('нет прав', self.order.invoice_error)
+        self.assertIsNone(self.order.invoice_sent_at)
         self.assertEqual(self.order.invoice_number, '')
 
     @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=False)
@@ -5584,9 +5591,9 @@ class TBankInvoiceSendingTests(TestCase):
 
     @override_settings(TBANK_TOKEN='secret', TBANK_INVOICE_ENABLED=True)
     def test_a_repeat_send_is_warned_about(self):
-        self.order.tbank_invoice_sent_at = timezone.now()
+        self.order.invoice_sent_at = timezone.now()
         self.order.invoice_number = '943'
-        self.order.save(update_fields=['tbank_invoice_sent_at', 'invoice_number'])
+        self.order.save(update_fields=['invoice_sent_at', 'invoice_number'])
 
         resp = self.client_http.get(self._url())
 
@@ -8082,3 +8089,505 @@ class PrintingChromeTests(TestCase):
 
     def test_print_hides_dialogs_without_bootstrap(self):
         self.assertIn('.modal, .modal-backdrop', self.base)
+# ======================= ДВА БАНКА, ДВА ЮРЛИЦА =======================
+
+
+class OrganizationDirectoryTests(TestCase):
+    """Справочник юрлиц. До v2.50.0 запись была одна на всю программу."""
+
+    def test_the_first_record_becomes_the_default_one(self):
+        """Иначе печатным актам нечего ставить в шапку."""
+        first = Organization.objects.create(name='ООО «Первое»')
+
+        first.refresh_from_db()
+        self.assertTrue(first.is_default)
+
+    def test_only_one_record_stays_the_default(self):
+        """«Основных» два — это два разных бланка на один заказ."""
+        first = Organization.objects.create(name='ООО «Первое»')
+        second = Organization.objects.create(name='ИП Второй', is_default=True)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertFalse(first.is_default)
+        self.assertTrue(second.is_default)
+        self.assertEqual(Organization.objects.filter(is_default=True).count(), 1)
+
+    def test_get_solo_returns_the_default_one(self):
+        """Печатные документы зовут его по-старому и должны получать то же."""
+        Organization.objects.create(name='ООО «Первое»')
+        chosen = Organization.objects.create(name='ИП Второй', is_default=True)
+
+        self.assertEqual(Organization.get_solo().pk, chosen.pk)
+
+    def test_a_bank_points_at_exactly_one_entity(self):
+        Organization.objects.create(name='ООО «Первое»', provider='tbank')
+
+        self.assertEqual(Organization.for_provider('tbank').name, 'ООО «Первое»')
+        self.assertIsNone(Organization.for_provider('tochka'))
+
+    def test_the_same_bank_cannot_be_taken_twice(self):
+        """Иначе по банку нельзя понять, чьи реквизиты ставить в счёт."""
+        Organization.objects.create(name='ООО «Первое»', provider='tbank')
+        form = OrganizationForm({'name': 'ИП Второй', 'provider': 'tbank'})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('уже закреплён', form.errors['provider'][0])
+
+    def test_entities_without_a_bank_do_not_collide(self):
+        Organization.objects.create(name='ООО «Первое»')
+        form = OrganizationForm({'name': 'ИП Второй', 'provider': ''})
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+
+class InvoiceNumberingIsUntouchedTests(TestCase):
+    """Ряд номеров один на всю программу и при двух юрлицах.
+
+    Разводить его по юрлицам владелец не захотел: за сквозной нумерацией
+    всё равно следит человек, и два ряда он свёл бы труднее одного.
+    """
+
+    def setUp(self):
+        self.customer = ClientModel.objects.create(name='ООО «Заказчик»')
+        Organization.objects.create(name='ООО «Первое»', provider='tbank',
+                                    is_default=True)
+        Organization.objects.create(name='ИП Второй', provider='tochka')
+
+    def test_the_series_is_shared_by_both_entities(self):
+        RepairOrder.objects.create(client=self.customer, invoice_number='943')
+
+        self.assertEqual(RepairOrder.next_invoice_number(), '944')
+
+    def test_the_method_still_takes_no_arguments(self):
+        """Подпись не менялась: её зовут из представления счёта."""
+        self.assertEqual(RepairOrder.next_invoice_number(), '1')
+
+
+class OrderLegalEntityTests(TestCase):
+    """От какого юрлица идут печатные документы заказа."""
+
+    def setUp(self):
+        self.customer = ClientModel.objects.create(name='ООО «Заказчик»')
+        self.first = Organization.objects.create(
+            name='ООО «Первое»', inn='7701234567', provider='tbank',
+            is_default=True)
+        self.second = Organization.objects.create(
+            name='ИП Второй', inn='772600000000', provider='tochka')
+
+    def test_an_order_without_an_invoice_uses_the_default_entity(self):
+        """Обычное состояние нового заказа и всех заказов до v2.50.0."""
+        order = RepairOrder.objects.create(client=self.customer)
+
+        self.assertEqual(order.legal_entity().pk, self.first.pk)
+
+    def test_an_order_follows_the_bank_that_issued_its_invoice(self):
+        """Иначе заказчик получит по одной работе документы от двух фирм."""
+        order = RepairOrder.objects.create(client=self.customer,
+                                           invoice_provider='tochka')
+
+        self.assertEqual(order.legal_entity().pk, self.second.pk)
+
+    def test_a_bank_without_an_entity_falls_back_to_the_default(self):
+        """Пустая шапка на документе хуже, чем чужая: пустую отправят как есть."""
+        self.second.provider = ''
+        self.second.save()
+        order = RepairOrder.objects.create(client=self.customer,
+                                           invoice_provider='tochka')
+
+        self.assertEqual(order.legal_entity().pk, self.first.pk)
+
+
+class PrintedDocumentsFollowTheInvoiceEntityTests(TestCase):
+    """Акты и предложение печатаются от юрлица счёта, а не всегда основного."""
+
+    def setUp(self):
+        self.staff = Employee.objects.create_user(
+            username='print_staff', full_name='Сотрудник', password='pass',
+            role='repair_manager')
+        self.http = TestClient()
+        self.http.force_login(self.staff)
+
+        self.first = Organization.objects.create(
+            name='ООО «Первое»', inn='7701234567', provider='tbank',
+            is_default=True)
+        self.second = Organization.objects.create(
+            name='ИП Второй', inn='772600000000', provider='tochka')
+
+        self.customer = ClientModel.objects.create(name='ООО «Заказчик»')
+        self.order = RepairOrder.objects.create(client=self.customer)
+        model = EquipmentModel.objects.create(name='Emotron-печать')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-PR'),
+            repair_cost=Decimal('1000'),
+        )
+
+    def _pages(self):
+        return [
+            f'/repair-orders/{self.order.pk}/act/receive/',
+            f'/repair-orders/{self.order.pk}/act/complete/',
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/act/defect/',
+            f'/repair-orders/{self.order.pk}/quote/',
+        ]
+
+    def test_by_default_every_document_uses_the_default_entity(self):
+        """Прежнее поведение: до v2.50.0 юрлицо было одно."""
+        for url in self._pages():
+            with self.subTest(url=url):
+                resp = self.http.get(url)
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.context['organization'].pk, self.first.pk)
+
+    def test_every_document_follows_the_bank_of_the_invoice(self):
+        self.order.invoice_provider = 'tochka'
+        self.order.save(update_fields=['invoice_provider'])
+
+        for url in self._pages():
+            with self.subTest(url=url):
+                resp = self.http.get(url)
+                self.assertEqual(resp.context['organization'].pk, self.second.pk)
+                self.assertContains(resp, 'ИП Второй')
+
+
+class InvoiceProviderInterfaceTests(SimpleTestCase):
+    """Общий интерфейс. Всё выше банка не должно знать, какой это банк."""
+
+    def test_both_banks_are_available_by_code(self):
+        self.assertEqual(invoicing.get_provider('tbank').label, 'Т-Банк')
+        self.assertEqual(invoicing.get_provider('tochka').label, 'Точка Банк')
+
+    def test_an_unknown_bank_is_refused_and_not_guessed(self):
+        """Молчаливая подстановка — это чужие реквизиты в чужом документе."""
+        with self.assertRaises(invoicing.InvoiceError):
+            invoicing.get_provider('sberbank')
+
+    def test_the_prefill_falls_back_when_the_employee_has_no_bank(self):
+        self.assertEqual(
+            invoicing.default_provider_for(Employee(username='x', full_name='x')),
+            'tbank')
+
+    def test_the_prefill_uses_the_employee_choice(self):
+        someone = Employee(username='x', full_name='x', default_provider='tochka')
+
+        self.assertEqual(invoicing.default_provider_for(someone), 'tochka')
+
+
+@override_settings(TOCHKA_TOKEN='jwt-token-value-0123456789',
+                   TOCHKA_CUSTOMER_CODE='300000092',
+                   TOCHKA_ACCOUNT_ID='40802810/044525104',
+                   TOCHKA_INVOICE_ENABLED=True)
+class TochkaInvoiceTests(TestCase):
+    """Точка Банк. Схема запроса сверена по двум SDK, см. шапку core/tochka.py."""
+
+    ITEMS = [{'name': 'Ремонт привода SN:1', 'price': 54000.0,
+              'unit': 'шт.', 'vat': 'None', 'amount': 1}]
+
+    def _built(self, **kwargs):
+        return tochka.build_invoice(
+            number='943', items=self.ITEMS,
+            payer={'name': 'ООО «ЛИФТПРОЕКТ»', 'inn': '9722051089',
+                   'kpp': '772201001'},
+            invoice_date=datetime.date(2026, 8, 13),
+            due_date=datetime.date(2026, 8, 27), **kwargs)
+
+    def test_the_request_carries_the_fields_the_bank_documents(self):
+        data = self._built()['Data']
+
+        self.assertEqual(data['accountId'], '40802810/044525104')
+        self.assertEqual(data['customerCode'], '300000092')
+        self.assertEqual(data['SecondSide']['taxCode'], '9722051089')
+        self.assertEqual(data['SecondSide']['type'], 'company')
+        invoice = data['Content']['Invoice']
+        self.assertEqual(invoice['number'], '943')
+        self.assertEqual(invoice['date'], '2026-08-13')
+        self.assertEqual(invoice['paymentExpiryDate'], '2026-08-27')
+        self.assertEqual(invoice['Positions'][0]['positionName'],
+                         'Ремонт привода SN:1')
+        self.assertEqual(invoice['Positions'][0]['ndsKind'], 'without_nds')
+        self.assertEqual(invoice['totalAmount'], 54000.0)
+
+    def test_a_twelve_digit_inn_is_a_sole_trader(self):
+        self.assertEqual(tochka.counterpart_type('772600000000'), 'ip')
+        self.assertEqual(tochka.counterpart_type('9722051089'), 'company')
+
+    def test_empty_payer_fields_are_not_sent_at_all(self):
+        """Пустая строка в реквизитах счёта выглядит как ошибка."""
+        built = tochka.build_invoice(number='1', items=self.ITEMS,
+                                     payer={'inn': '9722051089'})
+
+        self.assertNotIn('kpp', built['Data']['SecondSide'])
+        self.assertNotIn('secondSideName', built['Data']['SecondSide'])
+
+    def test_the_tbank_unit_setting_does_not_leak_into_tochka(self):
+        """Списки допустимых единиц у банков разные."""
+        with override_settings(TBANK_INVOICE_UNIT='услуга.',
+                               TOCHKA_INVOICE_UNIT='шт.'):
+            built = self._built()
+
+        position = built['Data']['Content']['Invoice']['Positions'][0]
+        self.assertEqual(position['unitCode'], 'шт.')
+
+    @override_settings(TOCHKA_INVOICE_AMOUNTS_AS_STRING=True)
+    def test_amounts_can_be_sent_as_strings(self):
+        """Вид сумм по документации не подтверждён — отсюда переключатель."""
+        invoice = self._built()['Data']['Content']['Invoice']
+
+        self.assertEqual(invoice['totalAmount'], '54000.00')
+
+    @override_settings(TOCHKA_INVOICE_NDS='nds_25')
+    def test_an_unknown_vat_rate_is_refused_before_the_network(self):
+        with self.assertRaises(tochka.TochkaError) as caught:
+            self._built()
+
+        self.assertIn('nds_25', str(caught.exception))
+
+    def test_sending_returns_the_document_id(self):
+        with patch('core.tochka._call',
+                   return_value={'Data': {'documentId': 'a1b2c3'}}):
+            sent = tochka.send_invoice(self._built())
+
+        self.assertEqual(tochka.document_id(sent), 'a1b2c3')
+
+    def test_a_refusal_in_the_body_is_still_a_refusal(self):
+        """Ответ 200 ещё не значит «выставлено»."""
+        answer = {'errors': [{'message': 'нет прав на выставление'}]}
+        with patch('core.tochka._call', return_value=answer):
+            with self.assertRaises(tochka.TochkaError) as caught:
+                tochka.send_invoice(self._built())
+
+        self.assertIn('нет прав', str(caught.exception))
+
+    def test_an_answer_without_a_document_id_is_not_taken_as_success(self):
+        with patch('core.tochka._call', return_value={'Data': {}}):
+            with self.assertRaises(tochka.TochkaError) as caught:
+                tochka.send_invoice(self._built())
+
+        self.assertIn('идентификатор', str(caught.exception))
+
+    def test_a_timeout_is_named_in_words(self):
+        with patch('core.tochka.request.urlopen', side_effect=TimeoutError()):
+            with self.assertRaises(tochka.TochkaError) as caught:
+                tochka.send_invoice(self._built())
+
+        self.assertIn('не ответила вовремя', str(caught.exception))
+
+    def test_an_unreachable_bank_is_named_in_words(self):
+        with patch('core.tochka.request.urlopen',
+                   side_effect=urllib_error.URLError('Connection refused')):
+            with self.assertRaises(tochka.TochkaError) as caught:
+                tochka.send_invoice(self._built())
+
+        self.assertIn('недоступна', str(caught.exception))
+
+    @override_settings(TOCHKA_INVOICE_ENABLED=False)
+    def test_sending_is_off_by_default(self):
+        """Отправка документа заказчику не должна включаться сама."""
+        self.assertFalse(tochka.invoice_enabled())
+        with self.assertRaises(tochka.TochkaError) as caught:
+            tochka.send_invoice(self._built())
+
+        self.assertIn('выключено', str(caught.exception))
+
+    @override_settings(TOCHKA_TOKEN='')
+    def test_the_missing_settings_are_named(self):
+        self.assertIn('TOCHKA_TOKEN', tochka.missing_settings())
+        self.assertFalse(tochka.is_configured())
+
+    def test_creating_an_invoice_is_never_retried(self):
+        """Повтор с неясным исходом первой попытки — два счёта заказчику."""
+        with patch('core.tochka.request.urlopen',
+                   side_effect=TimeoutError()) as opened:
+            with self.assertRaises(tochka.TochkaError):
+                tochka.send_invoice(self._built())
+
+        self.assertEqual(opened.call_count, 1)
+
+    def test_reading_the_status_is_retried(self):
+        with patch('core.tochka.request.urlopen',
+                   side_effect=TimeoutError()) as opened:
+            with self.assertRaises(tochka.TochkaError):
+                tochka.payment_status('a1b2c3')
+
+        self.assertEqual(opened.call_count, tochka.READ_RETRIES + 1)
+
+    def test_no_pdf_link_is_invented(self):
+        """У Точки ссылки на PDF нет: файл отдаётся по токену."""
+        self.assertEqual(tochka.invoice_pdf_url({'Data': {'documentId': 'x'}}), '')
+
+
+class BankSecretsInLogsTests(TestCase):
+    """Токен в журнале живёт до ротации и уезжает в резервную копию."""
+
+    TOKEN = 'jwt-token-value-0123456789'
+
+    @override_settings(TOCHKA_TOKEN=TOKEN, TOCHKA_CUSTOMER_CODE='300000092',
+                       TOCHKA_ACCOUNT_ID='40802810/044525104')
+    def test_the_tochka_token_never_reaches_the_log(self):
+        with patch('core.tochka.request.urlopen', side_effect=TimeoutError()):
+            with self.assertLogs('core.tochka', level='INFO') as captured:
+                with self.assertRaises(tochka.TochkaError):
+                    tochka.payment_status('a1b2c3')
+
+        written = chr(10).join(captured.output)
+        self.assertNotIn(self.TOKEN, written)
+        self.assertIn('***', written)
+
+    @override_settings(TBANK_TOKEN=TOKEN)
+    def test_the_tbank_token_never_reaches_the_log(self):
+        with patch('core.tbank.request.urlopen', side_effect=TimeoutError()):
+            with self.assertLogs('core.tbank', level='INFO') as captured:
+                with self.assertRaises(tbank.TBankError):
+                    tbank.get_accounts()
+
+        written = chr(10).join(captured.output)
+        self.assertNotIn(self.TOKEN, written)
+        self.assertIn('***', written)
+
+    def test_short_values_are_not_blanked_out(self):
+        """Замена строки из двух символов испортила бы сообщение."""
+        self.assertEqual(net.redact('счёт 40802810 не найден', 'ok'),
+                         'счёт 40802810 не найден')
+
+
+class InvoiceProviderChoiceOnTheFormTests(TestCase):
+    """Банк на форме счёта: подставлен, но виден и правится."""
+
+    TOCHKA_ON = {
+        'TOCHKA_TOKEN': 'jwt-token-value-0123456789',
+        'TOCHKA_CUSTOMER_CODE': '300000092',
+        'TOCHKA_ACCOUNT_ID': '40802810/044525104',
+        'TOCHKA_INVOICE_ENABLED': True,
+    }
+
+    def setUp(self):
+        self.tochka_accountant = Employee.objects.create_user(
+            username='buh_tochka', full_name='Бухгалтер Точки', password='pass',
+            role='accountant', default_provider='tochka')
+        self.tbank_accountant = Employee.objects.create_user(
+            username='buh_tbank', full_name='Бухгалтер Т-Банка', password='pass',
+            role='accountant', default_provider='tbank')
+        self.manager = Employee.objects.create_user(
+            username='mgr_prov', full_name='Менеджер', password='pass',
+            role='repair_manager')
+
+        self.first = Organization.objects.create(
+            name='ООО «Первое»', inn='7701234567', provider='tbank',
+            is_default=True)
+        self.second = Organization.objects.create(
+            name='ИП Второй', inn='772600000000', provider='tochka')
+
+        self.customer = ClientModel.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089', email='buh@liftproekt.ru')
+        self.order = RepairOrder.objects.create(client=self.customer)
+        model = EquipmentModel.objects.create(name='Emotron-провайдер')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-PRV'),
+            repair_cost=Decimal('54000'),
+        )
+        self.http = TestClient()
+
+    def _url(self):
+        return f'/repair-orders/{self.order.pk}/invoice/'
+
+    def test_the_field_is_prefilled_from_the_employee(self):
+        self.http.force_login(self.tochka_accountant)
+
+        resp = self.http.get(self._url())
+
+        self.assertEqual(resp.context['form'].initial['provider'], 'tochka')
+
+    def test_the_other_accountant_gets_the_other_bank(self):
+        self.http.force_login(self.tbank_accountant)
+
+        resp = self.http.get(self._url())
+
+        self.assertEqual(resp.context['form'].initial['provider'], 'tbank')
+
+    def test_the_field_stays_visible_and_editable(self):
+        """Бухгалтеры подменяют друг друга: спрятать поле нельзя."""
+        self.http.force_login(self.tochka_accountant)
+
+        resp = self.http.get(self._url())
+        field = resp.context['form'].fields['provider']
+
+        self.assertNotIsInstance(field.widget, forms.HiddenInput)
+        self.assertFalse(field.disabled)
+        self.assertEqual([code for code, _ in field.choices], ['tbank', 'tochka'])
+
+    def test_the_prefilled_bank_can_be_changed_to_the_other_one(self):
+        self.http.force_login(self.tbank_accountant)
+
+        with override_settings(**self.TOCHKA_ON):
+            with patch('core.tochka._call',
+                       return_value={'Data': {'documentId': 'a1b2c3'}}):
+                self.http.post(self._url(), {
+                    'provider': 'tochka', 'invoice_number': '7',
+                    'invoice_date': '2026-08-13', 'due_date': '2026-08-27',
+                    'emails': '',
+                })
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.invoice_provider, 'tochka')
+        self.assertEqual(self.order.invoice_external_id, 'a1b2c3')
+
+    def test_the_requisites_come_from_the_entity_of_the_chosen_bank(self):
+        """Не от основного юрлица: у второго банка своё, и ИНН другой."""
+        self.http.force_login(self.tochka_accountant)
+
+        resp = self.http.get(self._url())
+
+        self.assertEqual(resp.context['organization'].pk, self.second.pk)
+        self.assertEqual(resp.context['organization'].inn, '772600000000')
+        self.assertTrue(resp.context['organization_is_bound'])
+
+    def test_the_other_bank_shows_the_other_entity(self):
+        self.http.force_login(self.tbank_accountant)
+
+        resp = self.http.get(self._url())
+
+        self.assertEqual(resp.context['organization'].pk, self.first.pk)
+        self.assertEqual(resp.context['organization'].inn, '7701234567')
+
+    def test_a_bank_without_an_entity_is_explained_not_crashed(self):
+        self.second.provider = ''
+        self.second.save()
+        self.http.force_login(self.tochka_accountant)
+
+        resp = self.http.get(self._url())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['organization_is_bound'])
+        self.assertContains(resp, 'не закреплено ни одно юрлицо')
+
+    def test_a_refusal_is_kept_on_the_order_and_nothing_is_marked_as_sent(self):
+        """Человек уйдёт со страницы, а причина отказа понадобится потом."""
+        self.http.force_login(self.tochka_accountant)
+
+        with override_settings(**self.TOCHKA_ON):
+            with patch('core.tochka._call',
+                       side_effect=tochka.TochkaError('Точка отказала: нет прав')):
+                self.http.post(self._url(), {
+                    'provider': 'tochka', 'invoice_number': '7',
+                    'invoice_date': '2026-08-13', 'due_date': '2026-08-27',
+                    'emails': '',
+                })
+
+        self.order.refresh_from_db()
+        self.assertIn('нет прав', self.order.invoice_error)
+        self.assertIsNone(self.order.invoice_sent_at)
+        self.assertEqual(self.order.invoice_number, '')
+        self.assertEqual(self.order.invoice_provider, '')
+
+    def test_the_repair_manager_still_does_not_issue_invoices(self):
+        self.http.force_login(self.manager)
+
+        self.assertEqual(self.http.get(self._url()).status_code, 302)
+
+    def test_the_admin_still_passes(self):
+        boss = Employee.objects.create_superuser(
+            username='boss_prov', full_name='Админ', password='pass')
+        self.http.force_login(boss)
+
+        self.assertEqual(self.http.get(self._url()).status_code, 200)

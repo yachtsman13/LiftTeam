@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.49.2 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.50.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -339,6 +339,51 @@ TBANK_INVOICE_VAT = os.getenv('TBANK_INVOICE_VAT', 'None')
 # повторная загрузка уже известных операций ничего не портит, а пропущенный
 # из-за суточного простоя Pi день стоил бы потерянного поступления.
 TBANK_STATEMENT_DAYS = int(os.getenv('TBANK_STATEMENT_DAYS', '30'))
+
+# --- Точка Банк -----------------------------------------------------------
+#
+# Второй банк. Наборы секретов у банков разные и намеренно не смешаны
+# в одну группу: токен Т-Банка в Точке не работает и наоборот, а общая
+# группа настроек рано или поздно означала бы запрос в один банк
+# с ключом от другого.
+#
+# Точка предлагает два способа авторизации: JWT-токен и OAuth 2.0.
+# Нам нужен JWT: OAuth предназначен для сервисов, обслуживающих ЧУЖИХ
+# клиентов банка, а мы выставляем счета за себя. Токен выпускается
+# в личном кабинете Точки и в заголовке идёт как `Bearer <токен>`.
+TOCHKA_TOKEN = os.getenv('TOCHKA_TOKEN', '')
+
+# Код клиента и идентификатор счёта. Оба узнаются у самого банка
+# методами «список клиентов» и «список счетов»; accountId — это номер
+# счёта и БИК, а не просто номер счёта.
+TOCHKA_CUSTOMER_CODE = os.getenv('TOCHKA_CUSTOMER_CODE', '')
+TOCHKA_ACCOUNT_ID = os.getenv('TOCHKA_ACCOUNT_ID', '')
+
+# Адрес и версия API — в настройках по той же причине, что и у Т-Банка:
+# переезд банка должен чиниться правкой .env, а не кодом
+TOCHKA_API_URL = os.getenv('TOCHKA_API_URL', 'https://enter.tochka.com/uapi')
+TOCHKA_API_VERSION = os.getenv('TOCHKA_API_VERSION', 'v1.0')
+
+# Свой выключатель выставления счетов, как и у Т-Банка: счёт уходит
+# заказчику от лица фирмы, и включаться сам собой он не должен
+TOCHKA_INVOICE_ENABLED = os.getenv('TOCHKA_INVOICE_ENABLED', 'False').lower() == 'true'
+
+# Ряд номеров счетов один на всю программу и при двух юрлицах — начало
+# ряда задаётся прежней TBANK_INVOICE_NUMBER_START. Здесь только срок оплаты
+TOCHKA_INVOICE_DUE_DAYS = int(os.getenv('TOCHKA_INVOICE_DUE_DAYS', '14'))
+
+# Единица измерения и ставка НДС в позициях счёта. Названия ставок у Точки
+# свои: without_nds, nds_0, nds_5, nds_7, nds_10, nds_20. «without_nds» —
+# без НДС, на УСН это и нужно.
+TOCHKA_INVOICE_UNIT = os.getenv('TOCHKA_INVOICE_UNIT', 'шт.')
+TOCHKA_INVOICE_NDS = os.getenv('TOCHKA_INVOICE_NDS', 'without_nds')
+
+# Суммы числом или строкой. По документации банка (OpenAPI) — числом,
+# и так стоит по умолчанию. Но рабочий сторонний SDK шлёт их строками
+# вида «54000.00», а проверить на живом счёте пока не на чем. Если банк
+# откажет по сумме — поставьте True, это единственное, что тут меняется.
+TOCHKA_INVOICE_AMOUNTS_AS_STRING = os.getenv(
+    'TOCHKA_INVOICE_AMOUNTS_AS_STRING', 'False').lower() == 'true'
 
 # Основа ссылок в QR-кодах этикеток. Пусто — берётся адрес, по которому
 # открыта страница печати. На Raspberry Pi значение по умолчанию другое:
