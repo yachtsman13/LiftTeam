@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.40.0.
+Модели данных для LiftTeam v2.41.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -153,6 +153,14 @@ class Employee(AbstractBaseUser, PermissionsMixin):
     # То же самое для Telegram. Идентификатор другой: в Telegram и человек,
     # и группа — это chat_id, приставок вроде «user:» там нет.
     telegram_chat_id = models.CharField('ID в Telegram', max_length=32, blank=True)
+    # Личный выбор канала внутренних оповещений (дефицит деталей,
+    # задолженности). Глобальные NOTIFY_MAX/NOTIFY_TELEGRAM в .env включают
+    # канал всей роли сразу, а эти три поля дополнительно фильтруют по
+    # человеку. default=True сохраняет прежнее поведение для тех, кто ничего
+    # не менял: получают все, у кого канал глобально включён и ID заполнен.
+    notify_by_email = models.BooleanField('Оповещения на почту', default=True)
+    notify_by_max = models.BooleanField('Оповещения в MAX', default=True)
+    notify_by_telegram = models.BooleanField('Оповещения в Telegram', default=True)
     role = models.CharField('Роль', max_length=20, choices=ROLE_CHOICES, default='repair_manager')
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)

@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.40.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.41.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -3808,6 +3808,124 @@ class MaxQueueTests(TestCase):
 
         self.assertTrue(note.body.startswith(note.subject))
         self.assertIn('MAX-1', note.body)
+
+
+class PersonalNotificationChoiceTests(TestCase):
+    """Личный выбор канала (`notify_by_*`) поверх глобального включения."""
+
+    def setUp(self):
+        self.opted_out = Employee.objects.create_user(
+            username='wh_optout', full_name='Отключил MAX', password='pass',
+            role='warehouse', email='optout@example.com', max_user_id='555',
+            notify_by_max=False,
+        )
+        self.opted_in = Employee.objects.create_user(
+            username='wh_optin', full_name='Не отключал', password='pass',
+            role='warehouse', email='optin@example.com', max_user_id='777',
+        )
+        self.part = SparePart.objects.create(
+            part_number='PNC-1', name='Резистор', current_stock=10, min_stock=5
+        )
+
+    def _spend(self):
+        self.part.current_stock -= 6
+        self.part.save(update_fields=['current_stock'])
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='')
+    def test_opting_out_silences_the_channel_even_with_an_id_on_file(self):
+        """Личный выбор перевешивает и глобальное включение, и заполненный ID."""
+        self._spend()
+
+        recipients = set(
+            Notification.objects.filter(channel='max').values_list('recipient', flat=True)
+        )
+        self.assertEqual(recipients, {'user:777'})
+
+    @override_settings(NOTIFY_MAX=True, MAX_BOT_TOKEN='t', MAX_GROUP_CHAT_ID='')
+    def test_an_empty_id_still_means_silence_regardless_of_the_choice(self):
+        """Поведение без ID не меняется: раньше молчал, молчит и теперь."""
+        self.opted_in.max_user_id = ''
+        self.opted_in.save(update_fields=['max_user_id'])
+        self._spend()
+
+        self.assertEqual(Notification.objects.filter(channel='max').count(), 0)
+
+
+class MyNotificationsPageTests(TestCase):
+    """Страница «Мои оповещения»: каждый видит и правит только свои три поля."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='my_notif', full_name='Сотрудник', password='pass',
+            role='warehouse',
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+    def test_shows_current_settings(self):
+        response = self.client_http.get('/my-notifications/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['form'].initial.get('notify_by_max', True))
+
+    def test_saves_own_choice(self):
+        response = self.client_http.post('/my-notifications/', {
+            'notify_by_email': '',
+            'notify_by_max': 'on',
+            'notify_by_telegram': '',
+        })
+        self.assertEqual(response.status_code, 302)
+
+        self.employee.refresh_from_db()
+        self.assertFalse(self.employee.notify_by_email)
+        self.assertTrue(self.employee.notify_by_max)
+        self.assertFalse(self.employee.notify_by_telegram)
+
+    def test_does_not_touch_role_or_password(self):
+        """Своя форма не даёт поменять то, что не про личный выбор канала."""
+        self.client_http.post('/my-notifications/', {
+            'notify_by_email': 'on', 'notify_by_max': 'on', 'notify_by_telegram': 'on',
+            'role': 'admin',
+        })
+
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.role, 'warehouse')
+
+
+class AdminEditsStaffNotificationChoiceTests(TestCase):
+    """Администратор может поменять флаги оповещений другому сотруднику."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_notif_edit', full_name='Админ', password='pass'
+        )
+        self.staff = Employee.objects.create_user(
+            username='staff_notif_edit', full_name='Кладовщик', password='pass',
+            role='warehouse', email='staff@example.com',
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def test_admin_can_turn_channels_off_for_another_employee(self):
+        response = self.client_http.post(
+            f'/management/users/{self.staff.pk}/edit/',
+            {
+                'username': self.staff.username,
+                'full_name': self.staff.full_name,
+                'email': self.staff.email,
+                'max_user_id': '', 'telegram_chat_id': '',
+                'role': 'warehouse', 'is_active': 'on',
+                'notify_by_email': '',
+                'notify_by_max': '',
+                'notify_by_telegram': '',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+        self.staff.refresh_from_db()
+        self.assertFalse(self.staff.notify_by_email)
+        self.assertFalse(self.staff.notify_by_max)
+        self.assertFalse(self.staff.notify_by_telegram)
 
 
 class MaxDeliveryTests(TestCase):

@@ -32,17 +32,25 @@ def staff_recipients(roles=STOCK_ROLES):
     """Почтовые адреса сотрудников.
 
     У кого не заполнена почта, тот и не получит, — это нормально и не ошибка.
+    У кого выключен личный выбор «оповещения на почту» — тоже, и это тоже
+    не ошибка, а его собственная настройка.
     """
-    return list(_staff(roles).exclude(email='').values_list('email', flat=True))
+    return list(
+        _staff(roles).filter(notify_by_email=True)
+        .exclude(email='').values_list('email', flat=True)
+    )
 
 
-def _messenger_recipients(enabled, configured, group_chat, id_field,
+def _messenger_recipients(enabled, configured, group_chat, id_field, notify_field,
                           personal=str, group=str, roles=STOCK_ROLES):
     """Получатели складских оповещений в одном из мессенджеров.
 
     Если задан общий чат, пишем один раз в него: в маленькой конторе всем
     и так интересно, что кончилось, а три одинаковых сообщения подряд —
-    это не оповещение, а шум. Иначе — каждому, кто указал свой идентификатор.
+    это не оповещение, а шум. Личный выбор канала тут ни при чём — это
+    не адресованное лично сообщение, а общая доска объявлений.
+    Иначе — каждому, кто указал свой идентификатор и не выключил канал
+    у себя в настройках.
     """
     if not enabled or not configured:
         return []
@@ -53,7 +61,8 @@ def _messenger_recipients(enabled, configured, group_chat, id_field,
 
     return [
         personal(value)
-        for value in _staff(roles).exclude(**{id_field: ''}).values_list(id_field, flat=True)
+        for value in _staff(roles).filter(**{notify_field: True})
+        .exclude(**{id_field: ''}).values_list(id_field, flat=True)
     ]
 
 
@@ -62,7 +71,7 @@ def staff_max_recipients(roles=STOCK_ROLES):
         _setting('NOTIFY_MAX', False),
         messengers.max_is_configured(),
         _setting('MAX_GROUP_CHAT_ID', ''),
-        'max_user_id',
+        'max_user_id', 'notify_by_max',
         personal=lambda value: messengers.format_recipient('user', value),
         group=lambda value: messengers.format_recipient('chat', value),
         roles=roles,
@@ -76,7 +85,7 @@ def staff_telegram_recipients(roles=STOCK_ROLES):
         _setting('NOTIFY_TELEGRAM', False),
         messengers.telegram_is_configured(),
         _setting('TELEGRAM_GROUP_CHAT_ID', ''),
-        'telegram_chat_id',
+        'telegram_chat_id', 'notify_by_telegram',
         roles=roles,
     )
 

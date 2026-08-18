@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.40.0.
+Формы для LiftTeam v2.41.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -619,7 +619,8 @@ class EmployeeForm(forms.ModelForm):
     class Meta:
         model = Employee
         fields = ['username', 'full_name', 'email', 'max_user_id', 'telegram_chat_id',
-                  'role', 'is_active']
+                  'role', 'is_active',
+                  'notify_by_email', 'notify_by_max', 'notify_by_telegram']
         widgets = {
             'username': forms.TextInput(attrs={'class': 'form-control'}),
             'full_name': forms.TextInput(attrs={'class': 'form-control'}),
@@ -630,6 +631,9 @@ class EmployeeForm(forms.ModelForm):
                                                        'inputmode': 'numeric'}),
             'role': forms.Select(attrs={'class': 'form-select'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'notify_by_email': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'notify_by_max': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'notify_by_telegram': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
         labels = {
             'username': 'Логин',
@@ -639,11 +643,17 @@ class EmployeeForm(forms.ModelForm):
             'telegram_chat_id': 'ID в Telegram',
             'role': 'Роль',
             'is_active': 'Активен',
+            'notify_by_email': 'Оповещения на почту',
+            'notify_by_max': 'Оповещения в MAX',
+            'notify_by_telegram': 'Оповещения в Telegram',
         }
         help_texts = {
             'max_user_id': 'Число. Узнаётся командой max_updates после того, '
                            'как сотрудник напишет боту (см. DEPLOY.md)',
             'telegram_chat_id': 'Число. Узнаётся командой telegram_updates',
+            'notify_by_email': 'Внутренние оповещения — дефицит деталей, '
+                               'задолженности. Личных оповещений заказчикам '
+                               'это не касается',
         }
 
     def clean(self):
@@ -661,6 +671,34 @@ class EmployeeForm(forms.ModelForm):
         if commit:
             user.save()
         return user
+
+
+class MyNotificationsForm(forms.ModelForm):
+    """Личный выбор канала внутренних оповещений — страница «Мои оповещения».
+
+    Только три чекбокса, без роли и пароля: это форма сотрудника про себя,
+    а не карточка пользователя, которую правит администратор.
+    """
+    class Meta:
+        model = Employee
+        fields = ['notify_by_email', 'notify_by_max', 'notify_by_telegram']
+        widgets = {
+            'notify_by_email': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'notify_by_max': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'notify_by_telegram': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
+        labels = {
+            'notify_by_email': 'Оповещения на почту',
+            'notify_by_max': 'Оповещения в MAX',
+            'notify_by_telegram': 'Оповещения в Telegram',
+        }
+        help_texts = {
+            'notify_by_email': 'Дефицит деталей, задолженности — то, что вам '
+                               'сейчас приходит по вашей роли. Если канал '
+                               'выключен для всех в настройках программы '
+                               'или у вас не заполнен ID, галочка здесь '
+                               'ничего не изменит',
+        }
 
 
 class StatusChangeForm(forms.Form):

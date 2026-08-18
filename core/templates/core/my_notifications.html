@@ -1,0 +1,59 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Мои оповещения — LiftTeam v2.41.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-bell me-2"></i>Мои оповещения</h2>
+    <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="alert alert-secondary">
+    Здесь — какие каналы получают лично вы: дефицит деталей и задолженности,
+    если это положено вашей роли. Оповещений заказчикам это не касается —
+    им всегда пишут на почту.
+</div>
+
+<div class="card" style="max-width: 560px">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="form-check mb-3">
+                {{ form.notify_by_email }}
+                <label class="form-check-label" for="{{ form.notify_by_email.id_for_label }}">
+                    {{ form.notify_by_email.label }}
+                </label>
+                {% if form.notify_by_email.help_text %}
+                <div class="form-text">{{ form.notify_by_email.help_text }}</div>
+                {% endif %}
+            </div>
+
+            <div class="form-check mb-3">
+                {{ form.notify_by_max }}
+                <label class="form-check-label" for="{{ form.notify_by_max.id_for_label }}">
+                    {{ form.notify_by_max.label }}
+                </label>
+            </div>
+
+            <div class="form-check mb-3">
+                {{ form.notify_by_telegram }}
+                <label class="form-check-label" for="{{ form.notify_by_telegram.id_for_label }}">
+                    {{ form.notify_by_telegram.label }}
+                </label>
+            </div>
+
+            <div class="text-muted small mb-3">
+                Выключенный здесь канал молчит, даже если в MAX или Telegram
+                у вас указан ID и канал включён для всех в настройках
+                программы. Сам ID (для MAX и Telegram) вносит администратор —
+                поменять его можно в карточке пользователя.
+            </div>
+
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-2"></i>Сохранить
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

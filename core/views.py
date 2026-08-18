@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.40.0.
+Views для LiftTeam v2.41.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -39,7 +39,7 @@ from .forms import (
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
-    CabinetForm,
+    CabinetForm, MyNotificationsForm,
 )
 from .utils import (
     generate_qr_image,
@@ -91,6 +91,23 @@ def login_view(request):
 def logout_view(request):
     logout(request)
     return redirect('login')
+
+
+@login_required
+def my_notifications(request):
+    """Личный выбор канала внутренних оповещений — своя страница,
+    без параметра в URL: всегда про текущего пользователя, доступна любой
+    роли. Меняет только эти три поля — за роль и доступ отвечает
+    администратор через карточку пользователя."""
+    if request.method == 'POST':
+        form = MyNotificationsForm(request.POST, instance=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Настройки оповещений сохранены')
+            return redirect('my_notifications')
+    else:
+        form = MyNotificationsForm(instance=request.user)
+    return render(request, 'core/my_notifications.html', {'form': form})
 
 
 # ==================== ДАШБОРД ====================
