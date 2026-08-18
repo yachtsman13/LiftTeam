@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.39.3.
+Views для LiftTeam v2.40.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -99,7 +99,11 @@ def logout_view(request):
 def dashboard(request):
     """Главная страница — статистика и алерты."""
     total_orders = RepairOrder.objects.count()
-    active_orders = RepairOrder.objects.exclude(status='shipped').count()
+    # «Завершённых» статусов два: отгружен и признан неремонтопригодным —
+    # оба означают, что по заказу больше ничего не ждут
+    active_orders = RepairOrder.objects.exclude(
+        status__in=['shipped', 'unrepairable']
+    ).count()
 
     # Дефицит и «ровно на минимуме» — разные вещи: первое уже в плане закупок,
     # второе означает, что следующее списание уведёт деталь в минус
@@ -122,9 +126,7 @@ def dashboard(request):
     ]
 
     # Должники (не оплаченные заказы)
-    debtors = RepairOrder.objects.filter(
-        payment_status__in=['unpaid', 'partially_paid']
-    ).select_related('client')
+    debtors = RepairOrder.objects.with_debt().select_related('client')
     total_debt = _total_debt(debtors)
 
     # Неразнесённые поступления показываем только тем, кто их разносит:
@@ -188,6 +190,7 @@ def client_export(request):
             repair_order__client__in=clients,
             repair_order__payment_status__in=['unpaid', 'partially_paid'],
         )
+        .exclude(repair_order__status='unrepairable')
         .values_list('repair_order__client_id')
         .annotate(total=Sum('repair_cost'))
     )

@@ -1623,7 +1623,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.39.3."""
+        """Печать этикетки оборудования вне заказа убрана в v2.40.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -2554,6 +2554,71 @@ class OrderNotificationTests(TestCase):
         self.assertTrue(self.order.status_history.exists())
 
 
+@override_settings(NOTIFY_CLIENTS=True)
+class UnrepairableStatusTests(TestCase):
+    """Статус «Ремонт невозможен»: переход, дашборд, должники, письмо."""
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='admin_unrepairable', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.user)
+
+        self.client_obj = ClientModel.objects.create(
+            name='ООО Гамма', email='gamma@example.com'
+        )
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        model = EquipmentModel.objects.create(name='Привод дверей')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-UNREP'),
+        )
+
+    def _change_status(self, status):
+        return self.client_http.post(
+            f'/repair-orders/{self.order.pk}/change-status/',
+            {'new_status': status, 'notes': ''},
+        )
+
+    def test_order_can_be_marked_unrepairable(self):
+        self._change_status('unrepairable')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, 'unrepairable')
+        self.assertTrue(
+            self.order.status_history.filter(status='unrepairable').exists()
+        )
+
+    def test_unrepairable_orders_are_not_active(self):
+        response = self.client_http.get('/')
+        before = response.context['active_orders']
+
+        self._change_status('unrepairable')
+
+        response = self.client_http.get('/')
+        self.assertEqual(response.context['active_orders'], before - 1)
+
+    def test_unrepairable_orders_are_not_debtors(self):
+        """Ремонт не сделан, счёт не выставлен — это не долг заказчика."""
+        self._change_status('unrepairable')
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.payment_status, 'unpaid')
+        self.assertNotIn(self.order, RepairOrder.objects.with_debt())
+
+        response = self.client_http.get('/')
+        self.assertNotIn(self.order, response.context['debtors'])
+
+    def test_client_is_notified(self):
+        self._change_status('unrepairable')
+
+        note = Notification.objects.get(event='order_status')
+        self.assertEqual(note.recipient, 'gamma@example.com')
+        self.assertIn(self.order.order_number, note.subject)
+        self.assertIn(self.order.order_number, note.body)
+
+
 class LowStockNotificationTests(TestCase):
     """Оповещения сотрудникам о дефиците."""
 
@@ -3285,6 +3350,12 @@ class DebtQuerySetTests(TestCase):
         self._order(payment_status='partially_paid')
 
         self.assertEqual(RepairOrder.objects.with_debt().count(), 1)
+
+    def test_unrepairable_is_not_a_debt(self):
+        """По неремонтопригодному оборудованию счёт не выставляют."""
+        self._order(payment_status='unpaid', status='unrepairable')
+
+        self.assertEqual(RepairOrder.objects.with_debt().count(), 0)
 
     @override_settings(DEBT_OVERDUE_DAYS=14)
     def test_fresh_invoice_is_not_overdue_yet(self):

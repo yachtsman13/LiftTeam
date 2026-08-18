@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.39.3.
+Модели данных для LiftTeam v2.40.0.
 Сущности: Client, EquipmentModel, Equipment, RepairOrder, RepairOrderEquipment,
           RepairOrderDetail, SparePart, StorageCell, StockMovement, Employee (User extension).
 """
@@ -454,8 +454,15 @@ class RepairOrderQuerySet(models.QuerySet):
     и расходиться эти четыре определения не должны."""
 
     def with_debt(self):
-        """Заказы, по которым остались деньги."""
-        return self.filter(payment_status__in=['unpaid', 'partially_paid'])
+        """Заказы, по которым остались деньги.
+
+        Неремонтопригодные исключены: по ним счёт не выставляют, и статус
+        оплаты остаётся «не оплачен» просто потому, что его никто не менял —
+        это не долг заказчика.
+        """
+        return self.filter(
+            payment_status__in=['unpaid', 'partially_paid']
+        ).exclude(status='unrepairable')
 
     def overdue(self, days=None):
         """Долги, по которым уже можно напоминать.
@@ -522,6 +529,7 @@ class RepairOrder(models.Model):
         ('repair', 'Ремонт'),
         ('ready_for_shipment', 'Готов к отгрузке'),
         ('shipped', 'Отгружен'),
+        ('unrepairable', 'Ремонт невозможен'),
     ]
     PAYMENT_STATUS_CHOICES = [
         ('unpaid', 'Не оплачен'),

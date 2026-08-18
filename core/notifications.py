@@ -122,13 +122,14 @@ def queue_for_staff(event, subject, body, roles=STOCK_ROLES, **extra):
 def notify_order_status(order, changed_by=None):
     """Заказчику — о смене статуса его заказа.
 
-    Только для тех статусов, которые заказчику что-то говорят: принят
-    и готов к отгрузке. «Диагностика» и «ремонт» — внутренняя кухня,
-    письмо о них выглядит как спам.
+    Только для тех статусов, которые заказчику что-то говорят: принят,
+    готов к отгрузке, отгружен и «ремонт невозможен» — последнее тоже
+    финал, и заказчику разумно узнать о нём тем же письмом. «Диагностика»
+    и «ремонт» — внутренняя кухня, письмо о них выглядит как спам.
     """
     if not _setting('NOTIFY_CLIENTS', False):
         return None
-    if order.status not in ('accepted', 'ready_for_shipment', 'shipped'):
+    if order.status not in ('accepted', 'ready_for_shipment', 'shipped', 'unrepairable'):
         return None
 
     email = (order.client.email or '').strip()
@@ -136,11 +137,18 @@ def notify_order_status(order, changed_by=None):
         return None
 
     equipment = ', '.join(str(roe.equipment) for roe in order.order_equipments.all())
-    lines = [
-        f'Здравствуйте, {order.client.name}.',
-        '',
-        f'Заказ {order.order_number}: {order.get_status_display().lower()}.',
-    ]
+    if order.status == 'unrepairable':
+        lines = [
+            f'Здравствуйте, {order.client.name}.',
+            '',
+            f'По заказу {order.order_number} ремонт признан невозможным.',
+        ]
+    else:
+        lines = [
+            f'Здравствуйте, {order.client.name}.',
+            '',
+            f'Заказ {order.order_number}: {order.get_status_display().lower()}.',
+        ]
     if equipment:
         lines.append(f'Оборудование: {equipment}.')
     if order.status == 'shipped' and order.tracking_number:

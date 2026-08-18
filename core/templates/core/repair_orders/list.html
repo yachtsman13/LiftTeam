@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.39.3{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.40.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -102,7 +102,7 @@
                     <tr class="clickable-row" data-href="{% url 'repair_order_detail' order.pk %}">
                         <td class="fw-bold">{{ order.order_number }}</td>
                         <td>{{ order.client.name }}</td>
-                        <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                        <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
                         <td><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></td>
                         <td>{{ order.total_repair_cost }} ₽</td>
                         <td>{{ order.date_received|date:"d.m.Y" }}</td>
