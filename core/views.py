@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.41.0.
+Views для LiftTeam v2.42.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -14,7 +14,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.contrib import messages
 from django.db.models import (
-    Count, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value,
+    Count, DecimalField, F, Max, OuterRef, Prefetch, Q, Subquery, Sum, Value,
 )
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
@@ -863,6 +863,89 @@ def repair_order_change_status(request, pk):
 
         messages.success(request, f'Статус изменён на «{order.get_status_display()}»')
     return redirect('repair_order_detail', pk=pk)
+
+
+# Единственный переход, разрешённый массовой сменой статуса. Курьер обычно
+# забирает сразу пачку готовых заказов — это одно реальное событие, и ошибка
+# «применил не к тому заказу» здесь маловероятна. У остальных переходов
+# («в ремонт», «готов к отгрузке» и т.д.) риск выше: часть выбранных заказов
+# может незаметно не подойти, и решение о них лучше принимать по одному.
+BULK_STATUS_FROM = 'ready_for_shipment'
+BULK_STATUS_TO = 'shipped'
+
+
+@login_required
+def repair_order_bulk_status(request):
+    """Массовая отгрузка отмеченных заказов.
+
+    GET — только показ: что применится, что будет пропущено и почему,
+    без единого изменения в базе (страница подтверждения). POST выполняет
+    переход для тех заказов, что на этот момент действительно «Готовы
+    к отгрузке» — остальные пропускаются с явной причиной, а не молча.
+    """
+    ids = request.POST.getlist('ids') if request.method == 'POST' else _selected_ids(request)
+    orders = list(
+        RepairOrder.objects
+        .filter(pk__in=[value for value in ids if str(value).isdigit()])
+        .select_related('client')
+        .prefetch_related('order_equipments__equipment__model')
+        .order_by('pk')
+    )
+
+    ineligible = [
+        {'order': order, 'reason': f'Статус «{order.get_status_display()}», а не «Готов к отгрузке»'}
+        for order in orders if order.status != BULK_STATUS_FROM
+    ]
+    eligible = [order for order in orders if order.status == BULK_STATUS_FROM]
+
+    if request.method == 'POST':
+        if not orders:
+            messages.warning(request, 'Отгружать нечего: ни один заказ не отмечен')
+            return redirect('repair_order_list')
+
+        now = timezone.now()
+        with transaction.atomic():
+            for order in eligible:
+                order.status = BULK_STATUS_TO
+                order.shipping_date = now
+                order.date_completed = now
+                order.save()
+                OrderStatusHistory.objects.create(
+                    order=order,
+                    status=BULK_STATUS_TO,
+                    changed_by=request.user,
+                    notes='Массовая отгрузка отмеченных заказов',
+                )
+
+        # Оповещения — после того, как переходы записаны: письмо не должно
+        # мешать основной операции, и по той же причине, что и у одиночной
+        # смены статуса, кладём их в очередь, а не отправляем на месте
+        for order in eligible:
+            notifications.notify_order_status(order, changed_by=request.user)
+
+        if eligible:
+            messages.success(request, f'Отгружено заказов: {len(eligible)}')
+        if ineligible:
+            messages.warning(
+                request,
+                f'Пропущено без изменений: {len(ineligible)} — '
+                'не в статусе «Готов к отгрузке»'
+            )
+
+        return render(request, 'core/repair_orders/bulk_status.html', {
+            'done': True,
+            'applied': eligible,
+            'skipped': ineligible,
+        })
+
+    return render(request, 'core/repair_orders/bulk_status.html', {
+        'done': False,
+        'orders': orders,
+        'eligible': eligible,
+        'ineligible': ineligible,
+        'from_status': dict(RepairOrder.STATUS_CHOICES).get(BULK_STATUS_FROM),
+        'to_status': dict(RepairOrder.STATUS_CHOICES).get(BULK_STATUS_TO),
+    })
 
 
 @role_required('accountant')
@@ -1830,6 +1913,29 @@ def storage_cell_label(request, pk):
     return render(request, 'core/storage_cells/label.html', context)
 
 
+def _order_equipment_label(order, roe, position, base_url):
+    """Данные одной этикетки оборудования в заказе.
+
+    Общее для одиночной печати и для пачки (`repair_order_labels_batch`) —
+    те же поля, тот же QR, чтобы одна и та же единица оборудования не могла
+    напечататься по-разному в зависимости от того, откуда её печатали.
+
+    Ссылка на заказ вместо текста «LT-2026-08-001/1». Текст читался
+    человеком, но сканирование им ничего не давало: заказ всё равно искали
+    руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
+    (сколько именно, зависит от длины LABEL_BASE_URL), поэтому место под
+    него освобождено: эмблема с этикетки убрана, код печатается сам по себе.
+    """
+    link = qr_url(base_url, 'o', order.pk)
+    return {
+        'order': order,
+        'roe': roe,
+        'position': position,
+        'qr_img': generate_qr_image(link),
+        'qr_url': link,
+    }
+
+
 @login_required
 def repair_order_equipment_label(request, order_pk, roe_pk):
     """Печать этикетки оборудования в контексте заказа (43x25 мм).
@@ -1841,22 +1947,52 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     roe = get_object_or_404(RepairOrderEquipment, pk=roe_pk, repair_order=order)
     position = next(i for i, r in enumerate(roe_list, start=1) if r.pk == roe.pk)
 
-    # Ссылка на заказ вместо текста «LT-2026-08-001/1». Текст читался
-    # человеком, но сканирование им ничего не давало: заказ всё равно искали
-    # руками. Плата за ссылку — код вырастает с 21 до 25–29 модулей
-    # (сколько именно, зависит от длины LABEL_BASE_URL), поэтому место под
-    # него освобождено: эмблема с этикетки убрана, код печатается сам по себе.
     base_url = label_base_url(request)
-    link = qr_url(base_url, 'o', order.pk)
+    context = _order_equipment_label(order, roe, position, base_url)
+    context['qr_base'] = base_url
+    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    return render(request, 'core/repair_orders/equipment_label.html', context)
 
-    return render(request, 'core/repair_orders/equipment_label.html', {
-        'order': order,
-        'roe': roe,
-        'position': position,
-        'qr_img': generate_qr_image(link),
-        'qr_url': link,
+
+@login_required
+def repair_order_labels_batch(request):
+    """Пачка этикеток оборудования: по отмеченным заказам или по всему
+    текущему отбору списка. Этикетка печатается не на заказ, а на единицу
+    оборудования внутри него — заказ с тремя единицами даёт три этикетки."""
+    ids = _selected_ids(request)
+    if ids:
+        orders = RepairOrder.objects.filter(pk__in=ids)
+    else:
+        orders, _ = _filter_orders(request)
+
+    # prefetch_related(None) снимает набор из _filter_orders (он тянет
+    # оборудование только для поиска по серийнику) — иначе Django ругается
+    # на два разных queryset для одного и того же related-пути
+    orders = list(
+        orders.prefetch_related(None).prefetch_related(
+            Prefetch(
+                'order_equipments',
+                queryset=RepairOrderEquipment.objects.select_related('equipment__model').order_by('id'),
+            )
+        ).order_by('-date_received')
+    )
+
+    base_url = label_base_url(request)
+    labels = []
+    for order in orders:
+        for position, roe in enumerate(order.order_equipments.all(), start=1):
+            if len(labels) >= MAX_LABELS_PER_BATCH:
+                break
+            labels.append(_order_equipment_label(order, roe, position, base_url))
+        if len(labels) >= MAX_LABELS_PER_BATCH:
+            break
+
+    return render(request, 'core/repair_orders/labels_batch.html', {
+        'labels': labels,
+        'layout': _batch_layout(request),
+        'limit': MAX_LABELS_PER_BATCH,
         'qr_base': base_url,
-        'qr_warning': qr_length_warning([link]),
+        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
     })
 
 

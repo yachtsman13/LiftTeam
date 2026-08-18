@@ -1,0 +1,162 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Массовая отгрузка заказов — LiftTeam v2.42.0{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-9">
+        <div class="card {% if done %}border-success{% else %}border-primary{% endif %}">
+            <div class="card-header {% if done %}bg-success{% else %}bg-primary{% endif %} text-white">
+                <i class="bi bi-truck me-2"></i>
+                {% if done %}
+                Результат массовой отгрузки
+                {% else %}
+                Отгрузить отмеченные заказы: «Готов к отгрузке» → «Отгружен»
+                {% endif %}
+            </div>
+            <div class="card-body">
+
+                {% if done %}
+                {% comment %}
+                    Итог показывает и то, что применилось, и то, что было
+                    пропущено, — молчать о пропущенных нельзя: заказ мог
+                    остаться неотгруженным, и об этом должно быть видно
+                    сразу, а не только в истории каждого заказа отдельно.
+                {% endcomment %}
+                {% if applied %}
+                <div class="alert alert-success">
+                    Отгружено заказов: <strong>{{ applied|length }}</strong>.
+                    Для каждого проставлены дата отгрузки, дата завершения
+                    и отдельная запись в истории; заказчику поставлено
+                    в очередь письмо.
+                </div>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr><th>№ заказа</th><th>Заказчик</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for order in applied %}
+                            <tr>
+                                <td class="fw-bold">
+                                    <a href="{% url 'repair_order_detail' order.pk %}">{{ order.order_number }}</a>
+                                </td>
+                                <td>{{ order.client.name }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+                {% if skipped %}
+                <div class="alert alert-warning">
+                    Пропущено без изменений: <strong>{{ skipped|length }}</strong>.
+                </div>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr><th>№ заказа</th><th>Заказчик</th><th>Почему пропущен</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in skipped %}
+                            <tr>
+                                <td class="fw-bold">
+                                    <a href="{% url 'repair_order_detail' row.order.pk %}">{{ row.order.order_number }}</a>
+                                </td>
+                                <td>{{ row.order.client.name }}</td>
+                                <td>{{ row.reason }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+                {% if not applied and not skipped %}
+                <p class="mb-3">Ни одного заказа не отмечено.</p>
+                {% endif %}
+
+                <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">К списку заказов</a>
+
+                {% else %}
+                {% comment %}
+                    Шаг подтверждения: ничего не меняется, пока не нажали
+                    кнопку ниже. Заказы не в статусе «Готов к отгрузке»
+                    показаны отдельно и заранее — их пропустят при отправке,
+                    и это видно до нажатия, а не после.
+                {% endcomment %}
+                {% if not orders %}
+                <p class="mb-3">Ни один заказ не отмечен. Вернитесь в список
+                    и поставьте отметки в первом столбце.</p>
+                <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">К списку</a>
+                {% else %}
+
+                <div class="alert alert-info">
+                    Отмечено заказов: <strong>{{ orders|length }}</strong>.
+                    Статус изменится на «Отгружен» только у тех, что сейчас
+                    в статусе «Готов к отгрузке» — дата отгрузки и дата
+                    завершения проставятся автоматически, заказчику уйдёт
+                    письмо, в историю каждого заказа добавится запись.
+                </div>
+
+                {% if eligible %}
+                <h6>Будет отгружено: {{ eligible|length }}</h6>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr><th>№ заказа</th><th>Заказчик</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for order in eligible %}
+                            <tr>
+                                <td class="fw-bold">{{ order.order_number }}</td>
+                                <td>{{ order.client.name }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+                {% if ineligible %}
+                <div class="alert alert-warning">
+                    <strong>{{ ineligible|length }}</strong> из отмеченных
+                    не в статусе «Готов к отгрузке» и будут пропущены.
+                </div>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr><th>№ заказа</th><th>Заказчик</th><th>Почему будет пропущен</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in ineligible %}
+                            <tr>
+                                <td class="fw-bold">{{ row.order.order_number }}</td>
+                                <td>{{ row.order.client.name }}</td>
+                                <td>{{ row.reason }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+                <form method="post">
+                    {% csrf_token %}
+                    {% for order in orders %}
+                    <input type="hidden" name="ids" value="{{ order.pk }}">
+                    {% endfor %}
+                    <button type="submit" class="btn btn-success" {% if not eligible %}disabled{% endif %}>
+                        <i class="bi bi-truck me-2"></i>Отгрузить {{ eligible|length }}
+                    </button>
+                    <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary">Отмена</a>
+                </form>
+                {% endif %}
+                {% endif %}
+
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

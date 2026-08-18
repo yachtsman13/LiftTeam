@@ -20,6 +20,7 @@ from django.core.management import call_command
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test import Client as TestClient
+from django.test.utils import CaptureQueriesContext
 from django.urls import resolve
 from django.utils import timezone
 
@@ -1623,7 +1624,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.41.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.42.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -5992,6 +5993,207 @@ class PartBulkDeleteTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(SparePart.objects.count(), 3)
+
+
+class RepairOrderLabelsBatchTests(TestCase):
+    """Пачка этикеток заказов: печатается не на заказ, а на единицу
+    оборудования внутри него — заказ с двумя единицами даёт две этикетки."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_orders_lbl', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='ООО Дельта')
+        model = EquipmentModel.objects.create(name='БУАД-5')
+
+        self.order1 = RepairOrder.objects.create(client=client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order1,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-101'),
+        )
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order1,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-102'),
+        )
+
+        self.order2 = RepairOrder.objects.create(client=client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order2,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-201'),
+        )
+
+    def _ids(self, orders):
+        return '&'.join(f'ids={order.pk}' for order in orders)
+
+    def test_checked_orders_get_one_label_per_unit(self):
+        response = self.client_http.get(f'/repair-orders/labels/?{self._ids([self.order1, self.order2])}')
+
+        self.assertEqual(len(response.context['labels']), 3)
+
+    def test_no_duplicate_or_missing_labels(self):
+        response = self.client_http.get(f'/repair-orders/labels/?{self._ids([self.order1])}')
+        serials = sorted(label['roe'].equipment.serial_number for label in response.context['labels'])
+
+        self.assertEqual(serials, ['SN-101', 'SN-102'])
+
+    def test_no_selection_falls_back_to_the_current_filter(self):
+        """Без отметок — печать по тому же отбору, что и в списке (та же
+        логика, что уже используется у этикеток деталей)."""
+        response = self.client_http.get(f'/repair-orders/labels/?q={self.order2.order_number}')
+
+        self.assertEqual(len(response.context['labels']), 1)
+        self.assertEqual(response.context['labels'][0]['order'], self.order2)
+
+    def test_positions_are_counted_per_order(self):
+        response = self.client_http.get(f'/repair-orders/labels/?{self._ids([self.order1])}')
+        positions = {
+            label['roe'].equipment.serial_number: label['position']
+            for label in response.context['labels']
+        }
+
+        self.assertEqual(positions['SN-101'], 1)
+        self.assertEqual(positions['SN-102'], 2)
+
+    def test_query_count_does_not_grow_with_selected_orders(self):
+        """Больше отмеченных заказов не должно означать пропорционально
+        больше обращений к базе — иначе полсотни этикеток тянули бы
+        полсотню отдельных запросов вместо select_related/prefetch_related."""
+        model = self.order1.order_equipments.first().equipment.model
+        extra_order = RepairOrder.objects.create(client=self.order1.client)
+        RepairOrderEquipment.objects.create(
+            repair_order=extra_order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-301'),
+        )
+
+        with CaptureQueriesContext(connection) as few:
+            self.client_http.get(f'/repair-orders/labels/?{self._ids([self.order1])}')
+        with CaptureQueriesContext(connection) as many:
+            self.client_http.get(f'/repair-orders/labels/?{self._ids([self.order1, self.order2, extra_order])}')
+
+        self.assertEqual(len(few.captured_queries), len(many.captured_queries))
+
+    def test_the_list_has_the_buttons(self):
+        response = self.client_http.get('/repair-orders/')
+
+        self.assertContains(response, 'action="/repair-orders/labels/"')
+        self.assertContains(response, 'formaction="/repair-orders/bulk-status/"')
+
+
+@override_settings(NOTIFY_CLIENTS=True)
+class RepairOrderBulkStatusTests(TestCase):
+    """Массовая отгрузка отмеченных заказов — единственный переход,
+    разрешённый массовой смене статуса: «Готов к отгрузке» → «Отгружен»."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_bulk_status', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        client_obj = ClientModel.objects.create(name='ООО Эпсилон', email='eps@example.com')
+        model = EquipmentModel.objects.create(name='БУАД-7')
+
+        self.ready1 = RepairOrder.objects.create(client=client_obj, status='ready_for_shipment')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.ready1,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-501'),
+        )
+        self.ready2 = RepairOrder.objects.create(client=client_obj, status='ready_for_shipment')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.ready2,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-502'),
+        )
+        self.in_repair = RepairOrder.objects.create(client=client_obj, status='repair')
+
+    def _ids(self, orders):
+        return [order.pk for order in orders]
+
+    def test_confirmation_page_changes_nothing(self):
+        response = self.client_http.get(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.in_repair])}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.ready1.refresh_from_db()
+        self.in_repair.refresh_from_db()
+        self.assertEqual(self.ready1.status, 'ready_for_shipment')
+        self.assertEqual(self.in_repair.status, 'repair')
+        self.assertEqual(response.context['eligible'], [self.ready1])
+        self.assertEqual([row['order'] for row in response.context['ineligible']], [self.in_repair])
+
+    def test_opening_the_confirmation_page_does_not_ship_anything(self):
+        """Действие не должно выполняться без прохождения шага подтверждения."""
+        self.client_http.get(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.ready2])}
+        )
+
+        self.assertFalse(RepairOrder.objects.filter(status='shipped').exists())
+
+    def test_post_ships_the_eligible_orders(self):
+        response = self.client_http.post(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.ready2])}
+        )
+
+        self.ready1.refresh_from_db()
+        self.ready2.refresh_from_db()
+        self.assertEqual(self.ready1.status, 'shipped')
+        self.assertEqual(self.ready2.status, 'shipped')
+        self.assertIsNotNone(self.ready1.shipping_date)
+        self.assertIsNotNone(self.ready1.date_completed)
+        self.assertEqual(response.context['applied'], [self.ready1, self.ready2])
+
+    def test_each_shipped_order_gets_its_own_history_entry(self):
+        self.client_http.post(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.ready2])}
+        )
+
+        self.assertTrue(self.ready1.status_history.filter(status='shipped').exists())
+        self.assertTrue(self.ready2.status_history.filter(status='shipped').exists())
+
+    def test_each_shipped_order_is_notified(self):
+        self.client_http.post(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.ready2])}
+        )
+
+        self.assertEqual(
+            Notification.objects.filter(
+                event='order_status', repair_order__in=[self.ready1, self.ready2]
+            ).count(),
+            2,
+        )
+
+    def test_partial_failure_skips_ineligible_orders_with_a_reason(self):
+        response = self.client_http.post(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.in_repair])}
+        )
+
+        self.ready1.refresh_from_db()
+        self.in_repair.refresh_from_db()
+        self.assertEqual(self.ready1.status, 'shipped')
+        self.assertEqual(self.in_repair.status, 'repair')
+        self.assertEqual(response.context['applied'], [self.ready1])
+        skipped = response.context['skipped']
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]['order'], self.in_repair)
+        self.assertIn('Ремонт', skipped[0]['reason'])
+
+    def test_an_empty_selection_ships_nothing(self):
+        response = self.client_http.post('/repair-orders/bulk-status/', {})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(RepairOrder.objects.filter(status='shipped').exists())
+
+    def test_the_confirmation_page_lists_who_will_be_skipped_and_why(self):
+        response = self.client_http.get(
+            '/repair-orders/bulk-status/', {'ids': self._ids([self.ready1, self.in_repair])}
+        )
+
+        self.assertContains(response, self.in_repair.order_number)
+        self.assertContains(response, 'Ремонт')
 
 
 class ApplicationFieldTests(TestCase):

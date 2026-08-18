@@ -1,0 +1,103 @@
+{% comment %}
+Оформление этикетки оборудования в заказе — общее для печати по одной
+и пачкой. Размеры должны совпадать до миллиметра: иначе одна и та же
+единица оборудования печаталась бы по-разному в зависимости от того,
+откуда её напечатали.
+{% endcomment %}
+<style>
+    .label-sheet {
+        width: 43mm;
+        height: 25mm;
+        padding: 0.7mm 1.5mm;
+        box-sizing: border-box;
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        color: #000;
+    }
+    .label-order-number {
+        text-align: center;
+        font-size: 8pt;
+        font-weight: bold;
+        line-height: 1;
+        border-bottom: 0.25mm solid #000;
+        padding-bottom: 0.15mm;
+        flex-shrink: 0;
+        white-space: nowrap;
+    }
+    /* Номер позиции вынесен в ту же строку, что и номер заказа: по одной
+       строке сразу видно и заказ, и какая это единица оборудования. */
+    .label-position {
+        font-size: 9pt;
+    }
+    .label-body {
+        display: flex;
+        align-items: center;
+        gap: 1mm;
+        flex: 1;
+        min-height: 0;
+        padding-top: 0.4mm;
+    }
+    /* Ширины заданы явно: при flex: 1 колонка не сжималась под содержимое
+       и выталкивала код за край этикетки. 26,2 + 1,5 + 12,3 = 40 мм — ровно
+       полезная ширина, те же доли, что и на складской этикетке. */
+    .label-info {
+        flex: 0 0 26.2mm;
+        width: 26.2mm;
+        min-width: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4mm;
+        --fit: 1;
+    }
+    /* Своего overflow у строк нет намеренно: он спрятал бы переполнение
+       внутри строки, а блок выше отчитался бы, что всё поместилось, —
+       и подгонка шрифта не сработала бы (подробности в label-fit.js).
+       Обрезать здесь нечего: серийный номер в двадцать два знака и есть
+       то, ради чего этикетку читают. */
+    .label-model {
+        font-size: calc(8pt * var(--fit));
+        font-weight: bold;
+        white-space: nowrap;
+    }
+    .label-serial {
+        font-size: calc(7pt * var(--fit));
+        white-space: nowrap;
+    }
+    .label-date { font-size: calc(5.5pt * var(--fit)); }
+    /* Тот же размер, что и на складской этикетке: 12,3 мм. Без кольца вокруг
+       кода он уже ничем не ограничен, но крупнее делать незачем — размер
+       у всех этикеток должен быть один, иначе сканер приходится подносить
+       по-разному. */
+    .label-qr-wrap {
+        flex: 0 0 12.3mm;
+        width: 12.3mm;
+        height: 12.3mm;
+    }
+    .label-qr {
+        display: block;
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+    }
+    /* Название и сайт — вместо прежней эмблемы. Отдельной строкой, а не
+       вместе с телефонами: вчетвером в 40 мм они не помещаются даже
+       при 4,5 пунктах. */
+    .label-company {
+        text-align: center;
+        font-size: 5pt;
+        font-weight: bold;
+        line-height: 1;
+        flex-shrink: 0;
+        padding-top: 0.4mm;
+    }
+    .label-phones {
+        text-align: center;
+        font-size: 4.5pt;
+        line-height: 1;
+        flex-shrink: 0;
+        padding-top: 0.3mm;
+    }
+</style>

@@ -1,41 +1,13 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.41.0{% endblock %}
+{% block title %}Этикетка {{ roe.equipment.serial_number }} — Заказ {{ order.order_number }} — LiftTeam v2.42.0{% endblock %}
 
 {% block content %}
 {% include 'core/_qr_warning.html' %}
 {% include 'core/_qr_link.html' %}
 <div class="label-container">
-    <div class="label-sheet">
-        <div class="label-order-number">
-            {{ order.order_number }}<span class="label-position">/{{ position }}</span>
-        </div>
-
-        <div class="label-body">
-            <div class="label-info" data-fit="0.6">
-                <div class="label-model">{{ roe.equipment.model.name }}</div>
-                <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
-                <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
-            </div>
-
-            {% comment %}
-                Эмблемы на этикетке больше нет. Кольцо с надписями занимало
-                место вокруг кода и ограничивало его размер: на 43×25 мм
-                каждый миллиметр вокруг QR — это доли точки принтера на модуль.
-                Название и сайт остались, но обычной строкой внизу — читаются
-                они так же, а места не отнимают.
-            {% endcomment %}
-            {% if qr_img %}
-            <div class="label-qr-wrap">
-                <img src="{{ qr_img }}" alt="QR" class="label-qr">
-            </div>
-            {% endif %}
-        </div>
-
-        <div class="label-company">LIFT TEAM · LIFTTEAM.RU</div>
-        <div class="label-phones">+7 964 524 84 00 · +7 977 760 10 89</div>
-    </div>
+    {% include 'core/repair_orders/_label_order_equipment.html' %}
 
     <div class="label-controls no-print">
         <button onclick="window.print()" class="btn btn-primary"><i class="bi bi-printer me-2"></i>Печать</button>
@@ -43,6 +15,7 @@
     </div>
 </div>
 
+{% include 'core/repair_orders/_label_order_equipment_styles.html' %}
 <style>
     @media screen {
         .label-container { display: flex; flex-direction: column; align-items: center; padding: 40px; }
@@ -59,101 +32,6 @@
         .main-content { margin-left: 0 !important; padding: 0 !important; }
         .label-container { display: block; padding: 0; }
         .label-sheet { border: none; page-break-inside: avoid; }
-    }
-    .label-sheet {
-        width: 43mm;
-        height: 25mm;
-        padding: 0.7mm 1.5mm;
-        box-sizing: border-box;
-        font-family: Arial, sans-serif;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        color: #000;
-    }
-    .label-order-number {
-        text-align: center;
-        font-size: 8pt;
-        font-weight: bold;
-        line-height: 1;
-        border-bottom: 0.25mm solid #000;
-        padding-bottom: 0.15mm;
-        flex-shrink: 0;
-        white-space: nowrap;
-    }
-    /* Номер позиции вынесен в ту же строку, что и номер заказа: по одной
-       строке сразу видно и заказ, и какая это единица оборудования. */
-    .label-position {
-        font-size: 9pt;
-    }
-    .label-body {
-        display: flex;
-        align-items: center;
-        gap: 1mm;
-        flex: 1;
-        min-height: 0;
-        padding-top: 0.4mm;
-    }
-    /* Ширины заданы явно: при flex: 1 колонка не сжималась под содержимое
-       и выталкивала код за край этикетки. 26,2 + 1,5 + 12,3 = 40 мм — ровно
-       полезная ширина, те же доли, что и на складской этикетке. */
-    .label-info {
-        flex: 0 0 26.2mm;
-        width: 26.2mm;
-        min-width: 0;
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4mm;
-        --fit: 1;
-    }
-    /* Своего overflow у строк нет намеренно: он спрятал бы переполнение
-       внутри строки, а блок выше отчитался бы, что всё поместилось, —
-       и подгонка шрифта не сработала бы (подробности в label-fit.js).
-       Обрезать здесь нечего: серийный номер в двадцать два знака и есть
-       то, ради чего этикетку читают. */
-    .label-model {
-        font-size: calc(8pt * var(--fit));
-        font-weight: bold;
-        white-space: nowrap;
-    }
-    .label-serial {
-        font-size: calc(7pt * var(--fit));
-        white-space: nowrap;
-    }
-    .label-date { font-size: calc(5.5pt * var(--fit)); }
-    /* Тот же размер, что и на складской этикетке: 12,3 мм. Без кольца вокруг
-       кода он уже ничем не ограничен, но крупнее делать незачем — размер
-       у всех этикеток должен быть один, иначе сканер приходится подносить
-       по-разному. */
-    .label-qr-wrap {
-        flex: 0 0 12.3mm;
-        width: 12.3mm;
-        height: 12.3mm;
-    }
-    .label-qr {
-        display: block;
-        width: 100%;
-        height: 100%;
-        image-rendering: pixelated;
-    }
-    /* Название и сайт — вместо прежней эмблемы. Отдельной строкой, а не
-       вместе с телефонами: вчетвером в 40 мм они не помещаются даже
-       при 4,5 пунктах. */
-    .label-company {
-        text-align: center;
-        font-size: 5pt;
-        font-weight: bold;
-        line-height: 1;
-        flex-shrink: 0;
-        padding-top: 0.4mm;
-    }
-    .label-phones {
-        text-align: center;
-        font-size: 4.5pt;
-        line-height: 1;
-        flex-shrink: 0;
-        padding-top: 0.3mm;
     }
 </style>
 {% endblock %}

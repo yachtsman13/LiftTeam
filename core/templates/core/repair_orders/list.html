@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.41.0{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.42.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -84,10 +84,39 @@
         </div>
         {% endif %}
 
+        {% comment %}
+        Отметки и массовые действия — отдельной формой: форма фильтров выше
+        отправляет свои поля, вложить одну в другую нельзя. По умолчанию
+        форма ведёт на печать этикеток (обе области выбора годятся);
+        кнопка отгрузки переопределяет адрес через formaction — но только
+        по отмеченным, «все подходящие под фильтр» для смены статуса нет:
+        набор затронутых заказов должен быть виден целиком на экране
+        подтверждения, а не быть потенциально огромным и невидимым.
+        {% endcomment %}
+        <form method="get" action="{% url 'repair_order_labels_batch' %}" id="bulkForm">
+        <div id="bulkActionsBar" class="d-none align-items-center gap-2 mb-2 flex-wrap p-2 bg-light border rounded">
+            <span class="fw-bold" id="bulkSelectedCount">Выбрано: 0</span>
+            <button type="submit" class="btn btn-sm btn-outline-dark">
+                <i class="bi bi-tags me-1"></i>Этикетки на отмеченные
+            </button>
+            <button type="submit" formaction="{% url 'repair_order_bulk_status' %}" class="btn btn-sm btn-outline-success">
+                <i class="bi bi-truck me-1"></i>Отгрузить отмеченные
+            </button>
+        </div>
+        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+            <a href="{% url 'repair_order_labels_batch' %}?{{ request.GET.urlencode }}" class="btn btn-sm btn-outline-dark">
+                <i class="bi bi-tags me-1"></i>Этикетки на все отобранные{% if filters_active %} ({{ found_count }}){% endif %}
+            </a>
+        </div>
+
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead class="table-light">
                     <tr>
+                        <th style="width:1%">
+                            <input type="checkbox" class="form-check-input" id="selectAllOrders" title="Отметить всё на странице"
+                                   onclick="document.querySelectorAll('#bulkForm .row-check').forEach(c => c.checked = this.checked); updateBulkOrdersBar();">
+                        </th>
                         <th>№ заказа</th>
                         <th>Заказчик</th>
                         <th>Статус</th>
@@ -100,6 +129,9 @@
                 <tbody>
                     {% for order in orders %}
                     <tr class="clickable-row" data-href="{% url 'repair_order_detail' order.pk %}">
+                        <td onclick="event.stopPropagation();">
+                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ order.pk }}">
+                        </td>
                         <td class="fw-bold">{{ order.order_number }}</td>
                         <td>{{ order.client.name }}</td>
                         <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
@@ -112,11 +144,23 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="7" class="text-center text-muted py-4">Заказы не найдены</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted py-4">Заказы не найдены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+        </form>
+
+        <script>
+            function updateBulkOrdersBar() {
+                var checked = document.querySelectorAll('#bulkForm .row-check:checked').length;
+                document.getElementById('bulkSelectedCount').textContent = 'Выбрано: ' + checked;
+                document.getElementById('bulkActionsBar').classList.toggle('d-none', checked === 0);
+            }
+            document.getElementById('bulkForm').addEventListener('change', function (event) {
+                if (event.target.classList.contains('row-check')) updateBulkOrdersBar();
+            });
+        </script>
 
         {% if orders.has_other_pages %}
         <nav>

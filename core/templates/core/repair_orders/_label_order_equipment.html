@@ -1,0 +1,37 @@
+{% comment %}
+Одна этикетка оборудования в заказе (43×25 мм) — общая для одиночной печати
+(`equipment_label.html`) и для пачки (`labels_batch.html`), чтобы одна и та
+же единица оборудования не могла напечататься по-разному в зависимости
+от того, откуда её печатали.
+
+Ожидает: order, roe, position, qr_img.
+{% endcomment %}
+<div class="label-sheet">
+    <div class="label-order-number">
+        {{ order.order_number }}<span class="label-position">/{{ position }}</span>
+    </div>
+
+    <div class="label-body">
+        <div class="label-info" data-fit="0.6">
+            <div class="label-model">{{ roe.equipment.model.name }}</div>
+            <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
+            <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
+        </div>
+
+        {% comment %}
+            Эмблемы на этикетке больше нет. Кольцо с надписями занимало
+            место вокруг кода и ограничивало его размер: на 43×25 мм
+            каждый миллиметр вокруг QR — это доли точки принтера на модуль.
+            Название и сайт остались, но обычной строкой внизу — читаются
+            они так же, а места не отнимают.
+        {% endcomment %}
+        {% if qr_img %}
+        <div class="label-qr-wrap">
+            <img src="{{ qr_img }}" alt="QR" class="label-qr">
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="label-company">LIFT TEAM · LIFTTEAM.RU</div>
+    <div class="label-phones">+7 964 524 84 00 · +7 977 760 10 89</div>
+</div>
