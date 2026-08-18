@@ -1627,7 +1627,7 @@ class EquipmentShortLinkTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_the_label_page_is_gone(self):
-        """Печать этикетки оборудования вне заказа убрана в v2.48.0."""
+        """Печать этикетки оборудования вне заказа убрана в v2.49.0."""
         resp = self.client_http.get(f'/equipment/{self.equipment.pk}/label/')
         self.assertEqual(resp.status_code, 404)
 
@@ -7845,3 +7845,106 @@ class InventorySessionTests(TestCase):
         row = next(s for s in response.context['sessions'] if s.pk == session.pk)
         self.assertEqual(row.deficit_count, 1)
         self.assertEqual(row.surplus_count, 1)
+
+
+class ConnectionResilienceTests(TestCase):
+    """Поведение при обрыве связи с сервером.
+
+    Сама полоса и защита форм живут в браузере, поэтому здесь проверяется
+    то, что можно проверить на сервере: разметка есть на любой странице,
+    скрипты подключены в рабочем порядке, а запросы страниц идут через
+    общий слой связи. Само поведение проверялось в браузере.
+    """
+
+    STATIC_JS = Path(__file__).resolve().parent / 'static' / 'js'
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='conn_user', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+    def test_banner_markup_is_on_every_page(self):
+        """Полоса о связи нужна везде: обрыв застаёт человека на той
+        странице, на которой он работает, а не на специальной."""
+        for url in ('/', '/repair-orders/', '/parts/'):
+            with self.subTest(url=url):
+                content = self.client_http.get(url).content.decode()
+                self.assertIn('id="connectionBanner"', content)
+                self.assertIn('id="connectionBannerText"', content)
+                self.assertIn('id="connectionRetry"', content)
+
+    def test_banner_is_hidden_without_help_from_bootstrap(self):
+        """Bootstrap приходит из интернета, и при неполадках со связью его
+        может не оказаться — то есть ровно тогда, когда полоса и работает.
+        Спрячься она классом d-none, пустая красная полоса висела бы
+        поверх страницы постоянно."""
+        content = self.client_http.get('/parts/').content.decode()
+        banner = content[content.index('id="connectionBanner"'):]
+        banner = banner[:banner.index('</div>')]
+        self.assertIn('hidden', banner)
+        self.assertNotIn('d-none', banner)
+        self.assertIn('[hidden] { display: none !important; }', content)
+
+        source = (self.STATIC_JS / 'connection-status.js').read_text(encoding='utf-8')
+        self.assertNotIn('d-none', source)
+
+    def test_banner_script_loads_after_the_shared_connection_layer(self):
+        """Полоса подписывается на состояние связи, поэтому общий слой
+        должен быть загружен раньше неё, а она — раньше тех, кто этим
+        слоем пользуется."""
+        content = self.client_http.get('/repair-orders/').content.decode()
+        self.assertIn('js/connection-status.js', content)
+        self.assertLess(
+            content.index('js/ws-connection.js'), content.index('js/connection-status.js')
+        )
+        self.assertLess(
+            content.index('js/connection-status.js'), content.index('js/stock-updates.js')
+        )
+        self.assertLess(
+            content.index('js/connection-status.js'), content.index('js/presence.js')
+        )
+
+    def test_only_one_place_in_the_program_opens_a_websocket(self):
+        """Переподключение после обрыва — общее. Второй new WebSocket
+        означал бы вторую логику повторов, которую починят не всю."""
+        opening = [
+            path.name for path in self.STATIC_JS.glob('*.js')
+            if 'new WebSocket(' in path.read_text(encoding='utf-8')
+        ]
+        self.assertEqual(opening, ['ws-connection.js'])
+
+    def test_shared_layer_exposes_connection_state_and_request_helpers(self):
+        source = (self.STATIC_JS / 'ws-connection.js').read_text(encoding='utf-8')
+        for name in ('open:', 'watch:', 'isOffline:', 'fetch:', 'errorText:'):
+            with self.subTest(name=name):
+                self.assertIn(name, source)
+
+    def test_offline_guard_holds_back_only_posting_forms(self):
+        """Фильтры и поиск ходят методом GET и данных не меняют — держать
+        их незачем; удерживается только то, что что-то записывает."""
+        source = (self.STATIC_JS / 'connection-status.js').read_text(encoding='utf-8')
+        self.assertIn("!== 'post'", source)
+        self.assertIn('data-offline-ignore', source)
+        # Повтор — по кнопке, а не сам собой: очереди отправки в программе нет
+        self.assertNotIn('setInterval', source)
+
+    def test_pages_with_background_requests_use_the_shared_helper(self):
+        """Молчаливый сбой запроса из окна — то, ради чего всё это
+        делалось: раньше в ответ показывался текст исключения браузера."""
+        cabinet = Cabinet.objects.create(number=1, name='К1')
+        cabinet.apply_layout([4])
+        grid = self.client_http.get('/storage-cells/').content.decode()
+        self.assertIn('LiftTeamWS.fetch(', grid)
+        self.assertNotIn('Ошибка сети:', grid)
+
+    def test_repair_order_form_uses_the_shared_helper(self):
+        admin = Employee.objects.create_superuser(
+            username='conn_admin', full_name='Админ', password='pass'
+        )
+        staff = TestClient()
+        staff.force_login(admin)
+        form = staff.get('/repair-orders/create/').content.decode()
+        self.assertIn('LiftTeamWS.fetch(', form)
+        self.assertNotIn("alert('Ошибка: ' + err)", form)

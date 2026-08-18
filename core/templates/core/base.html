@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}LiftTeam v2.48.0{% endblock %}</title>
+    <title>{% block title %}LiftTeam v2.49.0{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
@@ -95,6 +95,38 @@
             z-index: 1080;
             max-width: 320px;
         }
+        /* Скрытое остаётся скрытым, даже если элементу задан свой display.
+           Полоса о связи прячется именно так, а не классом Bootstrap:
+           Bootstrap приходит из интернета, и при неполадках связи —
+           то есть ровно тогда, когда полоса и нужна, — его может
+           не оказаться. Тогда класс d-none ничего не значил бы, и пустая
+           красная полоса висела бы поверх страницы постоянно. */
+        [hidden] { display: none !important; }
+
+        /* Полоса «нет связи с сервером». Лежит поверх страницы и ничего
+           не сдвигает: содержимое при обрыве и так на месте, а прыжок
+           вёрстки посреди набора текста хуже самого обрыва. На широком
+           экране начинается за боковым меню, чтобы не закрывать навигацию. */
+        .connection-banner {
+            position: fixed;
+            top: 0;
+            left: var(--sidebar-width);
+            right: 0;
+            z-index: 1090;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            font-size: 0.9rem;
+            color: #fff;
+            background: #b02a37;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+        }
+        .connection-banner-restored { background: #146c43; }
+
+        @media print {
+            .connection-banner { display: none !important; }
+        }
         /* Короткая вспышка на изменившейся цифре: без неё правка проходит
            незаметно, и сотрудник не понимает, почему число другое. */
         .stock-just-changed { outline: 2px solid #0d6efd; outline-offset: 2px; }
@@ -148,6 +180,10 @@
                 z-index: 999;
             }
 
+            /* Слева на телефоне кнопка меню — полоса о связи не должна
+               её закрывать, поэтому текст начинается правее */
+            .connection-banner { left: 0; padding-left: 64px; }
+
             /* Таблицы шире экрана прокручиваются, а не ломают вёрстку */
             .table-responsive { -webkit-overflow-scrolling: touch; }
 
@@ -160,6 +196,18 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    {% comment %}
+    Полоса о потерянной связи. Пустая и скрытая до тех пор, пока связь есть;
+    текст в неё пишет connection-status.js. Держится в разметке, а не
+    создаётся скриптом, чтобы её вид правился здесь же, где вся остальная
+    вёрстка.
+    {% endcomment %}
+    <div id="connectionBanner" class="connection-banner no-print" role="status" aria-live="polite" hidden>
+        <i class="bi bi-wifi-off"></i>
+        <span id="connectionBannerText"></span>
+        <button type="button" id="connectionRetry" class="btn btn-sm btn-light ms-auto" hidden>Отправить ещё раз</button>
+    </div>
+
     <button class="sidebar-toggle" type="button" onclick="toggleSidebar()" aria-label="Меню">
         <i class="bi bi-list"></i>
     </button>
@@ -170,7 +218,7 @@
         <div class="navbar-brand d-flex align-items-center">
             <img src="{% static 'img/lift_team_logo.png' %}" alt="LiftTeam" onerror="this.style.display='none'">
             <span class="fw-bold">LiftTeam</span>
-            <span class="ms-auto badge bg-primary">v2.48.0</span>
+            <span class="ms-auto badge bg-primary">v2.49.0</span>
         </div>
         <ul class="nav flex-column flex-grow-1">
             <li class="nav-item">
@@ -312,6 +360,12 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{% static 'js/ws-connection.js' %}"></script>
+    {% comment %}
+        Полоса о связи грузится сразу за общим слоем связи и до всех, кто
+        этим слоем пользуется: она должна успеть подписаться на состояние
+        раньше, чем первый сокет о нём сообщит.
+    {% endcomment %}
+    <script src="{% static 'js/connection-status.js' %}"></script>
     <script src="{% static 'js/stock-updates.js' %}"></script>
     {% comment %}
         Присутствие отмечает открытая страница, любая, а не только «Кто

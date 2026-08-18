@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.48.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.49.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -250,7 +250,9 @@ function showEquipmentHistory(select) {
         return;
     }
 
-    fetch(HISTORY_SUMMARY_URL.replace('/0/', '/' + select.value + '/'))
+    // LiftTeamWS.fetch, а не fetch: обрыв связи отсюда попадает в общую
+    // полосу вверху страницы, а не тонет в молча спрятанной подсказке
+    LiftTeamWS.fetch(HISTORY_SUMMARY_URL.replace('/0/', '/' + select.value + '/'))
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
         .then(data => {
             if (!data.orders_count) {
@@ -327,7 +329,7 @@ function updateFaultOptions(equipmentSelect) {
         return;
     }
 
-    fetch(EQUIPMENT_FAULTS_URL.replace('/0/', '/' + equipmentSelect.value + '/'))
+    LiftTeamWS.fetch(EQUIPMENT_FAULTS_URL.replace('/0/', '/' + equipmentSelect.value + '/'))
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
         .then(data => {
             if (!data.success) return;
@@ -364,7 +366,7 @@ function applyFaultTemplate(button) {
     faultIds.forEach(id => params.append('fault_ids', id));
 
     button.disabled = true;
-    fetch(applyUrl, {
+    LiftTeamWS.fetch(applyUrl, {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -378,7 +380,7 @@ function applyFaultTemplate(button) {
         updateApplyButtonState(faultSelect);
     })
     .catch(err => {
-        alert('Ошибка: ' + err);
+        alert(LiftTeamWS.errorText(err, 'Не удалось подставить детали по неисправности. Попробуйте ещё раз.'));
         updateApplyButtonState(faultSelect);
     });
 }
@@ -486,7 +488,7 @@ function openCreateEquipmentModal(btn) {
 }
 
 function loadModelSelect(selectEl) {
-    fetch('{% url "ajax_equipment_model_list" %}')
+    LiftTeamWS.fetch('{% url "ajax_equipment_model_list" %}')
         .then(r => r.json())
         .then(data => {
             if (data.success && data.models) {
@@ -497,7 +499,7 @@ function loadModelSelect(selectEl) {
             }
         })
         .catch(() => {
-            selectEl.innerHTML = '<option value="">Ошибка загрузки</option>';
+            selectEl.innerHTML = '<option value="">Список не загрузился</option>';
         });
 }
 
@@ -515,7 +517,7 @@ function createEquipmentModel() {
         alert('Введите название модели');
         return;
     }
-    fetch('{% url "ajax_equipment_model_create" %}', {
+    LiftTeamWS.fetch('{% url "ajax_equipment_model_create" %}', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -555,7 +557,7 @@ function createEquipmentModel() {
             alert(data.error);
         }
     })
-    .catch(err => alert('Ошибка: ' + err));
+    .catch(err => alert(LiftTeamWS.errorText(err, 'Не удалось создать модель. Попробуйте ещё раз.')));
 }
 
 function selectExistingEquipment(id, name) {
@@ -588,7 +590,7 @@ function createEquipment(confirmed) {
                '&serial_number=' + encodeURIComponent(serial);
     if (confirmed) body += '&confirmed=1';
 
-    fetch('{% url "ajax_equipment_create" %}', {
+    LiftTeamWS.fetch('{% url "ajax_equipment_create" %}', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -620,7 +622,7 @@ function createEquipment(confirmed) {
             alert(data.error);
         }
     })
-    .catch(err => alert('Ошибка: ' + err));
+    .catch(err => alert(LiftTeamWS.errorText(err, 'Не удалось создать оборудование. Попробуйте ещё раз.')));
 }
 
 // Тот же серийник в другом написании почти всегда означает ту же физическую
@@ -672,7 +674,7 @@ function createClient() {
     params.append('email', email);
     params.append('contact_person', contact);
 
-    fetch('{% url "ajax_client_create" %}', {
+    LiftTeamWS.fetch('{% url "ajax_client_create" %}', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -704,7 +706,7 @@ function createClient() {
             alert(data.error);
         }
     })
-    .catch(err => alert('Ошибка: ' + err));
+    .catch(err => alert(LiftTeamWS.errorText(err, 'Не удалось создать заказчика. Попробуйте ещё раз.')));
 }
 </script>
 

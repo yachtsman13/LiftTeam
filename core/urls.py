@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.48.0
+v2.49.0
 """
 from django.urls import path
 from . import views

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.48.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.49.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -476,12 +476,15 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// Запросы к серверу отсюда идут через LiftTeamWS.fetch: он отличает обрыв
+// связи от ответа сервера с ошибкой, поднимает общую полосу «нет связи»
+// и даёт понятный текст вместо технического сообщения браузера.
 function submitAddPart(event) {
     event.preventDefault();
     const partId = document.getElementById('addPartSelect').value;
     if (!partId) return false;
 
-    fetch('/storage-cells/' + selectedCellId + '/add-part/', {
+    LiftTeamWS.fetch('/storage-cells/' + selectedCellId + '/add-part/', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -494,7 +497,7 @@ function submitAddPart(event) {
         } else {
             alert(data.error || 'Ошибка добавления детали');
         }
-    }).catch(err => alert('Ошибка сети: ' + err));
+    }).catch(err => alert(LiftTeamWS.errorText(err, 'Не удалось добавить деталь в ячейку. Попробуйте ещё раз.')));
 
     return false;
 }
@@ -502,7 +505,7 @@ function submitAddPart(event) {
 function removePartFromCell(partId) {
     if (!confirm('Убрать деталь из этой ячейки?')) return;
 
-    fetch('/storage-cells/' + selectedCellId + '/remove-part/', {
+    LiftTeamWS.fetch('/storage-cells/' + selectedCellId + '/remove-part/', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -515,7 +518,7 @@ function removePartFromCell(partId) {
         } else {
             alert(data.error || 'Ошибка удаления детали');
         }
-    }).catch(err => alert('Ошибка сети: ' + err));
+    }).catch(err => alert(LiftTeamWS.errorText(err, 'Не удалось убрать деталь из ячейки. Попробуйте ещё раз.')));
 }
 
 function startMoveMode(partId) {
@@ -576,7 +579,7 @@ function performMoveToCell(toCellId) {
         return;
     }
 
-    fetch('{% url "storage_cell_move" %}', {
+    LiftTeamWS.fetch('{% url "storage_cell_move" %}', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -592,7 +595,7 @@ function performMoveToCell(toCellId) {
         }
     }).catch(err => {
         cancelMoveMode();
-        alert('Ошибка сети: ' + err);
+        alert(LiftTeamWS.errorText(err, 'Не удалось переместить деталь. Попробуйте ещё раз.'));
     });
 }
 </script>
