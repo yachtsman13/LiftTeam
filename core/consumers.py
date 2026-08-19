@@ -1,5 +1,5 @@
 """
-WebSocket consumers для LiftTeam v2.55.1.
+WebSocket consumers для LiftTeam v2.56.0.
 """
 import json
 

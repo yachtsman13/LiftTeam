@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказчики — LiftTeam v2.55.1{% endblock %}
+{% block title %}Заказчики — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -23,8 +23,8 @@
             </div>
         </form>
 
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Название</th>
@@ -37,11 +37,11 @@
                 <tbody>
                     {% for client in clients %}
                     <tr class="clickable-row" data-href="{% url 'client_edit' client.pk %}">
-                        <td class="fw-bold">{{ client.name }}</td>
-                        <td>{{ client.inn|default:"—" }}</td>
-                        <td>{{ client.contact_person|default:"—" }}</td>
-                        <td>{{ client.phone|default:"—" }}</td>
-                        <td class="text-end">
+                        <td class="fw-bold" data-label="Название">{{ client.name }}</td>
+                        <td data-label="ИНН">{{ client.inn|default:"—" }}</td>
+                        <td data-label="Контакт">{{ client.contact_person|default:"—" }}</td>
+                        <td data-label="Телефон">{{ client.phone|default:"—" }}</td>
+                        <td class="col-actions text-end">
                             <a href="{% url 'client_delete' client.pk %}" class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
                         </td>
                     </tr>

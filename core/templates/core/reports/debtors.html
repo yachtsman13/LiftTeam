@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Задолженности — LiftTeam v2.55.1{% endblock %}
+{% block title %}Задолженности — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -14,8 +14,8 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr>
                         <th>№ заказа</th>
@@ -32,13 +32,13 @@
                 <tbody>
                     {% for order in orders %}
                     <tr class="clickable-row" data-href="{% url 'repair_order_detail' order.pk %}">
-                        <td class="fw-bold">{{ order.order_number }}</td>
-                        <td>{{ order.client.name }}</td>
-                        <td>{{ order.total_repair_cost }} ₽</td>
-                        <td>{% if order.paid_amount %}{{ order.paid_amount }} ₽{% else %}<span class="text-muted">—</span>{% endif %}</td>
-                        <td class="fw-bold">{{ order.debt }} ₽</td>
-                        <td><span class="badge bg-{% if order.payment_status == 'unpaid' %}danger{% else %}warning{% endif %}">{{ order.get_payment_status_display }}</span></td>
-                        <td class="text-nowrap">
+                        <td class="fw-bold" data-label="№ заказа">{{ order.order_number }}</td>
+                        <td data-label="Заказчик">{{ order.client.name }}</td>
+                        <td data-label="Сумма">{{ order.total_repair_cost }} ₽</td>
+                        <td data-label="Оплачено">{% if order.paid_amount %}{{ order.paid_amount }} ₽{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="fw-bold" data-label="Остаток">{{ order.debt }} ₽</td>
+                        <td data-label="Статус оплаты"><span class="badge bg-{% if order.payment_status == 'unpaid' %}danger{% else %}warning{% endif %}">{{ order.get_payment_status_display }}</span></td>
+                        <td class="text-nowrap" data-label="Счёт">
                             {% if order.invoice_date %}
                             {{ order.invoice_date|date:"d.m.Y" }}
                             {% if order.is_overdue %}<span class="badge bg-danger">просрочен {{ order.days_overdue }} дн.</span>{% endif %}
@@ -47,14 +47,14 @@
                             <span class="badge bg-secondary">не выставлен</span>
                             {% endif %}
                         </td>
-                        <td class="text-nowrap small">
+                        <td class="text-nowrap small" data-label="Напоминание">
                             {% if order.last_reminder %}
                             {{ order.last_reminder|date:"d.m.Y" }}
                             {% else %}
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td>{{ order.date_received|date:"d.m.Y" }}</td>
+                        <td data-label="Дата">{{ order.date_received|date:"d.m.Y" }}</td>
                     </tr>
                     {% empty %}
                     <tr><td colspan="9" class="text-center text-muted py-4">Задолженностей нет</td></tr>

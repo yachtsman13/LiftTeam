@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.55.1{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -93,8 +93,8 @@
             <div class="card-body">
                 <form id="equipmentLabelsForm" method="get" target="_blank"
                       action="{% url 'repair_order_equipment_labels' order.pk %}"></form>
-                <div class="table-responsive">
-                    <table class="table table-sm align-middle equipment-table">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-sm align-middle equipment-table list-table list-table-select">
                         <thead><tr>
                             <th style="width:1%">
                                 <input type="checkbox" class="form-check-input" id="equipmentCheckAll"
@@ -105,17 +105,17 @@
                         <tbody>
                             {% for oe in order_equipments %}
                             <tr>
-                                <td>
+                                <td class="col-check">
                                     <input type="checkbox" class="form-check-input equipment-check"
                                            form="equipmentLabelsForm" name="roe" value="{{ oe.pk }}"
                                            aria-label="Этикетка на позицию {{ forloop.counter }}">
                                 </td>
-                                <td><span class="badge bg-primary">{{ forloop.counter }}</span></td>
-                                <td>{{ oe.equipment.model.name }}</td>
-                                <td class="fw-bold">{{ oe.equipment.serial_number }}</td>
-                                <td>{{ oe.fault_description|default:"—"|linebreaksbr }}</td>
-                                <td>{{ oe.work_performed|default:"—"|linebreaksbr }}</td>
-                                <td>
+                                <td data-label="№"><span class="badge bg-primary">{{ forloop.counter }}</span></td>
+                                <td data-label="Модель">{{ oe.equipment.model.name }}</td>
+                                <td class="fw-bold" data-label="Серийный номер">{{ oe.equipment.serial_number }}</td>
+                                <td data-label="Неисправность">{{ oe.fault_description|default:"—"|linebreaksbr }}</td>
+                                <td data-label="Выполнено">{{ oe.work_performed|default:"—"|linebreaksbr }}</td>
+                                <td data-label="Гарантия">
                                     {% if oe.previous_warranty %}
                                     <a href="{% url 'repair_order_detail' oe.previous_warranty.repair_order.pk %}" class="badge bg-warning text-dark text-decoration-none" title="Единица уже ремонтировалась, и гарантия по тому заказу ещё действует">
                                         по {{ oe.previous_warranty.repair_order.order_number }} до {{ oe.previous_warranty.warranty_until|date:"d.m.Y" }}
@@ -126,7 +126,7 @@
                                     <span class="text-muted">—</span>
                                     {% endif %}
                                 </td>
-                                <td class="text-end">
+                                <td class="text-end col-actions">
                                     <a href="{% url 'equipment_history' oe.equipment.pk %}" class="btn btn-sm btn-outline-primary" title="История этой единицы"><i class="bi bi-clock-history"></i></a>
                                     {% comment %}
                                         Пока дефектации нет — ведём на заполнение,
@@ -156,10 +156,16 @@
     еле заметной линией, а строки здесь высокие — с описанием неисправности
     и выполненных работ в несколько строчек, — и глазом было не понять,
     где кончается одно оборудование и начинается следующее.
+
+    Только для широкого экрана: на телефоне строка и так превращается
+    в отдельную карточку со своей рамкой (list-table.css), а эта жирная
+    линия легла бы поперёк каждой ячейки внутри карточки.
 {% endcomment %}
 <style>
-    .equipment-table > tbody > tr + tr > td { border-top: 2px solid #495057; }
-    .equipment-table > tbody > tr > td { padding-top: 0.6rem; padding-bottom: 0.6rem; }
+    @media screen and (min-width: 769px) {
+        .equipment-table > tbody > tr + tr > td { border-top: 2px solid #495057; }
+        .equipment-table > tbody > tr > td { padding-top: 0.6rem; padding-bottom: 0.6rem; }
+    }
 </style>
 <script>
 (function () {
@@ -199,15 +205,15 @@
                     <div class="col-md-3">{{ detail_form.quantity_used }}</div>
                     <div class="col-md-4"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
                 </form>
-                <div class="table-responsive">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-sm list-table">
                         <thead><tr><th>Деталь</th><th>Кол-во</th><th class="text-end">Себестоимость</th></tr></thead>
                         <tbody>
                             {% for detail in details %}
                             <tr>
-                                <td>{{ detail.part.name }}</td>
-                                <td>{{ detail.quantity_used }}</td>
-                                <td class="text-end text-nowrap">
+                                <td data-label="Деталь">{{ detail.part.name }}</td>
+                                <td data-label="Кол-во">{{ detail.quantity_used }}</td>
+                                <td class="text-end text-nowrap" data-label="Себестоимость">
                                     {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }} ₽
                                     {% else %}<span class="text-muted" title="Цена детали не заполнена">—</span>{% endif %}
                                 </td>
@@ -262,8 +268,8 @@
             </div>
             <div class="card-body">
                 {% if payments %}
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm align-middle mb-0">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm align-middle mb-0 list-table">
                         <thead class="table-light">
                             <tr>
                                 <th>Дата</th>
@@ -276,11 +282,11 @@
                         <tbody>
                             {% for payment in payments %}
                             <tr>
-                                <td class="text-nowrap">{{ payment.payment_date|date:"d.m.Y" }}</td>
-                                <td class="fw-bold text-nowrap">{{ payment.amount }} ₽</td>
-                                <td>{{ payment.note|default:"—" }}</td>
-                                <td class="small text-muted">{{ payment.created_by.full_name|default:"—" }}</td>
-                                <td class="text-end">
+                                <td class="text-nowrap" data-label="Дата">{{ payment.payment_date|date:"d.m.Y" }}</td>
+                                <td class="fw-bold text-nowrap" data-label="Сумма">{{ payment.amount }} ₽</td>
+                                <td data-label="Примечание">{{ payment.note|default:"—" }}</td>
+                                <td class="small text-muted" data-label="Внёс">{{ payment.created_by.full_name|default:"—" }}</td>
+                                <td class="text-end col-actions">
                                     {% if user.role == 'accountant' or user.role == 'admin' %}
                                     <form method="post" action="{% url 'repair_order_delete_payment' order.pk payment.pk %}"
                                           class="d-inline" onsubmit="return confirm('Удалить оплату {{ payment.amount }} ₽?');">

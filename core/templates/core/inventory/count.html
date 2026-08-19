@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.55.1{% endblock %}
+{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -35,8 +35,8 @@
     {% csrf_token %}
     <div class="card">
         <div class="card-body">
-            <div class="table-responsive">
-                <table class="table table-sm align-middle">
+            <div class="table-responsive table-scroll">
+                <table class="table table-sm align-middle list-table">
                     <thead class="table-light">
                         <tr>
                             <th>Ячейка</th>
@@ -49,11 +49,11 @@
                     <tbody>
                         {% for line in lines %}
                         <tr>
-                            <td>{{ line.cell.address|default:"—" }}</td>
-                            <td class="fw-bold">{{ line.part.part_number }}</td>
-                            <td>{{ line.part.name }}</td>
-                            <td class="text-end">{{ line.expected_quantity }}</td>
-                            <td>
+                            <td data-label="Ячейка">{{ line.cell.address|default:"—" }}</td>
+                            <td class="fw-bold" data-label="Артикул">{{ line.part.part_number }}</td>
+                            <td data-label="Название">{{ line.part.name }}</td>
+                            <td class="text-end" data-label="Учтено на начало">{{ line.expected_quantity }}</td>
+                            <td data-label="Посчитано фактически">
                                 <input type="number" min="0" class="form-control form-control-sm"
                                        name="counted_{{ line.pk }}"
                                        value="{{ line.counted_quantity|default_if_none:'' }}"

@@ -10578,3 +10578,255 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         обращаются к Bootstrap напрямую."""
         self.assertIn('function hideLeaveDialog()', self.base)
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
+
+
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.0) ====================
+
+
+class MobileListTableTests(SimpleTestCase):
+    """Строчки в списках помещаются на экран телефона.
+
+    Две отдельные беды, и обе проверяются здесь. Первая: широкая таблица
+    растягивала страницу шире экрана, потому что прокрутку ей давал
+    .table-responsive — класс Bootstrap, а Bootstrap приходит из интернета
+    и в лаборатории регулярно не приезжает. Вторая: прокрутка и сама
+    по себе не ответ — семь столбцов на 390 точках не читаются, и строка
+    на узком экране становится карточкой с названиями столбцов у значений.
+    """
+
+    TEMPLATES = 'core/templates/core/'
+    CSS = 'core/static/css/list-table.css'
+
+    # Печатные формы: у них своя таблица act-table и свой лист бумаги.
+    # Карточки им не нужны и вредны — это единственное исключение,
+    # и список исключений намеренно перечислен здесь целиком.
+    PRINT_ONLY = {
+        'repair_orders/act_complete.html',
+        'repair_orders/act_receive.html',
+        'repair_orders/quote.html',
+    }
+
+    @property
+    def PAGES(self):
+        """Все экранные шаблоны с таблицей-шапкой, найденные в дереве.
+
+        Список не записан руками намеренно: новый список, заведённый
+        обычной широкой таблицей, обязан ронять тесты сам, без того чтобы
+        кто-то вспомнил дописать его сюда.
+        """
+        root = settings.BASE_DIR / self.TEMPLATES
+        pages = {}
+        for path in sorted(root.rglob('*.html')):
+            rel = path.relative_to(root).as_posix()
+            if rel in self.PRINT_ONLY:
+                continue
+            text = path.read_text(encoding='utf-8')
+            for table in re.findall(r'<table[^>]*>.*?</table>', text, re.S):
+                if '<thead' in table:
+                    pages[rel] = rel
+                    break
+        return pages
+
+    def _text(self, rel):
+        return (settings.BASE_DIR / self.TEMPLATES / rel).read_text(encoding='utf-8')
+
+    def _stacked_tables(self, rel):
+        """Куски шаблона от <table ... list-table ...> до </table>."""
+        text = self._text(rel)
+        return [(m.start(), m.group(0)) for m in
+                re.finditer(r'<table[^>]*\blist-table\b[^>]*>.*?</table>', text, re.S)]
+
+    def test_every_list_page_stacks_its_rows(self):
+        for page, rel in self.PAGES.items():
+            with self.subTest(page=page):
+                self.assertTrue(self._stacked_tables(rel),
+                                '%s: у таблицы нет class="list-table"' % page)
+
+    def test_every_list_page_has_its_own_scroll_wrapper(self):
+        """Подстраховка на случай, когда карточки не спасают: коробка
+        со своей прокруткой, а не класс Bootstrap."""
+        for page, rel in self.PAGES.items():
+            with self.subTest(page=page):
+                text = self._text(rel)
+                for start, _ in self._stacked_tables(rel):
+                    before = text[:start]
+                    wrapper = before[before.rindex('<div'):]
+                    self.assertIn('table-scroll', wrapper,
+                                  '%s: таблица не в коробке с прокруткой' % page)
+
+    def test_every_data_cell_carries_its_column_name(self):
+        """Без data-label ячейка в карточке остаётся значением без подписи:
+        «19.08.2026» само по себе не говорит, дата это приёма или отгрузки."""
+        allowed = ('data-label=', 'col-check', 'col-actions', 'colspan=')
+        for page, rel in self.PAGES.items():
+            with self.subTest(page=page):
+                for _, table in self._stacked_tables(rel):
+                    body = re.search(r'<tbody[^>]*>.*?</tbody>', table, re.S)
+                    self.assertIsNotNone(body, '%s: у таблицы нет <tbody>' % page)
+                    # (?:[^>{]|\{%.*?%\})* — ячейка вида
+                    # <td{% if ... %} class="..."{% endif %} data-label="...">
+                    for cell in re.findall(r'<td((?:[^>{]|\{%.*?%\})*)>', body.group(0)):
+                        self.assertTrue(
+                            any(mark in cell for mark in allowed),
+                            '%s: ячейка без названия столбца: %s' % (page, cell),
+                        )
+
+    def test_scroll_and_stacking_rules_are_our_own(self):
+        """Правила лежат в своём файле, а не берутся у Bootstrap: он
+        приходит из интернета, и когда не приезжает, класс .table-responsive
+        не значит ничего."""
+        css = (settings.BASE_DIR / self.CSS).read_text(encoding='utf-8')
+        self.assertIn('.table-scroll', css)
+        self.assertIn('overflow-x: auto', css)
+        self.assertIn('.list-table', css)
+        self.assertIn('attr(data-label)', css)
+        # своё правило, а не переопределение чужого класса
+        self.assertNotIn('.table-responsive {', css)
+        # ничего от поведения Bootstrap
+        self.assertNotIn('data-bs-', css)
+
+    def test_desktop_layout_is_untouched(self):
+        """Карточки — только для узкого экрана. И только для экрана:
+        страница этикетки шириной 43 мм для браузера тоже узкая."""
+        css = (settings.BASE_DIR / self.CSS).read_text(encoding='utf-8')
+        self.assertIn('@media screen and (max-width: 768px)', css)
+        self.assertNotIn('@media (max-width: 768px)', css)
+        # всё, что превращает строку в карточку, живёт внутри этого условия
+        head, _, tail = css.partition('@media screen and (max-width: 768px)')
+        self.assertNotIn('display: block', head)
+        self.assertIn('display: block', tail)
+
+    def test_stylesheet_is_linked_on_every_page(self):
+        base = (settings.BASE_DIR / self.TEMPLATES / 'base.html').read_text(encoding='utf-8')
+        self.assertIn("css/list-table.css", base)
+
+
+class MobileListTableRenderTests(TestCase):
+    """То же самое, но на живых страницах: разметка доезжает до браузера."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='mobile_admin', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.client_obj = ClientModel.objects.create(name='ООО «Телефон»')
+        self.model = EquipmentModel.objects.create(name='Шкаф телефонный')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='SN-M-1')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(repair_order=self.order, equipment=self.equipment)
+        part = SparePart.objects.create(part_number='M-1', name='Деталь', current_stock=1, min_stock=0)
+        # Журнал движений без единого движения рисует только строку
+        # «ничего не найдено», а проверяется здесь именно строка записи.
+        StockMovement.objects.create(part=part, quantity=1, movement_type='incoming')
+
+    def test_pages_carry_the_stacking_markup(self):
+        pages = {
+            '/repair-orders/': '№ заказа',
+            '/repair-orders/%d/' % self.order.pk: 'Серийный номер',
+            '/parts/': 'Артикул',
+            '/reports/stock-movements/': 'Деталь',
+            '/reports/debtors/': None,
+            '/inventory/': None,
+            '/equipment/': 'Серийный номер',
+        }
+        for url, label in pages.items():
+            with self.subTest(url=url):
+                page = self.http.get(url).content.decode()
+                self.assertIn('table-scroll', page)
+                self.assertIn('list-table', page)
+                if label:
+                    self.assertIn('data-label="%s"' % label, page)
+
+
+class MobileMenuButtonTests(SimpleTestCase):
+    """Кнопка меню — логотип на объёмной площадке (v2.56.0).
+
+    Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
+    в base.html и в шаблонах этикеток и актов. Переименование оставило бы
+    кнопку меню на наклейке.
+    """
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+        self.button = self.base.split('class="sidebar-toggle"')[1].split('</button>')[0]
+
+    def test_button_shows_the_logo(self):
+        self.assertIn('img/lift_team_logo.svg', self.button)
+        self.assertIn('sidebar-toggle-mark', self.button)
+
+    def test_button_keeps_its_accessible_label(self):
+        self.assertIn('aria-label="Меню"', self.button)
+
+    def test_missing_image_leaves_a_visible_button(self):
+        """Иначе лаборатория остаётся без единственного способа открыть меню.
+
+        Запасных видов два: сначала PNG вместо SVG, потом буквы вместо
+        картинки вовсе. Подмена написана прямо в onerror, а не в общем
+        скрипте: ошибка загрузки случается раньше, чем доходит очередь
+        до скриптов внизу страницы.
+        """
+        self.assertIn('img/lift_team_logo.png', self.button)
+        self.assertIn('onerror=', self.button)
+        self.assertIn('sidebar-toggle-letters', self.button)
+        self.assertIn('>LT<', self.button)
+        self.assertIn('.sidebar-toggle-letters', self.base)
+
+    def rule(self, selector, must_contain):
+        """Тело правила по селектору.
+
+        Одно и то же имя написано в base.html несколько раз — своё правило
+        для печати, для компьютера и для телефона, — поэтому нужное
+        отбирается по тому, что внутри него стоит, а не по порядку.
+        """
+        bodies = re.findall(r'%s\s*\{([^}]*)\}' % re.escape(selector), self.base)
+        found = [body for body in bodies if must_contain in body]
+        self.assertTrue(found, 'правило %s с «%s» не найдено' % (selector, must_contain))
+        return found[0]
+
+    def test_touch_target_stays_big_enough(self):
+        rule = self.rule('.sidebar-toggle', 'width:')
+        for side in ('width', 'height'):
+            size = int(re.search(r'\b%s: (\d+)px' % side, rule).group(1))
+            self.assertGreaterEqual(size, 44, 'кнопка меньше пальца')
+
+    def test_button_looks_pressed_at_the_touch_not_at_the_release(self):
+        self.assertIn('.sidebar-toggle.is-pressed', self.base)
+        self.assertIn("addEventListener('pointerdown'", self.base)
+        self.assertIn("addEventListener('pointerup'", self.base)
+
+    def test_press_animation_respects_the_system_setting(self):
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.base)
+        quiet = self.base.split('@media (prefers-reduced-motion: reduce)')[1]
+        self.assertIn('transition: none', quiet)
+        self.assertIn('transform: none', quiet)
+
+    def test_button_stays_above_the_sidebar_and_its_backdrop(self):
+        toggle = self.rule('.sidebar-toggle', 'z-index:')
+        sidebar = self.rule('.sidebar', 'z-index:')
+        backdrop = self.rule('.sidebar-backdrop.show', 'z-index:')
+        self.assertGreater(int(re.search(r'z-index: (\d+)', toggle).group(1)),
+                           int(re.search(r'z-index: (\d+)', sidebar).group(1)))
+        self.assertGreater(int(re.search(r'z-index: (\d+)', toggle).group(1)),
+                           int(re.search(r'z-index: (\d+)', backdrop).group(1)))
+
+    def test_button_needs_no_bootstrap(self):
+        """Bootstrap приходит из интернета; открыть меню надо и без него."""
+        self.assertNotIn('data-bs-', self.button)
+
+    def test_printing_templates_still_know_the_button_by_name(self):
+        """Печатные шаблоны прячут кнопку по имени класса. Переименуй его —
+        и логотип уедет на наклейку 43 мм."""
+        printing = [
+            'core/templates/core/parts/label.html',
+            'core/templates/core/parts/labels_batch.html',
+            'core/templates/core/storage_cells/label.html',
+            'core/templates/core/storage_cells/labels_batch.html',
+            'core/templates/core/repair_orders/labels_batch.html',
+            'core/templates/core/repair_orders/_act_styles.html',
+        ]
+        for rel in printing:
+            with self.subTest(template=rel):
+                text = (settings.BASE_DIR / rel).read_text(encoding='utf-8')
+                self.assertIn('.sidebar-toggle', text)

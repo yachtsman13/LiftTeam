@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дашборд — LiftTeam v2.55.1{% endblock %}
+{% block title %}Дашборд — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -112,8 +112,8 @@
                 <a href="{% url 'repair_order_list' %}" class="btn btn-sm btn-outline-primary">Все заказы</a>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-hover mb-0 list-table">
                         <thead class="table-light">
                             <tr>
                                 <th>№ заказа</th>
@@ -125,10 +125,10 @@
                         <tbody>
                             {% for order in recent_orders %}
                             <tr>
-                                <td><a href="{% url 'repair_order_detail' order.pk %}" class="fw-bold">{{ order.order_number }}</a></td>
-                                <td>{{ order.client.name }}</td>
-                                <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
-                                <td>{{ order.date_received|date:"d.m.Y H:i" }}</td>
+                                <td data-label="№ заказа"><a href="{% url 'repair_order_detail' order.pk %}" class="fw-bold">{{ order.order_number }}</a></td>
+                                <td data-label="Заказчик">{{ order.client.name }}</td>
+                                <td data-label="Статус"><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                                <td data-label="Дата">{{ order.date_received|date:"d.m.Y H:i" }}</td>
                             </tr>
                             {% empty %}
                             <tr><td colspan="4" class="text-center text-muted py-4">Нет заказов</td></tr>

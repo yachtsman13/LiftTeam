@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Массовая отгрузка заказов — LiftTeam v2.55.1{% endblock %}
+{% block title %}Массовая отгрузка заказов — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -30,18 +30,18 @@
                     и отдельная запись в истории; заказчику поставлено
                     в очередь письмо.
                 </div>
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr><th>№ заказа</th><th>Заказчик</th></tr>
                         </thead>
                         <tbody>
                             {% for order in applied %}
                             <tr>
-                                <td class="fw-bold">
+                                <td class="fw-bold" data-label="№ заказа">
                                     <a href="{% url 'repair_order_detail' order.pk %}">{{ order.order_number }}</a>
                                 </td>
-                                <td>{{ order.client.name }}</td>
+                                <td data-label="Заказчик">{{ order.client.name }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -53,19 +53,19 @@
                 <div class="alert alert-warning">
                     Пропущено без изменений: <strong>{{ skipped|length }}</strong>.
                 </div>
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr><th>№ заказа</th><th>Заказчик</th><th>Почему пропущен</th></tr>
                         </thead>
                         <tbody>
                             {% for row in skipped %}
                             <tr>
-                                <td class="fw-bold">
+                                <td class="fw-bold" data-label="№ заказа">
                                     <a href="{% url 'repair_order_detail' row.order.pk %}">{{ row.order.order_number }}</a>
                                 </td>
-                                <td>{{ row.order.client.name }}</td>
-                                <td>{{ row.reason }}</td>
+                                <td data-label="Заказчик">{{ row.order.client.name }}</td>
+                                <td data-label="Почему пропущен">{{ row.reason }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -102,16 +102,16 @@
 
                 {% if eligible %}
                 <h6>Будет отгружено: {{ eligible|length }}</h6>
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr><th>№ заказа</th><th>Заказчик</th></tr>
                         </thead>
                         <tbody>
                             {% for order in eligible %}
                             <tr>
-                                <td class="fw-bold">{{ order.order_number }}</td>
-                                <td>{{ order.client.name }}</td>
+                                <td class="fw-bold" data-label="№ заказа">{{ order.order_number }}</td>
+                                <td data-label="Заказчик">{{ order.client.name }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -124,17 +124,17 @@
                     <strong>{{ ineligible|length }}</strong> из отмеченных
                     не в статусе «Готов к отгрузке» и будут пропущены.
                 </div>
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr><th>№ заказа</th><th>Заказчик</th><th>Почему будет пропущен</th></tr>
                         </thead>
                         <tbody>
                             {% for row in ineligible %}
                             <tr>
-                                <td class="fw-bold">{{ row.order.order_number }}</td>
-                                <td>{{ row.order.client.name }}</td>
-                                <td>{{ row.reason }}</td>
+                                <td class="fw-bold" data-label="№ заказа">{{ row.order.order_number }}</td>
+                                <td data-label="Заказчик">{{ row.order.client.name }}</td>
+                                <td data-label="Почему будет пропущен">{{ row.reason }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>

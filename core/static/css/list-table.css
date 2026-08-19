@@ -1,0 +1,157 @@
+/*
+    Списки на телефоне.
+
+    Две отдельные задачи, и обе решаются здесь, своими правилами, а не
+    классами Bootstrap: он приходит из интернета и в лаборатории регулярно
+    не приезжает. Файл местный — он приезжает вместе со страницей, и потому
+    работает ровно тогда, когда нужен.
+
+    1. .table-scroll — подстраховка: широкая таблица прокручивается внутри
+       своей коробки, а не растягивает страницу. То же самое делает
+       .table-responsive, но это класс Bootstrap; без него он не значит
+       ничего, и таблица уезжала за край экрана вместе со всей вёрсткой.
+
+    2. .list-table — на узком экране строка перестаёт быть строкой и
+       становится карточкой: каждая ячейка идёт со своим названием столбца
+       (берётся из data-label), запись читается сверху вниз и вбок двигать
+       ничего не нужно. Семиколоночная таблица на 390 пикселях нечитаема,
+       даже если её можно прокрутить.
+
+    Выше границы не меняется ничего: все правила карточек лежат внутри
+    @media screen and (max-width: 768px), и на компьютере таблицы остаются
+    ровно такими же, какими были.
+*/
+
+/* Подстраховка для любой широкой таблицы. Ведёт себя так же, как
+   .table-responsive у Bootstrap, поэтому на компьютере ничего не меняется. */
+.table-scroll {
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Именно screen: у листа бумаги нет ни узкого экрана, ни касаний, а страница
+   этикетки шириной 43 мм для браузера — узкий экран. Без этого слова акт
+   и наклейка печатались бы карточками. */
+@media screen and (max-width: 768px) {
+
+    /* Строка становится блоком. Названия столбцов из шапки больше не нужны:
+       каждая ячейка несёт своё в data-label. */
+    .list-table,
+    .list-table > tbody,
+    .list-table > tbody > tr,
+    .list-table > tbody > tr > td {
+        display: block;
+        width: auto;
+    }
+
+    .list-table > thead {
+        display: none;
+    }
+
+    .list-table {
+        margin-bottom: 0;
+    }
+
+    /* Карточка одной записи. */
+    .list-table > tbody > tr {
+        position: relative;
+        border: 1px solid #dee2e6;
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    }
+
+    /* Цветная подсветка строки (дефицит, минимум) у Bootstrap живёт
+       на ячейках, поэтому на карточке она сохраняется как есть. */
+
+    .list-table > tbody > tr:last-child {
+        margin-bottom: 0;
+    }
+
+    .list-table > tbody > tr > td {
+        border: 0;
+        padding: 5px 0;
+        /* Длинный артикул без пробелов иначе распирает карточку и страница
+           снова оказывается шире экрана. */
+        overflow-wrap: anywhere;
+        text-align: left;
+    }
+
+    /* Название столбца рядом со значением. Ячейке без data-label название
+       не рисуется — так ведут себя итоговые строки и «ничего не найдено». */
+    .list-table > tbody > tr > td[data-label] {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+    }
+
+    .list-table > tbody > tr > td[data-label]::before {
+        content: attr(data-label);
+        flex: 0 0 38%;
+        max-width: 38%;
+        color: #6c757d;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        line-height: 1.3;
+    }
+
+    /* Значение занимает остаток и умеет ужиматься. */
+    .list-table > tbody > tr > td[data-label] > * {
+        min-width: 0;
+    }
+
+    /* Отметка для действий над пачкой. Занимать целую строку карточки ей
+       незачем — она уходит в правый верхний угол, под большой палец.
+       Место под неё резервирует таблица целиком (.list-table-select),
+       а не карточка «у которой есть отметка»: правило :has() поддержано
+       не везде, а без резерва отметка легла бы поверх текста. */
+    .list-table-select > tbody > tr {
+        padding-right: 46px;
+    }
+
+    .list-table > tbody > tr > td.col-check {
+        position: absolute;
+        top: 6px;
+        right: 8px;
+        padding: 0;
+        margin: 0;
+        width: 34px;
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .list-table > tbody > tr > td.col-check input {
+        width: 20px;
+        height: 20px;
+    }
+
+    /* Кнопки — вниз карточки, отдельной полосой и покрупнее: по ним
+       попадают пальцем, а не курсором. */
+    .list-table > tbody > tr > td.col-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-start;
+        margin-top: 6px;
+        padding-top: 8px;
+        border-top: 1px solid #eceef1;
+    }
+
+    .list-table > tbody > tr > td.col-actions .btn {
+        min-width: 40px;
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Пустой список — одна строка текста, а не карточка. */
+    .list-table > tbody > tr > td[colspan] {
+        text-align: center;
+    }
+}

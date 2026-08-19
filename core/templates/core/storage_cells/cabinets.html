@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.55.1{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -20,8 +20,8 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover align-middle">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover align-middle list-table">
                 <thead class="table-light">
                     <tr>
                         <th>№</th>
@@ -36,15 +36,15 @@
                 <tbody>
                     {% for row in rows %}
                     <tr>
-                        <td class="fw-bold">{{ row.cabinet.number }}</td>
-                        <td>{{ row.cabinet.name|default:"—" }}</td>
-                        <td><code>{{ row.layout|default:"пусто" }}</code></td>
-                        <td class="text-end">{{ row.cell_count }}</td>
-                        <td class="text-end">
+                        <td class="fw-bold" data-label="№">{{ row.cabinet.number }}</td>
+                        <td data-label="Название">{{ row.cabinet.name|default:"—" }}</td>
+                        <td data-label="Ячеек в рядах"><code>{{ row.layout|default:"пусто" }}</code></td>
+                        <td class="text-end" data-label="Всего ячеек">{{ row.cell_count }}</td>
+                        <td class="text-end" data-label="Занято">
                             {% if row.occupied %}{{ row.occupied }}{% else %}<span class="text-muted">—</span>{% endif %}
                         </td>
-                        <td class="small text-muted">{{ row.cabinet.note|default:"" }}</td>
-                        <td class="text-end text-nowrap">
+                        <td class="small text-muted" data-label="Примечание">{{ row.cabinet.note|default:"" }}</td>
+                        <td class="col-actions text-end text-nowrap">
                             <a href="{% url 'storage_cell_grid' %}?cabinet={{ row.cabinet.number }}"
                                class="btn btn-sm btn-outline-secondary" title="Показать на сетке">
                                 <i class="bi bi-grid-3x3"></i>

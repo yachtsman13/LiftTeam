@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Модели оборудования — LiftTeam v2.55.1{% endblock %}
+{% block title %}Модели оборудования — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -14,25 +14,25 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr><th>Название</th><th>Тип оборудования</th><th>Родовое название для акта</th><th>Версии</th><th class="text-end">Действия</th></tr>
                 </thead>
                 <tbody>
                     {% for model in models %}
                     <tr>
-                        <td>{{ model.name }}</td>
-                        <td>{% if model.equipment_type %}{{ model.equipment_type.name }}{% else %}<span class="text-muted">не указан</span>{% endif %}</td>
-                        <td>{% if model.kind %}{{ model.kind }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-                        <td>
+                        <td data-label="Название">{{ model.name }}</td>
+                        <td data-label="Тип оборудования">{% if model.equipment_type %}{{ model.equipment_type.name }}{% else %}<span class="text-muted">не указан</span>{% endif %}</td>
+                        <td data-label="Родовое название для акта">{% if model.kind %}{{ model.kind }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td data-label="Версии">
                             {% for version in model.versions.all %}
                             <span class="badge bg-secondary fw-normal">{{ version.name }}</span>
                             {% empty %}
                             <span class="text-muted">—</span>
                             {% endfor %}
                         </td>
-                        <td class="text-end">
+                        <td class="col-actions text-end">
                             <a href="{% url 'equipment_model_edit' model.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'equipment_model_delete' model.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
                         </td>

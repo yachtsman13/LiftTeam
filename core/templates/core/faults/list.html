@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Типовые неисправности — LiftTeam v2.55.1{% endblock %}
+{% block title %}Типовые неисправности — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -13,8 +13,8 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Модель оборудования</th>
@@ -27,8 +27,8 @@
                 <tbody>
                     {% for fault in fault_types %}
                     <tr>
-                        <td>{{ fault.equipment_model.name }}</td>
-                        <td>
+                        <td data-label="Модель оборудования">{{ fault.equipment_model.name }}</td>
+                        <td data-label="Неисправность">
                             {{ fault.name }}
                             {% if fault.description %}
                             <div class="small text-muted">{{ fault.description }}</div>
@@ -36,15 +36,15 @@
                             <div class="small text-danger">Без описания — в документы эта неисправность не попадёт</div>
                             {% endif %}
                         </td>
-                        <td>{{ fault.get_complexity_display }}</td>
-                        <td>
+                        <td data-label="Сложность">{{ fault.get_complexity_display }}</td>
+                        <td data-label="Рецепт деталей">
                             {% for line in fault.parts.all %}
                             <span class="badge bg-secondary fw-normal">{{ line.part.name }} ×{{ line.quantity }}{% if line.version %} — только {{ line.version.name }}{% endif %}</span>
                             {% empty %}
                             <span class="text-muted">рецепт пуст</span>
                             {% endfor %}
                         </td>
-                        <td class="text-end">
+                        <td class="col-actions text-end">
                             <a href="{% url 'fault_type_create' %}?copy_from={{ fault.pk }}" class="btn btn-sm btn-outline-secondary" title="Создать копию: откроется форма, заполненная этой неисправностью вместе с рецептом"><i class="bi bi-files"></i></a>
                             <a href="{% url 'fault_type_edit' fault.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'fault_type_delete' fault.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>

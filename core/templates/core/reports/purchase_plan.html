@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}План закупок — LiftTeam v2.55.1{% endblock %}
+{% block title %}План закупок — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -13,8 +13,8 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Артикул</th>
@@ -32,22 +32,22 @@
                 <tbody>
                     {% for part in parts %}
                     <tr class="table-danger">
-                        <td class="fw-bold">{{ part.part_number }}</td>
-                        <td>{{ part.name }}</td>
-                        <td>{{ part.component_type|default:"—" }}</td>
-                        <td>{{ part.current_stock }}</td>
-                        <td>{{ part.min_stock }}</td>
-                        <td class="fw-bold text-danger">{{ part.stock_deficit }}</td>
-                        <td class="text-end text-nowrap">
+                        <td class="fw-bold" data-label="Артикул">{{ part.part_number }}</td>
+                        <td data-label="Название">{{ part.name }}</td>
+                        <td data-label="Тип">{{ part.component_type|default:"—" }}</td>
+                        <td data-label="Текущий остаток">{{ part.current_stock }}</td>
+                        <td data-label="Мин. остаток">{{ part.min_stock }}</td>
+                        <td class="fw-bold text-danger" data-label="Дефицит">{{ part.stock_deficit }}</td>
+                        <td class="text-end text-nowrap" data-label="Цена">
                             {% if part.price is not None %}{{ part.price|floatformat:2 }} ₽
                             {% else %}<span class="text-muted" title="Цена не заполнена">—</span>{% endif %}
                         </td>
-                        <td class="text-end text-nowrap fw-bold">
+                        <td class="text-end text-nowrap fw-bold" data-label="Сумма">
                             {% if part.purchase_cost is not None %}{{ part.purchase_cost|floatformat:2 }} ₽
                             {% else %}<span class="text-muted">—</span>{% endif %}
                         </td>
-                        <td>{{ part.lead_time_days }} дн.</td>
-                        <td>{{ part.preferred_supplier|default:"—" }}</td>
+                        <td data-label="Срок поставки">{{ part.lead_time_days }} дн.</td>
+                        <td data-label="Поставщик">{{ part.preferred_supplier|default:"—" }}</td>
                     </tr>
                     {% empty %}
                     <tr><td colspan="10" class="text-center text-muted py-4">Все детали в норме</td></tr>

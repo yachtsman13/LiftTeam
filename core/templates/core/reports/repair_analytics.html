@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Аналитика ремонта — LiftTeam v2.55.1{% endblock %}
+{% block title %}Аналитика ремонта — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -62,17 +62,17 @@
         <div class="card h-100">
             <div class="card-header">По инженерам</div>
             <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-hover mb-0 list-table">
                         <thead class="table-light">
                             <tr><th>Сотрудник</th><th>Заказов</th><th>Среднее, дней</th></tr>
                         </thead>
                         <tbody>
                             {% for row in by_employee %}
                             <tr>
-                                <td>{{ row.employee.full_name }}</td>
-                                <td>{{ row.orders }}</td>
-                                <td>{{ row.avg_days }}</td>
+                                <td data-label="Сотрудник">{{ row.employee.full_name }}</td>
+                                <td data-label="Заказов">{{ row.orders }}</td>
+                                <td data-label="Среднее, дней">{{ row.avg_days }}</td>
                             </tr>
                             {% empty %}
                             <tr><td colspan="3" class="text-center text-muted py-4">Нет завершённых заказов с определённым инженером за период</td></tr>
@@ -89,17 +89,17 @@
         <div class="card h-100">
             <div class="card-header">По типу неисправности</div>
             <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-hover mb-0 list-table">
                         <thead class="table-light">
                             <tr><th>Неисправность</th><th>Заказов</th><th>Среднее, дней</th></tr>
                         </thead>
                         <tbody>
                             {% for row in by_fault_type %}
                             <tr>
-                                <td>{{ row.fault_type }}</td>
-                                <td>{{ row.orders }}</td>
-                                <td>{{ row.avg_days }}</td>
+                                <td data-label="Неисправность">{{ row.fault_type }}</td>
+                                <td data-label="Заказов">{{ row.orders }}</td>
+                                <td data-label="Среднее, дней">{{ row.avg_days }}</td>
                             </tr>
                             {% empty %}
                             <tr><td colspan="3" class="text-center text-muted py-4">За период нет заказов с типовой неисправностью, выбранной из справочника</td></tr>
@@ -118,16 +118,16 @@
                 <span class="small text-muted ms-2">открытых заказов сейчас, по последнему, кто их трогал</span>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-hover mb-0 list-table">
                         <thead class="table-light">
                             <tr><th>Сотрудник</th><th>Открытых заказов</th></tr>
                         </thead>
                         <tbody>
                             {% for row in load_rows %}
                             <tr>
-                                <td>{{ row.employee.full_name }}</td>
-                                <td>{{ row.count }}</td>
+                                <td data-label="Сотрудник">{{ row.employee.full_name }}</td>
+                                <td data-label="Открытых заказов">{{ row.count }}</td>
                             </tr>
                             {% empty %}
                             <tr><td colspan="2" class="text-center text-muted py-4">Открытых заказов нет</td></tr>

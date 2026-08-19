@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оборудование — LiftTeam v2.55.1{% endblock %}
+{% block title %}Оборудование — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -43,8 +43,8 @@
         </div>
         {% endif %}
 
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Модель</th>
@@ -57,20 +57,20 @@
                 <tbody>
                     {% for eq in equipment %}
                     <tr class="clickable-row" data-href="{% url 'equipment_edit' eq.pk %}">
-                        <td>
+                        <td data-label="Модель">
                             {{ eq.model.name }}
                             {% if eq.version %}<span class="badge bg-secondary fw-normal">{{ eq.version.name }}</span>{% endif %}
                         </td>
-                        <td class="fw-bold">{{ eq.serial_number }}</td>
-                        <td>{{ eq.current_client.name|default:"—" }}</td>
-                        <td>
+                        <td class="fw-bold" data-label="Серийный номер">{{ eq.serial_number }}</td>
+                        <td data-label="Текущий заказчик">{{ eq.current_client.name|default:"—" }}</td>
+                        <td data-label="Гарантия">
                             {% if eq.warranty %}
                             <span class="badge bg-success" title="По заказу {{ eq.warranty.repair_order.order_number }}">до {{ eq.warranty.warranty_until|date:"d.m.Y" }}</span>
                             {% else %}
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td class="text-end">
+                        <td class="text-end col-actions">
                             <a href="{% url 'equipment_history' eq.pk %}" class="btn btn-sm btn-outline-primary" title="История ремонтов" onclick="event.stopPropagation();"><i class="bi bi-clock-history"></i></a>
                             <a href="{% url 'equipment_delete' eq.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
                         </td>

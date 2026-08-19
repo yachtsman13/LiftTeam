@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.55.1{% endblock %}
+{% block title %}Поступления — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -28,8 +28,8 @@
 
 <div class="card">
     <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover align-middle">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover align-middle list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Дата</th>
@@ -44,16 +44,16 @@
                 <tbody>
                     {% for row in rows %}
                     <tr>
-                        <td class="text-nowrap">{{ row.operation.operation_date|date:"d.m.Y"|default:"—" }}</td>
-                        <td class="text-end fw-bold text-nowrap">{{ row.operation.amount_text }} ₽</td>
-                        <td>
+                        <td class="text-nowrap" data-label="Дата">{{ row.operation.operation_date|date:"d.m.Y"|default:"—" }}</td>
+                        <td class="text-end fw-bold text-nowrap" data-label="Сумма">{{ row.operation.amount_text }} ₽</td>
+                        <td data-label="Плательщик">
                             {{ row.operation.counterparty|default:"—" }}
                             {% if row.operation.counterparty_inn %}
                             <div class="small text-muted">ИНН {{ row.operation.counterparty_inn }}</div>
                             {% endif %}
                         </td>
-                        <td class="small">{{ row.operation.purpose|default:"—" }}</td>
-                        <td>
+                        <td class="small" data-label="Назначение платежа">{{ row.operation.purpose|default:"—" }}</td>
+                        <td data-label="Разнести на заказЗаказ">
                             {% if row.operation.status == 'applied' %}
                                 {% if row.operation.payment %}
                                 <a href="{% url 'repair_order_detail' row.operation.payment.repair_order.pk %}">

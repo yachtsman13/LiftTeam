@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Удаление деталей — LiftTeam v2.55.1{% endblock %}
+{% block title %}Удаление деталей — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -44,8 +44,8 @@
                 </div>
                 {% endif %}
 
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll mb-3">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr>
                                 <th>Артикул</th>
@@ -59,12 +59,12 @@
                         <tbody>
                             {% for part in parts %}
                             <tr>
-                                <td class="fw-bold">{{ part.part_number }}</td>
-                                <td>{{ part.name }}</td>
-                                <td{% if part.current_stock %} class="text-danger fw-bold"{% endif %}>{{ part.current_stock }}</td>
-                                <td>{{ part.current_cell.address|default:"—" }}</td>
-                                <td>{{ part.movement_count }}</td>
-                                <td{% if part.order_count %} class="text-danger fw-bold"{% endif %}>{{ part.order_count }}</td>
+                                <td class="fw-bold" data-label="Артикул">{{ part.part_number }}</td>
+                                <td data-label="Название">{{ part.name }}</td>
+                                <td{% if part.current_stock %} class="text-danger fw-bold"{% endif %} data-label="Остаток">{{ part.current_stock }}</td>
+                                <td data-label="Ячейка">{{ part.current_cell.address|default:"—" }}</td>
+                                <td data-label="Движений">{{ part.movement_count }}</td>
+                                <td{% if part.order_count %} class="text-danger fw-bold"{% endif %} data-label="В заказах">{{ part.order_count }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>

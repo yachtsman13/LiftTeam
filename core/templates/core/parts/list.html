@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.55.1{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.56.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -140,8 +140,8 @@
             </button>
         </div>
 
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table list-table-select">
                 <thead class="table-light">
                     <tr>
                         <th style="width:1%">
@@ -160,18 +160,19 @@
                 <tbody>
                     {% for part in parts %}
                     <tr class="clickable-row {% if part.stock_state == 'below' %}table-danger{% elif part.stock_state == 'at_minimum' %}table-warning{% endif %}" data-href="{% url 'part_detail' part.pk %}">
-                        <td onclick="event.stopPropagation();">
-                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ part.pk }}">
+                        <td class="col-check" onclick="event.stopPropagation();">
+                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ part.pk }}"
+                                   aria-label="Отметить деталь {{ part.part_number }}">
                         </td>
-                        <td class="fw-bold">{{ part.part_number }}</td>
-                        <td>{{ part.name }}</td>
-                        <td>
+                        <td class="fw-bold" data-label="Артикул">{{ part.part_number }}</td>
+                        <td data-label="Название">{{ part.name }}</td>
+                        <td data-label="Тип и корпус">
                             {{ part.component_type|default:"—" }}
                             {% if part.package %}<span class="badge bg-light text-dark border">{{ part.package }}</span>{% endif %}
                         </td>
-                        <td><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span></td>
-                        <td>{{ part.min_stock }}</td>
-                        <td class="col-cell">{{ part.current_cell.address|default:"—" }}</td>
+                        <td data-label="Остаток"><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span></td>
+                        <td data-label="Мин.">{{ part.min_stock }}</td>
+                        <td class="col-cell" data-label="Ячейка">{{ part.current_cell.address|default:"—" }}</td>
                         <td class="text-end col-actions">
                             <a href="{% url 'part_label' part.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка детали — на пакет" target="_blank" onclick="event.stopPropagation();"><i class="bi bi-tag"></i></a>
                             <a href="{% if part.current_cell %}{% url 'storage_cell_label' part.current_cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.current_cell %} disabled{% endif %}" title="{% if part.current_cell %}Этикетка ячейки — на кассетницу{% else %}Ячейка не назначена{% endif %}" {% if part.current_cell %}target="_blank"{% endif %} onclick="{% if not part.current_cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-grid-3x3"></i></a>

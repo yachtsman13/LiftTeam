@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.55.1{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -109,8 +109,8 @@
             </a>
         </div>
 
-        <div class="table-responsive">
-            <table class="table table-hover">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table list-table-select">
                 <thead class="table-light">
                     <tr>
                         <th style="width:1%">
@@ -129,16 +129,17 @@
                 <tbody>
                     {% for order in orders %}
                     <tr class="clickable-row" data-href="{% url 'repair_order_detail' order.pk %}">
-                        <td onclick="event.stopPropagation();">
-                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ order.pk }}">
+                        <td class="col-check" onclick="event.stopPropagation();">
+                            <input type="checkbox" class="form-check-input row-check" name="ids" value="{{ order.pk }}"
+                                   aria-label="Отметить заказ {{ order.order_number }}">
                         </td>
-                        <td class="fw-bold">{{ order.order_number }}</td>
-                        <td>{{ order.client.name }}</td>
-                        <td><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
-                        <td><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></td>
-                        <td>{{ order.total_repair_cost }} ₽</td>
-                        <td>{{ order.date_received|date:"d.m.Y" }}</td>
-                        <td class="text-end">
+                        <td class="fw-bold" data-label="№ заказа">{{ order.order_number }}</td>
+                        <td data-label="Заказчик">{{ order.client.name }}</td>
+                        <td data-label="Статус"><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                        <td data-label="Оплата"><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></td>
+                        <td data-label="Стоимость">{{ order.total_repair_cost }} ₽</td>
+                        <td data-label="Дата">{{ order.date_received|date:"d.m.Y" }}</td>
+                        <td class="text-end col-actions">
                             <a href="{% url 'repair_order_edit' order.pk %}" class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'repair_order_delete' order.pk %}" class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
                         </td>

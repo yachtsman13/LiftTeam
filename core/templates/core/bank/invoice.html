@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.55.1{% endblock %}
+{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -83,8 +83,8 @@
                 </div>
                 {% endif %}
 
-                <div class="table-responsive">
-                    <table class="table table-sm">
+                <div class="table-responsive table-scroll">
+                    <table class="table table-sm list-table">
                         <thead class="table-light">
                             <tr>
                                 <th>Наименование</th>
@@ -96,10 +96,10 @@
                         <tbody>
                             {% for item in items %}
                             <tr>
-                                <td class="small">{{ item.name }}</td>
-                                <td class="text-end">{{ item.amount }} {{ item.unit }}</td>
-                                <td class="text-end text-nowrap">{{ item.price|floatformat:2 }}</td>
-                                <td class="small">{{ item.vat }}</td>
+                                <td class="small" data-label="Наименование">{{ item.name }}</td>
+                                <td class="text-end" data-label="Кол-во">{{ item.amount }} {{ item.unit }}</td>
+                                <td class="text-end text-nowrap" data-label="Цена, ₽">{{ item.price|floatformat:2 }}</td>
+                                <td class="small" data-label="НДС">{{ item.vat }}</td>
                             </tr>
                             {% empty %}
                             <tr>

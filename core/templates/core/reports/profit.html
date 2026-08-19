@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Прибыль по заказам — LiftTeam v2.55.1{% endblock %}
+{% block title %}Прибыль по заказам — LiftTeam v2.56.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -73,8 +73,8 @@
 <div class="card">
     <div class="card-header">По заказчикам</div>
     <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover mb-0 list-table">
                 <thead class="table-light">
                     <tr>
                         <th>Заказчик</th>
@@ -87,11 +87,11 @@
                 <tbody>
                     {% for row in rows %}
                     <tr>
-                        <td>{{ row.client }}</td>
-                        <td>{{ row.revenue|floatformat:2 }}</td>
-                        <td>{{ row.known_cost|floatformat:2 }}</td>
-                        <td>{% if row.unknown_cost_count %}<span class="text-warning">{{ row.unknown_cost_count }}</span>{% else %}—{% endif %}</td>
-                        <td>{{ row.profit|floatformat:2 }}</td>
+                        <td data-label="Заказчик">{{ row.client }}</td>
+                        <td data-label="Выручка, ₽">{{ row.revenue|floatformat:2 }}</td>
+                        <td data-label="Себестоимость, ₽">{{ row.known_cost|floatformat:2 }}</td>
+                        <td data-label="Без известной цены">{% if row.unknown_cost_count %}<span class="text-warning">{{ row.unknown_cost_count }}</span>{% else %}—{% endif %}</td>
+                        <td data-label="Прибыль, ₽">{{ row.profit|floatformat:2 }}</td>
                     </tr>
                     {% empty %}
                     <tr><td colspan="5" class="text-center text-muted py-4">За период нет ни платежей, ни списаний деталей по заказам</td></tr>
