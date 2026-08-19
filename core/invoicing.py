@@ -167,6 +167,12 @@ class TBankProvider(InvoiceProvider):
     def invoice_pdf_url(self, response):
         return self._api.invoice_pdf_url(response)
 
+    def external_id(self, response):
+        # Нужен, чтобы уведомление банка об оплате нашло заказ: в нём
+        # приезжает только идентификатор счёта. Имя поля в ответе
+        # не подтверждено — подробности в core/tbank.py
+        return self._api.invoice_external_id(response)
+
     def payment_status(self, external_id):
         raise InvoiceError(
             'Т-Банк не отдаёт статус счёта отдельным методом: оплата видна '

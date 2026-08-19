@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.51.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.52.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -53,6 +53,19 @@
                     <div class="col-md-6"><strong>Оплачено:</strong> {{ order.paid_amount }} ₽</div>
                     <div class="col-md-6"><strong>Остаток:</strong>
                         <span class="fw-bold {% if order.debt %}text-danger{% else %}text-success{% endif %}">{{ order.debt }} ₽</span>
+                    </div>
+                    {% endif %}
+                    {% comment %}
+                        Отметка банка об оплате счёта. Это не оплата: суммы
+                        в уведомлении банка нет, поэтому поступление вносит
+                        бухгалтер по выписке. Без этой оговорки строка
+                        читалась бы как «деньги пришли и учтены».
+                    {% endcomment %}
+                    {% if order.invoice_paid_at %}
+                    <div class="col-md-12">
+                        <strong>Банк сообщил об оплате счёта:</strong>
+                        {{ order.invoice_paid_at|date:"d.m.Y H:i" }}
+                        <div class="text-muted small">Поступление вносит бухгалтер по выписке — эта отметка сумму не меняет.</div>
                     </div>
                     {% endif %}
                     <div class="col-md-6"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>

@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.51.0.
+Модели данных для LiftTeam v2.52.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -779,6 +779,14 @@ class RepairOrder(models.Model):
     # возвращает documentId — по нему из банка забирается PDF и статус
     invoice_external_id = models.CharField(
         'Идентификатор счёта в банке', max_length=100, blank=True
+    )
+    # Когда банк сам сообщил, что счёт оплачен (уведомление, см.
+    # core/webhooks.py). Это НЕ оплата: суммы в уведомлении Т-Банка нет,
+    # поэтому ни Payment, ни payment_status отметка не трогает — деньги
+    # по-прежнему разносит бухгалтер по выписке. Отметка нужна затем,
+    # чтобы было видно, о чём банк сообщил и когда
+    invoice_paid_at = models.DateTimeField(
+        'Банк сообщил об оплате счёта', null=True, blank=True
     )
 
     # --- Коммерческое предложение ---
@@ -1745,6 +1753,7 @@ class Notification(models.Model):
         ('debt_reminder', 'Напоминание об оплате'),
         ('debt_digest', 'Сводка по задолженностям'),
         ('order_overdue', 'Заказ завис в статусе'),
+        ('invoice_paid', 'Банк сообщил об оплате счёта'),
     ]
     STATUS_CHOICES = [
         ('pending', 'В очереди'),
@@ -2148,17 +2157,27 @@ class WebhookDelivery(models.Model):
     одинаковым телом означали бы, что банк не сообщает ни времени,
     ни номера, — тогда различить их всё равно нечем.
 
-    Чего здесь нет. Оплаты: ни суммы, ни ссылки на заказ. Разбор тела
-    уведомления не написан намеренно — см. `core/webhooks.py`. Пока
-    неизвестна схема подписи банка, ни одна доставка не принимается,
-    и записей в этой таблице на рабочей установке не будет вовсе.
+    Чего здесь нет. Суммы: её нет и в самом уведомлении Т-Банка —
+    событие «счёт оплачен» состоит из идентификатора счёта и слова PAID.
+    Поэтому доставка не создаёт `Payment` и не трогает `payment_status`:
+    она ставит на заказе `invoice_paid_at` и зовёт бухгалтера внести
+    поступление по выписке. Ссылки на заказ в записи тоже нет — заказ
+    находится по идентификатору счёта, а связь с ним видна из `result`.
+
+    От Точки записей не будет вовсе: проверять подлинность её уведомлений
+    нечем, и её проверяющий отказывает на каждом запросе.
     """
     STATUS_RECEIVED = 'received'
     STATUS_PROCESSED = 'processed'
+    STATUS_UNMATCHED = 'unmatched'
     STATUS_FAILED = 'failed'
     STATUS_CHOICES = [
         (STATUS_RECEIVED, 'Принято'),
         (STATUS_PROCESSED, 'Разобрано'),
+        # Уведомление настоящее и понятное, но счёт из него не нашёлся.
+        # Это не ошибка доставки: банку отвечено «принято», повторять
+        # ему нечего, а разбираться надо у нас
+        (STATUS_UNMATCHED, 'Счёт не найден'),
         (STATUS_FAILED, 'Разобрать не удалось'),
     ]
 

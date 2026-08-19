@@ -23,6 +23,7 @@ v3 bank-accounts живут одновременно). Ошибиться в и�
 """
 import json
 import logging
+import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from urllib import error, parse, request
@@ -362,3 +363,42 @@ def invoice_pdf_url(response):
     if not isinstance(response, dict):
         return ''
     return str(_first(response, ('pdfUrl', 'pdf_url', 'url', 'link')) or '')
+
+
+# Ключи, под которыми в ответе может лежать идентификатор счёта.
+# Схема ответа, подтверждённая по стороннему SDK, содержит только pdfUrl,
+# но уведомление банка об оплате («Обновление статуса счета на оплату»)
+# приходит с полем invoiceId и ссылается именно на счёт, выставленный
+# методом invoice/send. Значит, идентификатор банк где-то возвращает —
+# под каким именно именем, из доступной документации не видно.
+INVOICE_ID_KEYS = ('invoiceId', 'invoice_id', 'documentId', 'document_id', 'id')
+
+
+def invoice_external_id(response):
+    """Идентификатор счёта из ответа банка. Пусто — банк его не прислал.
+
+    Имя поля не подтверждено, поэтому читаются несколько правдоподобных
+    и берётся только то значение, которое **выглядит как UUID**:
+    уведомление банка присылает идентификатор именно в этом виде
+    (`"format": "uuid"` в схеме события).
+
+    Догадка здесь допустима ровно потому, что она отказывает молча
+    и безопасно: не то поле — значение не разберётся как UUID, останется
+    пустая строка, и уведомление об оплате просто не найдёт заказ, как
+    и раньше. Это ровно та разница с проверкой подлинности, где догадка
+    запрещена: там ошибка открыла бы дверь, здесь — оставит её закрытой.
+
+    Чужое значение подставиться не может: сравнение с уведомлением идёт
+    по полному совпадению, а UUID банк выдаёт разный на каждый счёт.
+    """
+    if not isinstance(response, dict):
+        return ''
+    value = str(_first(response, INVOICE_ID_KEYS) or '').strip()
+    if not value:
+        return ''
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        # Не UUID — значит, прочитано не то поле. Пусть лучше будет пусто
+        return ''
+    return value
