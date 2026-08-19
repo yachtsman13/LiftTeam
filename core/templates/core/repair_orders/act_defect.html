@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
@@ -31,9 +31,16 @@
         <div><strong>Серийный номер:</strong> {{ order_equipment.equipment.serial_number }}</div>
     </div>
 
+    {% comment %}
+        Сначала полные описания выбранных типовых неисправностей, потом
+        то, что дописал мастер. Короткое название неисправности в документ
+        не попадает никогда — текст для документа собирает
+        `RepairOrderEquipment.diagnosis_document_text`, и другого места,
+        где он собирался бы, быть не должно.
+    {% endcomment %}
     <div class="act-note">
         <strong>Результаты диагностики:</strong><br>
-        {{ order_equipment.diagnosis|default:"—"|linebreaksbr }}
+        {{ order_equipment.diagnosis_document_text|default:"—"|linebreaksbr }}
     </div>
 
     {% if order_equipment.error_code_lines %}

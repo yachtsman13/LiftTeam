@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.53.0
+v2.54.0
 """
 from django.urls import path
 from . import views
@@ -34,6 +34,18 @@ urlpatterns = [
     path('equipment/models/create/', views.equipment_model_create, name='equipment_model_create'),
     path('equipment/models/<int:pk>/edit/', views.equipment_model_edit, name='equipment_model_edit'),
     path('equipment/models/<int:pk>/delete/', views.equipment_model_delete, name='equipment_model_delete'),
+
+    # Справочник типов оборудования: «Привод дверей», «Преобразователь частоты»
+    path('equipment/types/', views.equipment_type_list, name='equipment_type_list'),
+    path('equipment/types/create/', views.equipment_type_create, name='equipment_type_create'),
+    path('equipment/types/<int:pk>/edit/', views.equipment_type_edit, name='equipment_type_edit'),
+    path('equipment/types/<int:pk>/delete/', views.equipment_type_delete, name='equipment_type_delete'),
+
+    # Версии моделей: EkoDrive 2.0-1.1 и EkoDrive 2.0-0.7
+    path('equipment/versions/', views.equipment_version_list, name='equipment_version_list'),
+    path('equipment/versions/create/', views.equipment_version_create, name='equipment_version_create'),
+    path('equipment/versions/<int:pk>/edit/', views.equipment_version_edit, name='equipment_version_edit'),
+    path('equipment/versions/<int:pk>/delete/', views.equipment_version_delete, name='equipment_version_delete'),
 
     # Типовые неисправности и их рецепты деталей
     path('faults/', views.fault_type_list, name='fault_type_list'),

@@ -4,7 +4,7 @@ cd /d "%%~dp0"
 
 echo.
 echo   ================================================
-echo    LiftTeam v2.53.0 — Push to GitHub
+echo    LiftTeam v2.54.0 — Push to GitHub
 echo   ================================================
 echo.
 
@@ -49,7 +49,7 @@ git status --short
 :: 6. Коммит
 echo   [4/5] Создание коммита...
 git add -A
-git commit -m "LiftTeam v2.53.0 update" 2>nul
+git commit -m "LiftTeam v2.54.0 update" 2>nul
 
 :: 7. Push
 echo   [5/5] Push на GitHub...
@@ -63,7 +63,7 @@ if errorlevel 1 (
 
 echo.
 echo   ================================================
-echo    [OK] LiftTeam v2.53.0 успешно отправлен на GitHub
+echo    [OK] LiftTeam v2.54.0 успешно отправлен на GitHub
 echo   ================================================
 echo.
 echo   URL: %%REPO_URL%%

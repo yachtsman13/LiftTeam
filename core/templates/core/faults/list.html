@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Типовые неисправности — LiftTeam v2.53.0{% endblock %}
+{% block title %}Типовые неисправности — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -19,6 +19,7 @@
                     <tr>
                         <th>Модель оборудования</th>
                         <th>Неисправность</th>
+                        <th>Сложность</th>
                         <th>Рецепт деталей</th>
                         <th class="text-end">Действия</th>
                     </tr>
@@ -29,22 +30,28 @@
                         <td>{{ fault.equipment_model.name }}</td>
                         <td>
                             {{ fault.name }}
-                            {% if fault.description %}<div class="small text-muted">{{ fault.description }}</div>{% endif %}
+                            {% if fault.description %}
+                            <div class="small text-muted">{{ fault.description }}</div>
+                            {% else %}
+                            <div class="small text-danger">Без описания — в документы эта неисправность не попадёт</div>
+                            {% endif %}
                         </td>
+                        <td>{{ fault.get_complexity_display }}</td>
                         <td>
                             {% for line in fault.parts.all %}
-                            <span class="badge bg-secondary fw-normal">{{ line.part.name }} ×{{ line.quantity }}</span>
+                            <span class="badge bg-secondary fw-normal">{{ line.part.name }} ×{{ line.quantity }}{% if line.version %} — только {{ line.version.name }}{% endif %}</span>
                             {% empty %}
                             <span class="text-muted">рецепт пуст</span>
                             {% endfor %}
                         </td>
                         <td class="text-end">
+                            <a href="{% url 'fault_type_create' %}?copy_from={{ fault.pk }}" class="btn btn-sm btn-outline-secondary" title="Создать копию: откроется форма, заполненная этой неисправностью вместе с рецептом"><i class="bi bi-files"></i></a>
                             <a href="{% url 'fault_type_edit' fault.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'fault_type_delete' fault.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="4" class="text-center text-muted py-4">Типовые неисправности не заведены</td></tr>
+                    <tr><td colspan="5" class="text-center text-muted py-4">Типовые неисправности не заведены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

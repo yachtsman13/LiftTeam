@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.53.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.54.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -175,6 +175,7 @@
                         <td class="text-end col-actions">
                             <a href="{% url 'part_label' part.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка детали — на пакет" target="_blank" onclick="event.stopPropagation();"><i class="bi bi-tag"></i></a>
                             <a href="{% if part.current_cell %}{% url 'storage_cell_label' part.current_cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.current_cell %} disabled{% endif %}" title="{% if part.current_cell %}Этикетка ячейки — на кассетницу{% else %}Ячейка не назначена{% endif %}" {% if part.current_cell %}target="_blank"{% endif %} onclick="{% if not part.current_cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-grid-3x3"></i></a>
+                            <a href="{% url 'part_create' %}?copy_from={{ part.pk }}" class="btn btn-sm btn-outline-secondary" title="Создать копию: откроется форма новой детали, заполненная этой карточкой" onclick="event.stopPropagation();"><i class="bi bi-files"></i></a>
                             <a href="{% url 'part_edit' part.pk %}" class="btn btn-sm btn-outline-primary" title="Редактировать" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>
                         </td>

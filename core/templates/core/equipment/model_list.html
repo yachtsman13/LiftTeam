@@ -1,11 +1,15 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Модели оборудования — LiftTeam v2.53.0{% endblock %}
+{% block title %}Модели оборудования — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-list me-2"></i>Модели оборудования</h2>
-    <a href="{% url 'equipment_model_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новая модель</a>
+    <div>
+        <a href="{% url 'equipment_type_list' %}" class="btn btn-outline-primary me-2"><i class="bi bi-tags me-2"></i>Типы</a>
+        <a href="{% url 'equipment_version_list' %}" class="btn btn-outline-primary me-2"><i class="bi bi-diagram-2 me-2"></i>Версии</a>
+        <a href="{% url 'equipment_model_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новая модель</a>
+    </div>
 </div>
 
 <div class="card">
@@ -13,20 +17,28 @@
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead class="table-light">
-                    <tr><th>Название</th><th>Тип оборудования</th><th class="text-end">Действия</th></tr>
+                    <tr><th>Название</th><th>Тип оборудования</th><th>Родовое название для акта</th><th>Версии</th><th class="text-end">Действия</th></tr>
                 </thead>
                 <tbody>
                     {% for model in models %}
                     <tr>
                         <td>{{ model.name }}</td>
+                        <td>{% if model.equipment_type %}{{ model.equipment_type.name }}{% else %}<span class="text-muted">не указан</span>{% endif %}</td>
                         <td>{% if model.kind %}{{ model.kind }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td>
+                            {% for version in model.versions.all %}
+                            <span class="badge bg-secondary fw-normal">{{ version.name }}</span>
+                            {% empty %}
+                            <span class="text-muted">—</span>
+                            {% endfor %}
+                        </td>
                         <td class="text-end">
                             <a href="{% url 'equipment_model_edit' model.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'equipment_model_delete' model.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="3" class="text-center text-muted py-4">Модели не найдены</td></tr>
+                    <tr><td colspan="5" class="text-center text-muted py-4">Модели не найдены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

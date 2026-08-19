@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
@@ -67,7 +67,12 @@
             {% for row in rows %}
             <tr>
                 <td class="num">{{ forloop.counter }}</td>
-                <td>{{ row.name }}</td>
+                {% comment %}
+                    Наименование складывается из полных описаний выбранных
+                    типовых неисправностей и текста мастера — по строке
+                    на каждое, поэтому переводы строк здесь сохраняются.
+                {% endcomment %}
+                <td>{{ row.name|linebreaksbr }}</td>
                 <td class="num">1</td>
                 <td>{{ row.serial_number|default:"—" }}</td>
                 <td>{{ row.complexity|default:"—" }}</td>

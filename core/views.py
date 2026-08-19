@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.53.0.
+Views для LiftTeam v2.54.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -29,7 +29,8 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import (
-    Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
+    Client, EquipmentModel, EquipmentType, EquipmentVersion, Equipment,
+    FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
@@ -37,12 +38,14 @@ from .models import (
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
-    LoginForm, ClientForm, EquipmentModelForm, EquipmentForm,
+    LoginForm, ClientForm, EquipmentModelForm, EquipmentTypeForm,
+    EquipmentVersionForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
     CabinetForm, MyNotificationsForm, FaultTypeForm, FaultTypePartFormSet,
+    make_fault_type_part_formset,
 )
 from .utils import (
     generate_qr_image,
@@ -296,7 +299,7 @@ def _filter_equipment(request):
     search = request.GET.get('q', '').strip()
     warranty_filter = request.GET.get('warranty', '')
 
-    equipment = Equipment.objects.select_related('model', 'current_client')
+    equipment = Equipment.objects.select_related('model', 'version', 'current_client')
 
     if search:
         # Ищем и по нормализованному номеру: запрос «буад 1234» должен найти
@@ -510,7 +513,10 @@ def equipment_delete(request, pk):
 
 @login_required
 def equipment_model_list(request):
-    models = EquipmentModel.objects.all().order_by('name')
+    models = (
+        EquipmentModel.objects.select_related('equipment_type')
+        .prefetch_related('versions').order_by('name')
+    )
     return render(request, 'core/equipment/model_list.html', {'models': models})
 
 
@@ -564,6 +570,120 @@ def equipment_model_delete(request, pk):
     return render(request, 'core/equipment/delete.html', {'equipment': model, 'is_model': True})
 
 
+# ==================== ТИПЫ ОБОРУДОВАНИЯ ====================
+# Права — как у EquipmentModel, соседнего справочника: список, создание
+# и правка открыты любому авторизованному, удаление — складу и мастеру
+# (роль admin проходит везде через role_required).
+
+@login_required
+def equipment_type_list(request):
+    types = EquipmentType.objects.annotate(model_count=Count('models')).order_by('name')
+    return render(request, 'core/equipment/type_list.html', {'types': types})
+
+
+@login_required
+def equipment_type_create(request):
+    if request.method == 'POST':
+        form = EquipmentTypeForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Тип оборудования добавлен')
+            return redirect('equipment_type_list')
+    else:
+        form = EquipmentTypeForm()
+    return render(request, 'core/equipment/type_form.html', {
+        'form': form, 'title': 'Новый тип оборудования',
+    })
+
+
+@login_required
+def equipment_type_edit(request, pk):
+    equipment_type = get_object_or_404(EquipmentType, pk=pk)
+    if request.method == 'POST':
+        form = EquipmentTypeForm(request.POST, instance=equipment_type)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Тип оборудования обновлён')
+            return redirect('equipment_type_list')
+    else:
+        form = EquipmentTypeForm(instance=equipment_type)
+    return render(request, 'core/equipment/type_form.html', {
+        'form': form, 'title': 'Редактирование типа оборудования',
+        'equipment_type': equipment_type,
+    })
+
+
+@role_required('repair_manager', 'warehouse')
+def equipment_type_delete(request, pk):
+    equipment_type = get_object_or_404(EquipmentType, pk=pk)
+    if request.method == 'POST':
+        equipment_type.delete()
+        messages.success(request, 'Тип оборудования удалён')
+        return redirect('equipment_type_list')
+    return render(request, 'core/equipment/type_delete.html', {
+        'equipment_type': equipment_type,
+        'model_count': equipment_type.models.count(),
+    })
+
+
+# ==================== ВЕРСИИ МОДЕЛЕЙ ====================
+
+@login_required
+def equipment_version_list(request):
+    versions = (
+        EquipmentVersion.objects.select_related('equipment_model')
+        .annotate(equipment_count=Count('equipments'))
+        .order_by('equipment_model__name', 'name')
+    )
+    return render(request, 'core/equipment/version_list.html', {'versions': versions})
+
+
+@login_required
+def equipment_version_create(request):
+    if request.method == 'POST':
+        form = EquipmentVersionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Версия добавлена')
+            return redirect('equipment_version_list')
+    else:
+        # Со страницы модели версию заводят для неё же — подставляем её сразу
+        form = EquipmentVersionForm(initial={'equipment_model': request.GET.get('model') or None})
+    return render(request, 'core/equipment/version_form.html', {
+        'form': form, 'title': 'Новая версия модели',
+    })
+
+
+@login_required
+def equipment_version_edit(request, pk):
+    version = get_object_or_404(EquipmentVersion, pk=pk)
+    if request.method == 'POST':
+        form = EquipmentVersionForm(request.POST, instance=version)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Версия обновлена')
+            return redirect('equipment_version_list')
+    else:
+        form = EquipmentVersionForm(instance=version)
+    return render(request, 'core/equipment/version_form.html', {
+        'form': form, 'title': 'Редактирование версии', 'version': version,
+    })
+
+
+@role_required('repair_manager', 'warehouse')
+def equipment_version_delete(request, pk):
+    version = get_object_or_404(EquipmentVersion, pk=pk)
+    if request.method == 'POST':
+        version.delete()
+        messages.success(request, 'Версия удалена')
+        return redirect('equipment_version_list')
+    return render(request, 'core/equipment/version_delete.html', {
+        'version': version,
+        'equipment_count': version.equipments.count(),
+        'recipe_count': version.fault_type_parts.count(),
+    })
+
+
 # ==================== ТИПОВЫЕ НЕИСПРАВНОСТИ ====================
 # Права — как у EquipmentModel, ближайшего по смыслу справочника:
 # создание и редактирование открыты любому авторизованному, удаление —
@@ -573,30 +693,87 @@ def equipment_model_delete(request, pk):
 def fault_type_list(request):
     fault_types = (
         FaultType.objects.select_related('equipment_model')
-        .prefetch_related('parts__part')
+        .prefetch_related('parts__part', 'parts__version')
         .order_by('equipment_model__name', 'name')
     )
     return render(request, 'core/faults/list.html', {'fault_types': fault_types})
 
 
+def _fault_type_copy_initial(source):
+    """Чем заполнить форму новой неисправности, копируемой с образца.
+
+    Копия — это только заполненная форма: пока человек не нажал
+    «Сохранить», в базе не появляется ничего. Название помечается словом
+    «копия», чтобы два одинаковых имени в списке не выглядели ошибкой.
+    """
+    form_initial = {
+        'equipment_model': source.equipment_model_id,
+        'name': f'{source.name} (копия)'[:255],
+        'description': source.description,
+        'complexity': source.complexity,
+    }
+    lines_initial = [
+        {'part': line.part_id, 'quantity': line.quantity, 'version': line.version_id}
+        for line in source.parts.select_related('part', 'version').order_by('id')
+    ]
+    return form_initial, lines_initial
+
+
 @login_required
 def fault_type_create(request):
+    """Новая типовая неисправность, в том числе копия существующей.
+
+    `?copy_from=<номер>` подставляет в форму образец вместе со всем его
+    рецептом — включая уточнения по версиям. Записи при этом не создаётся:
+    копия существует ровно до тех пор, пока её не сохранили.
+    """
+    source = None
+    copy_from = request.GET.get('copy_from') or request.POST.get('copy_from') or ''
+    if str(copy_from).isdigit():
+        source = FaultType.objects.filter(pk=copy_from).first()
+
     if request.method == 'POST':
         form = FaultTypeForm(request.POST)
         formset = FaultTypePartFormSet(request.POST, prefix='parts')
-        if form.is_valid() and formset.is_valid():
+        # Модель нужна формсету до его проверки: уточнение рецепта сверяется
+        # с моделью неисправности, а у ещё не сохранённой она известна
+        # только из этой же формы
+        form_is_valid = form.is_valid()
+        if form_is_valid:
+            formset.instance = form.instance
+        if form_is_valid and formset.is_valid():
             fault_type = form.save()
             formset.instance = fault_type
             formset.save()
             messages.success(request, 'Типовая неисправность добавлена')
             return redirect('fault_type_list')
         messages.error(request, 'Неисправность не сохранена: проверьте отмеченные поля')
+    elif source is not None:
+        form_initial, lines_initial = _fault_type_copy_initial(source)
+        form = FaultTypeForm(initial=form_initial)
+        formset_class = make_fault_type_part_formset(extra=len(lines_initial) + 1)
+        formset = formset_class(prefix='parts', initial=lines_initial)
     else:
         form = FaultTypeForm()
         formset = FaultTypePartFormSet(prefix='parts')
     return render(request, 'core/faults/form.html', {
-        'form': form, 'formset': formset, 'title': 'Новая типовая неисправность',
+        'form': form, 'formset': formset,
+        'title': 'Копия типовой неисправности' if source is not None else 'Новая типовая неисправность',
+        'copy_source': source,
+        'versions': _fault_versions(),
     })
+
+
+def _fault_versions():
+    """Версии всех моделей — для выбора в строке рецепта.
+
+    Отдаются списком с номером модели: страница прячет чужие версии
+    сама, когда в форме выбрана модель.
+    """
+    return (
+        EquipmentVersion.objects.select_related('equipment_model')
+        .order_by('equipment_model__name', 'name')
+    )
 
 
 @login_required
@@ -617,6 +794,7 @@ def fault_type_edit(request, pk):
     return render(request, 'core/faults/form.html', {
         'form': form, 'formset': formset, 'title': 'Редактирование типовой неисправности',
         'fault_type': fault_type,
+        'versions': _fault_versions(),
     })
 
 
@@ -930,7 +1108,7 @@ def _use_repair_order_part(order, part, quantity, employee, history_note):
     return shortage
 
 
-def apply_fault_templates(order, fault_types, employee):
+def apply_fault_templates(order, fault_types, employee, version=None):
     """Строит объединённый рецепт деталей по выбранным неисправностям и
     списывает его одной атомарной транзакцией на все позиции сразу.
 
@@ -940,6 +1118,10 @@ def apply_fault_templates(order, fault_types, employee):
     или добавленными прошлым применением шаблона) слияния нет: шаблон
     дополняет список, а не пересчитывает его целиком.
 
+    `version` — версия исполнения той единицы, к которой применяют рецепт.
+    Известна — берутся уточнения рецепта для неё (см.
+    `FaultType.recipe_lines`), неизвестна — только общие строки.
+
     Возвращает (added, shortages): added — список (SparePart, количество)
     добавленных позиций в порядке первого появления детали среди рецептов;
     shortages — те из них, на которые не хватило остатка на складе.
@@ -948,7 +1130,7 @@ def apply_fault_templates(order, fault_types, employee):
     merged_part = {}
     order_of_appearance = []
     for fault in fault_types:
-        for line in fault.parts.select_related('part'):
+        for line in fault.recipe_lines(version):
             if line.part_id not in merged_qty:
                 merged_qty[line.part_id] = 0
                 merged_part[line.part_id] = line.part
@@ -1012,13 +1194,24 @@ def repair_order_apply_fault_template(request, pk):
     order = get_object_or_404(RepairOrder, pk=pk)
     fault_ids = [v for v in request.POST.getlist('fault_ids') if str(v).isdigit()]
     fault_types = list(FaultType.objects.filter(pk__in=fault_ids).prefetch_related('parts__part'))
+
+    # Версия исполнения берётся у единицы, из строки которой нажали кнопку:
+    # уточнения рецепта расписаны именно по версиям. Единица не передана
+    # или версии у неё нет — действует общая часть рецепта
+    version = None
+    equipment_id = request.POST.get('equipment_id', '')
+    if str(equipment_id).isdigit():
+        equipment = Equipment.objects.filter(pk=equipment_id).select_related('version').first()
+        if equipment is not None:
+            version = equipment.version
+
     if not fault_types:
         return JsonResponse({
             'success': False,
             'error': 'Выберите хотя бы одну неисправность из списка — «Другое» своего рецепта не имеет.'
         })
 
-    added, shortages = apply_fault_templates(order, fault_types, request.user)
+    added, shortages = apply_fault_templates(order, fault_types, request.user, version=version)
     if not added:
         return JsonResponse({
             'success': False,
@@ -1532,6 +1725,20 @@ def _measurement_pairs(form):
 
 @login_required
 def part_create(request):
+    """Новая деталь, в том числе копия существующей.
+
+    `?copy_from=<номер>` подставляет в форму карточку-образец: у соседних
+    номиналов из одной серии совпадает почти всё, кроме одного значения,
+    и набирать их заново — работа впустую. Артикул при этом не
+    подставляется: он у каждой детали свой и уникален, а два одинаковых
+    форма всё равно не примет. Остаток, ячейки и история движений
+    к копии не относятся — копируется карточка, а не деталь на полке.
+    """
+    source = None
+    copy_from = request.GET.get('copy_from', '')
+    if str(copy_from).isdigit():
+        source = SparePart.objects.filter(pk=copy_from).first()
+
     if request.method == 'POST':
         form = SparePartForm(request.POST)
         if form.is_valid():
@@ -1539,11 +1746,18 @@ def part_create(request):
             messages.success(request, f'Деталь {part.part_number} добавлена')
             return redirect('part_detail', pk=part.pk)
         messages.error(request, 'Деталь не сохранена: проверьте отмеченные поля')
+    elif source is not None:
+        initial = {
+            name: getattr(source, name)
+            for name in SparePartForm.Meta.fields if name != 'part_number'
+        }
+        form = SparePartForm(initial=initial)
     else:
         form = SparePartForm()
     return render(request, 'core/parts/form.html', {
         'form': form,
-        'title': 'Новая деталь',
+        'title': 'Копия детали' if source is not None else 'Новая деталь',
+        'copy_source': source,
         'measurement_pairs': _measurement_pairs(form),
         **_part_choices(),
     })

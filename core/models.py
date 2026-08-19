@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.53.0.
+Модели данных для LiftTeam v2.54.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -454,6 +454,35 @@ class Client(models.Model):
         return self.name
 
 
+class EquipmentType(models.Model):
+    """Тип оборудования — справочник: «Привод дверей», «Преобразователь
+    частоты», «Источник бесперебойного питания».
+
+    Тип принадлежит модели, а не отдельной единице: любой EkoDrive 2.0 —
+    преобразователь частоты, в какой бы коробке он ни приехал. Поэтому
+    ссылка на тип стоит у `EquipmentModel`, а не у `Equipment`.
+
+    Отдельная таблица, а не строка в модели: на тип вешается прайс
+    заказчика, а по свободному тексту цену не найти — «привод дверей»
+    и «Привод дверей» стали бы разными позициями.
+
+    С родовым названием `EquipmentModel.kind` не пересекается и его
+    не заменяет: `kind` — приставка к названию модели в акте дефектации,
+    которую оставляют пустой, если родовое слово уже стоит в самом
+    названии. Тип в документы не идёт вовсе.
+    """
+    name = models.CharField('Название типа', max_length=255, unique=True)
+    description = models.TextField('Описание', blank=True)
+
+    class Meta:
+        verbose_name = 'Тип оборудования'
+        verbose_name_plural = 'Типы оборудования'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class EquipmentModel(models.Model):
     """Модель оборудования."""
     name = models.CharField('Название модели', max_length=255, unique=True)
@@ -462,10 +491,21 @@ class EquipmentModel(models.Model):
     # name; но в акте дефектации первая строка — «Тип: <родовое> <модель>»,
     # и без него документ выглядит как записка для своих, а не как акт.
     kind = models.CharField(
-        'Тип оборудования', max_length=100, blank=True,
-        help_text='Родовое название для акта дефектации: «Преобразователь '
-                  'частоты», «Привод дверей». Если оно уже есть в начале '
-                  'названия модели, поле оставьте пустым.'
+        'Родовое название для акта', max_length=100, blank=True,
+        help_text='Приставка к названию модели в акте дефектации: '
+                  '«Преобразователь частоты», «Привод дверей». Если она уже '
+                  'есть в начале названия модели, поле оставьте пустым. '
+                  'Это не тип из справочника: тип в документы не идёт.'
+    )
+    # Пусто у всех моделей, заведённых до появления справочника, и остаётся
+    # пустым, пока владелец не проставит тип руками. Придумывать типы за него
+    # миграцией нельзя: «Преобразователь частоты Emotron» и «ПЧ Emotron» —
+    # это про один тип, а машина увидит две разные строки.
+    equipment_type = models.ForeignKey(
+        EquipmentType, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='models', verbose_name='Тип оборудования',
+        help_text='Необязательно. По типу позже подбирается цена из прайса '
+                  'заказчика.'
     )
 
     class Meta:
@@ -484,9 +524,59 @@ class EquipmentModel(models.Model):
         return self.name
 
 
+class EquipmentVersion(models.Model):
+    """Версия модели оборудования: EkoDrive 2.0-1.1 и EkoDrive 2.0-0.7.
+
+    По сути одно и то же изделие, отличающееся исполнением — алюминиевый
+    корпус вместо пластикового, большие кнопки, другое число конденсаторов
+    в том же месте платы. Отдельной моделью такое заводить нельзя: тогда
+    у каждой версии был бы свой список типовых неисправностей, а он общий.
+
+    Сведения справочные: ни обозначение, ни комментарий ни в один документ
+    не идут — они нужны мастеру у стола, чтобы взять правильную деталь.
+    """
+    equipment_model = models.ForeignKey(
+        EquipmentModel, on_delete=models.CASCADE, related_name='versions',
+        verbose_name='Модель оборудования'
+    )
+    name = models.CharField(
+        'Версия', max_length=100,
+        help_text='Обозначение так, как оно написано на изделии: «1.1», «0.7».'
+    )
+    note = models.TextField(
+        'Комментарий', blank=True,
+        help_text='Чем эта версия отличается: алюминиевый корпус, большие '
+                  'кнопки. Справочно, в документы не идёт.'
+    )
+
+    class Meta:
+        verbose_name = 'Версия модели'
+        verbose_name_plural = 'Версии моделей'
+        ordering = ['equipment_model__name', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['equipment_model', 'name'], name='unique_version_per_model'
+            )
+        ]
+
+    def __str__(self):
+        return f'{self.equipment_model.name}-{self.name}'
+
+
 class Equipment(models.Model):
     """Единица оборудования."""
     model = models.ForeignKey(EquipmentModel, on_delete=models.CASCADE, verbose_name='Модель')
+    # Пусто — обычное дело: у большей части оборудования версий не бывает
+    # вовсе, и выдумывать их, лишь бы поле было заполнено, не надо.
+    # SET_NULL, а не CASCADE: удаление версии из справочника не должно
+    # уносить с собой сами единицы оборудования.
+    version = models.ForeignKey(
+        EquipmentVersion, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='equipments', verbose_name='Версия'
+    )
+    # Считывается с коробки при приёме, если её видно. Пусто — значит
+    # не разобрали или на корпусе её нет
+    manufacture_date = models.DateField('Дата изготовления', null=True, blank=True)
     serial_number = models.CharField('Серийный номер', max_length=100, unique=True)
     # Серийник без регистра, пробелов и разделителей — чтобы найти «буад 1234»,
     # когда в базе лежит «БУАД-1234». Не unique: одинаковая нормализованная
@@ -602,8 +692,30 @@ class FaultType(models.Model):
         EquipmentModel, on_delete=models.CASCADE, related_name='fault_types',
         verbose_name='Модель оборудования'
     )
-    name = models.CharField('Неисправность', max_length=255)
-    description = models.TextField('Описание', blank=True)
+    # Короткое рабочее название — «высохли конденсаторы». Им пользуются
+    # сотрудники в списках и при выборе. В документ оно не попадает
+    # НИКОГДА и ни при каких условиях: заказчик читает не цеховой жаргон,
+    # а описание. Единственный текст для документов — description.
+    name = models.CharField(
+        'Неисправность', max_length=255,
+        help_text='Коротко и по-рабочему, для списков. В документы это '
+                  'название не попадает.'
+    )
+    description = models.TextField(
+        'Описание для документов', blank=True,
+        help_text='Полная формулировка, которая печатается в акте '
+                  'дефектации и в коммерческом предложении. Пусто — '
+                  'неисправность в документы не попадёт вовсе: короткое '
+                  'название вместо описания не подставляется.'
+    )
+    # Свойство самой неисправности, а не единицы: замена высохшего
+    # конденсатора проста на любом приборе, а прошивка процессора сложна
+    # на любом. Сложность единицы из этого выводится (см.
+    # `RepairOrderEquipment.derived_complexity`).
+    complexity = models.CharField(
+        'Сложность ремонта', max_length=20, default='simple',
+        choices=[('simple', 'Простой'), ('complex', 'Сложный')]
+    )
 
     class Meta:
         verbose_name = 'Типовая неисправность'
@@ -612,6 +724,48 @@ class FaultType(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.equipment_model.name})'
+
+    @property
+    def document_text(self):
+        """Текст этой неисправности для документа — только описание.
+
+        Пустое описание даёт пустую строку, и в документ не попадает
+        ничего: подставить сюда `name` было бы ровно тем, что запрещено.
+        """
+        return self.description.strip()
+
+    def recipe_lines(self, version=None):
+        """Строки рецепта для указанной версии модели.
+
+        Строка без версии — общая, она применяется к любому исполнению.
+        Строка с версией — уточнение для него же: с какой-то версии тех же
+        конденсаторов надо не три, а пять. Уточнение вытесняет общую строку
+        по этой детали и только по ней; остальные детали берутся общими.
+
+        Никакого наследования между версиями нет и быть не должно:
+        применимость проставляется руками, и угадывать, какая версия
+        похожа на какую, программа не будет.
+
+        `version` — объект версии или её номер; None означает «версия
+        неизвестна», и тогда действует только общая часть рецепта.
+        """
+        version_id = getattr(version, 'pk', version)
+        base = {}
+        override = {}
+        order_of_appearance = []
+
+        for line in self.parts.select_related('part'):
+            if line.version_id is None:
+                target = base
+            elif version_id is not None and line.version_id == version_id:
+                target = override
+            else:
+                continue
+            if line.part_id not in base and line.part_id not in override:
+                order_of_appearance.append(line.part_id)
+            target[line.part_id] = line
+
+        return [override.get(part_id) or base[part_id] for part_id in order_of_appearance]
 
 
 class FaultTypePart(models.Model):
@@ -628,12 +782,20 @@ class FaultTypePart(models.Model):
     # Строкой вперёд: SparePart объявлена ниже по файлу
     part = models.ForeignKey('SparePart', on_delete=models.CASCADE, verbose_name='Деталь')
     quantity = models.IntegerField('Типовое количество', validators=[MinValueValidator(1)])
+    # Пусто — строка общая для всех исполнений. Указана версия — строка
+    # заменяет общую только для этого исполнения (см. `FaultType.recipe_lines`)
+    version = models.ForeignKey(
+        EquipmentVersion, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='fault_type_parts', verbose_name='Только для версии'
+    )
 
     class Meta:
         verbose_name = 'Деталь в рецепте неисправности'
         verbose_name_plural = 'Детали в рецепте неисправности'
 
     def __str__(self):
+        if self.version_id:
+            return f'{self.part.name} x{self.quantity} ({self.version})'
         return f'{self.part.name} x{self.quantity}'
 
 
@@ -962,7 +1124,9 @@ class RepairOrder(models.Model):
                 'equipment': order_equipment.equipment,
                 'name': order_equipment.quote_line,
                 'serial_number': order_equipment.equipment.serial_number,
-                'complexity': order_equipment.get_repair_complexity_display(),
+                # Проставленная руками сложность, а если её не проставляли —
+                # выведенная из выбранных типовых неисправностей
+                'complexity': order_equipment.effective_complexity_display,
                 'price': order_equipment.quote_price,
             })
         return rows
@@ -1296,7 +1460,88 @@ class RepairOrderEquipment(models.Model):
     @property
     def has_defect_act(self):
         """Есть ли что печатать в акте дефектации."""
-        return bool(self.diagnosis or self.error_codes or self.warranty_case)
+        return bool(self.diagnosis_document_text or self.error_codes or self.warranty_case)
+
+    # --- Неисправности в документах ---
+    # Короткое название неисправности (`FaultType.name`) не попадает
+    # в документы никогда: в них идёт только полное описание
+    # (`FaultType.description`). Ниже — единственное место, где текст
+    # неисправностей для документа собирается; печатные формы зовут его,
+    # а не перебирают неисправности сами.
+
+    @property
+    def fault_document_lines(self):
+        """Полные описания выбранных типовых неисправностей.
+
+        Неисправности без описания пропускаются молча: подставить вместо
+        описания короткое название — ровно то, что запрещено, а печатать
+        пустую строку незачем.
+        """
+        return [text for text in (fault.document_text for fault in self.faults.all()) if text]
+
+    def document_fault_text(self, free_text=''):
+        """Текст неисправности для документа: сначала полные описания
+        выбранных типовых неисправностей, потом свободный текст мастера.
+
+        Если типовых неисправностей не выбрано, возвращается ровно
+        свободный текст — документ печатается так же, как печатался
+        до появления справочных описаний.
+        """
+        parts = list(self.fault_document_lines)
+        free_text = (free_text or '').strip()
+        if free_text:
+            parts.append(free_text)
+        return '\n'.join(parts)
+
+    @property
+    def diagnosis_document_text(self):
+        """Результаты диагностики для акта дефектации.
+
+        Описания выбранных неисправностей, затем то, что мастер дописал
+        руками в поле диагностики.
+        """
+        return self.document_fault_text(self.diagnosis)
+
+    # --- Сложность ремонта ---
+    # Поле `repair_complexity` осталось на месте и правится руками: мастер
+    # видит прибор, а справочник — нет. Пустое поле означает не «простой»,
+    # а «не задавали», и тогда сложность выводится из выбранных
+    # неисправностей.
+
+    @property
+    def derived_complexity(self):
+        """Сложность по выбранным неисправностям: '' — выводить не из чего.
+
+        Достаточно одной сложной неисправности, чтобы весь ремонт единицы
+        стал сложным: простую часть работы всё равно делает тот же человек
+        за тем же столом, и лёгкой она от этого не становится.
+        """
+        faults = list(self.faults.all())
+        if not faults:
+            return ''
+        if any(fault.complexity == 'complex' for fault in faults):
+            return 'complex'
+        return 'simple'
+
+    @property
+    def effective_complexity(self):
+        """Что считать сложностью этой единицы: заданное руками, иначе
+        выведенное из неисправностей."""
+        return self.repair_complexity or self.derived_complexity
+
+    @property
+    def complexity_is_derived(self):
+        """Сложность выведена из неисправностей, а не проставлена руками."""
+        return not self.repair_complexity and bool(self.derived_complexity)
+
+    @property
+    def effective_complexity_display(self):
+        """Название сложности для показа и для печати."""
+        value = self.effective_complexity
+        if not value:
+            return ''
+        names = dict(self._meta.get_field('repair_complexity').choices)
+        return names.get(value, value)
 
     @property
     def error_code_lines(self):
@@ -1326,13 +1571,22 @@ class RepairOrderEquipment(models.Model):
     def quote_line(self):
         """Наименование работ в предложении.
 
-        Предлагаемые работы, если их записали; иначе выполненные (бывает,
-        что предложение печатают задним числом); иначе просто «Ремонт
-        <тип и модель>» — без выдумок о том, чего никто не писал.
+        Сначала полные описания выбранных типовых неисправностей, затем
+        предлагаемые работы, если их записали; иначе выполненные (бывает,
+        что предложение печатают задним числом). Если не выбрано и не
+        записано ничего — просто «Ремонт <тип и модель>», без выдумок
+        о том, чего никто не писал.
         """
         work = self.proposed_work.strip() or self.work_performed.strip()
-        if work:
-            return ' '.join(work.split())
+        # Переводы строк в наименовании работ схлопываются, как и раньше:
+        # это ячейка таблицы предложения, а не абзац
+        work = ' '.join(work.split())
+        # Описания выбранных типовых неисправностей идут перед текстом
+        # мастера — заказчик читает в предложении ту же формулировку,
+        # что и в акте дефектации
+        text = self.document_fault_text(work)
+        if text:
+            return text
         return f'Ремонт {self.equipment.model.full_name}'
 
     @property

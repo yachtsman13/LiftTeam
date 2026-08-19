@@ -1,0 +1,53 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Версии моделей — LiftTeam v2.54.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-diagram-2 me-2"></i>Версии моделей</h2>
+    <div>
+        <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-secondary me-2"><i class="bi bi-arrow-left me-2"></i>К моделям</a>
+        <a href="{% url 'equipment_version_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новая версия</a>
+    </div>
+</div>
+
+<p class="text-muted">
+    EkoDrive 2.0-1.1 и EkoDrive 2.0-0.7 — одно изделие в разном исполнении.
+    Версия необязательна: у большей части оборудования её нет вовсе.
+    Комментарий — для мастера у стола, ни в один документ он не идёт.
+</p>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr>
+                        <th>Модель</th>
+                        <th>Версия</th>
+                        <th>Комментарий</th>
+                        <th class="text-end">Единиц</th>
+                        <th class="text-end">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for version in versions %}
+                    <tr>
+                        <td>{{ version.equipment_model.name }}</td>
+                        <td>{{ version.name }}</td>
+                        <td>{% if version.note %}{{ version.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{{ version.equipment_count }}</td>
+                        <td class="text-end">
+                            <a href="{% url 'equipment_version_edit' version.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'equipment_version_delete' version.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="5" class="text-center text-muted py-4">Версии не заведены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

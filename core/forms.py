@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.53.0.
+Формы для LiftTeam v2.54.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -7,7 +7,8 @@ from django.core import validators
 from django.forms import inlineformset_factory
 from . import invoicing
 from .models import (
-    Cabinet, Client, EquipmentModel, Equipment, FaultType, FaultTypePart,
+    Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
+    Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
@@ -76,10 +77,42 @@ class ClientForm(forms.ModelForm):
         }
 
 
+class EquipmentTypeForm(forms.ModelForm):
+    class Meta:
+        model = EquipmentType
+        fields = ['name', 'description']
+        widgets = {
+            'name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Привод дверей',
+            }),
+            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'name': 'Название типа',
+            'description': 'Описание',
+        }
+
+
+class EquipmentVersionForm(forms.ModelForm):
+    class Meta:
+        model = EquipmentVersion
+        fields = ['equipment_model', 'name', 'note']
+        widgets = {
+            'equipment_model': forms.Select(attrs={'class': 'form-select'}),
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': '1.1'}),
+            'note': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'equipment_model': 'Модель оборудования',
+            'name': 'Версия',
+            'note': 'Комментарий',
+        }
+
+
 class EquipmentModelForm(forms.ModelForm):
     class Meta:
         model = EquipmentModel
-        fields = ['name', 'kind']
+        fields = ['name', 'kind', 'equipment_type']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'kind': forms.TextInput(attrs={
@@ -90,27 +123,41 @@ class EquipmentModelForm(forms.ModelForm):
                 # «Привод дверей» / «привод дверей» / «Приводы дверей».
                 'list': 'equipment-kinds',
             }),
+            'equipment_type': forms.Select(attrs={'class': 'form-select'}),
         }
         labels = {
             'name': 'Название модели',
-            'kind': 'Тип оборудования',
+            'kind': 'Родовое название для акта',
+            'equipment_type': 'Тип оборудования',
         }
 
 
 class FaultTypeForm(forms.ModelForm):
     class Meta:
         model = FaultType
-        fields = ['equipment_model', 'name', 'description']
+        fields = ['equipment_model', 'name', 'description', 'complexity']
         widgets = {
             'equipment_model': forms.Select(attrs={'class': 'form-select'}),
             'name': forms.TextInput(attrs={'class': 'form-control'}),
-            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'complexity': forms.Select(attrs={'class': 'form-select'}),
         }
         labels = {
             'equipment_model': 'Модель оборудования',
-            'name': 'Неисправность',
-            'description': 'Описание',
+            'name': 'Неисправность (коротко, для списков)',
+            'description': 'Описание для документов',
+            'complexity': 'Сложность ремонта',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Сложность появилась позже самой неисправности, и форма без неё
+        # обязана сохраняться: незаполненная сложность — «простой», как
+        # и по умолчанию у поля
+        self.fields['complexity'].required = False
+
+    def clean_complexity(self):
+        return self.cleaned_data.get('complexity') or 'simple'
 
 
 class FaultTypePartForm(forms.ModelForm):
@@ -121,37 +168,114 @@ class FaultTypePartForm(forms.ModelForm):
     """
     class Meta:
         model = FaultTypePart
-        fields = ['part', 'quantity']
+        fields = ['part', 'quantity', 'version']
         widgets = {
             'part': forms.Select(attrs={'class': 'form-select'}),
             'quantity': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+            'version': forms.Select(attrs={'class': 'form-select fault-part-version'}),
         }
         labels = {
             'part': 'Деталь',
             'quantity': 'Типовое количество',
+            'version': 'Только для версии',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Пустой вариант читается как «строка общая», а не как «не выбрано»:
+        # общих строк в рецепте большинство, и человек должен видеть,
+        # что оставленное пустым поле — это осмысленный ответ
+        self.fields['version'].empty_label = 'Для всех версий'
+        self.fields['version'].queryset = (
+            EquipmentVersion.objects.select_related('equipment_model')
+            .order_by('equipment_model__name', 'name')
+        )
+
+
+class BaseFaultTypePartFormSet(forms.BaseInlineFormSet):
+    """Проверяет, что уточнение рецепта стоит на версии той же модели.
+
+    Версия из чужой модели в рецепте — это строка, которая не сработает
+    никогда: `FaultType.recipe_lines` сверяет версию с версией единицы,
+    а у единицы другой модели её быть не может. Молча хранить такую
+    строку хуже, чем не дать её сохранить.
+    """
+
+    def clean(self):
+        super().clean()
+        model = getattr(self.instance, 'equipment_model_id', None)
+        if not model:
+            return
+        for form in self.forms:
+            if not hasattr(form, 'cleaned_data') or form.cleaned_data.get('DELETE'):
+                continue
+            version = form.cleaned_data.get('version')
+            if version and version.equipment_model_id != model:
+                form.add_error(
+                    'version',
+                    'Версия относится к другой модели оборудования.'
+                )
 
 
 FaultTypePartFormSet = inlineformset_factory(
     FaultType, FaultTypePart, form=FaultTypePartForm,
-    extra=1, can_delete=True
+    formset=BaseFaultTypePartFormSet, extra=1, can_delete=True
 )
+
+
+def make_fault_type_part_formset(extra=1):
+    """Формсет рецепта на заданное число пустых строк.
+
+    Нужен копированию: строки рецепта-образца подставляются как initial,
+    а initial показывается только в добавочных формах — с обычным extra=1
+    из копии доехала бы одна строка рецепта вместо всех.
+    """
+    return inlineformset_factory(
+        FaultType, FaultTypePart, form=FaultTypePartForm,
+        formset=BaseFaultTypePartFormSet, extra=extra, can_delete=True
+    )
 
 
 class EquipmentForm(forms.ModelForm):
     class Meta:
         model = Equipment
-        fields = ['model', 'serial_number', 'current_client']
+        fields = [
+            'model', 'version', 'serial_number', 'manufacture_date', 'current_client'
+        ]
         widgets = {
             'model': forms.Select(attrs={'class': 'form-select'}),
+            'version': forms.Select(attrs={'class': 'form-select'}),
             'serial_number': forms.TextInput(attrs={'class': 'form-control'}),
+            'manufacture_date': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
+            ),
             'current_client': forms.Select(attrs={'class': 'form-select'}),
         }
         labels = {
             'model': 'Модель',
+            'version': 'Версия',
             'serial_number': 'Серийный номер',
+            'manufacture_date': 'Дата изготовления',
             'current_client': 'Текущий заказчик',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Версий у большинства оборудования нет вовсе — поле необязательное,
+        # и пустой вариант об этом прямо говорит
+        self.fields['version'].empty_label = 'Без версии'
+        self.fields['version'].queryset = (
+            EquipmentVersion.objects.select_related('equipment_model')
+            .order_by('equipment_model__name', 'name')
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        model = cleaned.get('model')
+        version = cleaned.get('version')
+        if model and version and version.equipment_model_id != model.pk:
+            self.add_error('version', 'Эта версия относится к другой модели.')
+        return cleaned
 
 
 class RepairOrderForm(forms.ModelForm):

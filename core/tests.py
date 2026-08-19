@@ -20,7 +20,7 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test import Client as TestClient
 from django.test import RequestFactory
 from django.template.loader import render_to_string
@@ -34,6 +34,7 @@ from . import invoicing, messengers, net, notifications, tbank, tochka, views, w
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
+    EquipmentType, EquipmentVersion,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
@@ -9630,3 +9631,698 @@ class WebhookUrlIsolationTests(TestCase):
 
     def test_the_prefix_itself_is_not_a_page(self):
         self.assertEqual(TestClient().get('/webhooks/').status_code, 404)
+
+
+class FaultTextInDocumentsTests(TestCase):
+    """Короткое название типовой неисправности не попадает в документы
+    никогда: в акт дефектации и в предложение идёт только полное описание,
+    а за ним — то, что дописал мастер."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_fault_docs', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='EkoDrive 2.0', kind='Преобразователь частоты')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='SN-DOC-1')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Подъём', inn='7700000901')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment,
+            diagnosis='вздулись конденсаторы в цепи питания',
+            proposed_work='Замена силовой платы',
+            estimated_cost=Decimal('12000.00'),
+        )
+        self.dry = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Высыхание электролитических конденсаторов звена постоянного тока',
+        )
+        self.burnt = FaultType.objects.create(
+            equipment_model=self.model, name='сгорел IGBT',
+            description='Пробой силового модуля IGBT',
+        )
+
+    def _act(self):
+        return self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/act/defect/'
+        )
+
+    def _quote(self):
+        return self.client_http.get(f'/repair-orders/{self.order.pk}/quote/')
+
+    def test_without_typical_faults_the_documents_are_unchanged(self):
+        """Заказ без выбранных неисправностей печатается ровно как раньше:
+        в акте — записанная диагностика, в предложении — предлагаемые работы."""
+        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
+        self.assertEqual(self.roe.quote_line, 'Замена силовой платы')
+        self.assertEqual(self.roe.fault_document_lines, [])
+
+        self.assertContains(self._act(), 'вздулись конденсаторы в цепи питания')
+        self.assertContains(self._quote(), 'Замена силовой платы')
+
+    def test_the_full_descriptions_reach_both_documents(self):
+        self.roe.faults.set([self.dry, self.burnt])
+
+        act = self._act()
+        quote = self._quote()
+        for response in (act, quote):
+            self.assertContains(response, 'Высыхание электролитических конденсаторов')
+            self.assertContains(response, 'Пробой силового модуля IGBT')
+
+    def test_the_short_names_never_reach_the_documents(self):
+        self.roe.faults.set([self.dry, self.burnt])
+
+        self.assertNotContains(self._act(), 'высохли конденсаторы')
+        self.assertNotContains(self._act(), 'сгорел IGBT')
+        self.assertNotContains(self._quote(), 'высохли конденсаторы')
+        self.assertNotContains(self._quote(), 'сгорел IGBT')
+
+    def test_the_free_text_follows_the_descriptions(self):
+        self.roe.faults.set([self.dry])
+
+        self.assertEqual(
+            self.roe.diagnosis_document_text,
+            'Высыхание электролитических конденсаторов звена постоянного тока\n'
+            'вздулись конденсаторы в цепи питания',
+        )
+        self.assertEqual(
+            self.roe.quote_line,
+            'Высыхание электролитических конденсаторов звена постоянного тока\n'
+            'Замена силовой платы',
+        )
+
+    def test_a_fault_without_a_description_adds_nothing(self):
+        """Подставлять вместо пустого описания короткое название нельзя —
+        тогда цеховой жаргон уехал бы заказчику."""
+        nameless = FaultType.objects.create(
+            equipment_model=self.model, name='глючит по-непонятному'
+        )
+        self.roe.faults.set([nameless])
+
+        self.assertEqual(self.roe.fault_document_lines, [])
+        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
+        self.assertNotContains(self._act(), 'глючит по-непонятному')
+
+    def test_an_empty_unit_still_prints_a_dash(self):
+        """Ни описаний, ни диагностики — в акте прочерк, как и раньше."""
+        self.roe.diagnosis = ''
+        self.roe.save(update_fields=['diagnosis'])
+
+        self.assertEqual(self.roe.diagnosis_document_text, '')
+        self.assertFalse(self.roe.has_defect_act)
+
+    def test_the_quote_falls_back_to_the_model_name(self):
+        """Ни неисправностей, ни текста — прежняя строка «Ремонт …»."""
+        self.roe.proposed_work = ''
+        self.roe.save(update_fields=['proposed_work'])
+
+        self.assertEqual(self.roe.quote_line, 'Ремонт Преобразователь частоты EkoDrive 2.0')
+
+
+class RepairComplexityDerivationTests(TestCase):
+    """Сложность — свойство неисправности; у единицы она из них выводится,
+    но остаётся правимой вручную."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_complexity', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-11')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='SN-CX-1')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Лифтсервис', inn='7700000902')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+        self.simple_fault = FaultType.objects.create(
+            equipment_model=self.model, name='окислился разъём',
+            description='Окисление контактов разъёма', complexity='simple',
+        )
+        self.complex_fault = FaultType.objects.create(
+            equipment_model=self.model, name='слетела прошивка',
+            description='Повреждение прошивки процессора', complexity='complex',
+        )
+
+    def test_a_new_fault_is_simple_unless_said_otherwise(self):
+        self.assertEqual(
+            FaultType.objects.create(equipment_model=self.model, name='ещё одна').complexity,
+            'simple',
+        )
+
+    def test_without_faults_nothing_is_derived(self):
+        self.assertEqual(self.roe.derived_complexity, '')
+        self.assertEqual(self.roe.effective_complexity, '')
+        self.assertEqual(self.roe.effective_complexity_display, '')
+        self.assertFalse(self.roe.complexity_is_derived)
+
+    def test_only_simple_faults_make_a_simple_repair(self):
+        self.roe.faults.set([self.simple_fault])
+
+        self.assertEqual(self.roe.derived_complexity, 'simple')
+        self.assertTrue(self.roe.complexity_is_derived)
+        self.assertEqual(self.roe.effective_complexity_display, 'Простой')
+
+    def test_one_complex_fault_makes_the_whole_repair_complex(self):
+        self.roe.faults.set([self.simple_fault, self.complex_fault])
+
+        self.assertEqual(self.roe.derived_complexity, 'complex')
+        self.assertEqual(self.roe.effective_complexity_display, 'Сложный')
+
+    def test_a_manual_value_survives_the_derivation(self):
+        self.roe.faults.set([self.simple_fault, self.complex_fault])
+        self.roe.repair_complexity = 'medium'
+        self.roe.save(update_fields=['repair_complexity'])
+
+        self.assertEqual(self.roe.effective_complexity, 'medium')
+        self.assertEqual(self.roe.effective_complexity_display, 'Средний')
+        self.assertFalse(self.roe.complexity_is_derived)
+
+    def test_the_quote_prints_the_derived_value(self):
+        self.roe.faults.set([self.complex_fault])
+
+        row = self.order.quote_rows()[0]
+        self.assertEqual(row['complexity'], 'Сложный')
+        self.assertContains(
+            self.client_http.get(f'/repair-orders/{self.order.pk}/quote/'), 'Сложный'
+        )
+
+    def test_the_screen_says_where_the_value_came_from(self):
+        self.roe.faults.set([self.complex_fault])
+        derived = self.client_http.get(f'/repair-orders/{self.order.pk}/quote/edit/')
+        self.assertContains(derived, 'Из неисправностей')
+        self.assertNotContains(derived, 'Задано вручную')
+
+        self.roe.repair_complexity = 'simple'
+        self.roe.save(update_fields=['repair_complexity'])
+        manual = self.client_http.get(f'/repair-orders/{self.order.pk}/quote/edit/')
+        self.assertContains(manual, 'Задано вручную')
+        self.assertNotContains(manual, 'Из неисправностей')
+
+
+class FaultRecipeVersionTests(TestCase):
+    """Строка рецепта с версией заменяет общую только у этого исполнения
+    и только по своей детали."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_recipe_version', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        self.v11 = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='1.1', note='алюминиевый корпус'
+        )
+        self.v07 = EquipmentVersion.objects.create(equipment_model=self.model, name='0.7')
+
+        self.capacitor = SparePart.objects.create(
+            part_number='RV-1', name='Конденсатор', current_stock=100
+        )
+        self.resistor = SparePart.objects.create(
+            part_number='RV-2', name='Резистор', current_stock=100
+        )
+
+        self.fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Высыхание конденсаторов',
+        )
+        FaultTypePart.objects.create(fault_type=self.fault, part=self.capacitor, quantity=3)
+        FaultTypePart.objects.create(fault_type=self.fault, part=self.resistor, quantity=1)
+        FaultTypePart.objects.create(
+            fault_type=self.fault, part=self.capacitor, quantity=5, version=self.v11
+        )
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Высота', inn='7700000903')
+        )
+
+    @staticmethod
+    def _as_dict(lines):
+        return {line.part_id: line.quantity for line in lines}
+
+    def test_the_base_recipe_applies_when_the_version_is_unknown(self):
+        self.assertEqual(
+            self._as_dict(self.fault.recipe_lines()),
+            {self.capacitor.pk: 3, self.resistor.pk: 1},
+        )
+
+    def test_the_override_wins_for_its_own_version(self):
+        self.assertEqual(
+            self._as_dict(self.fault.recipe_lines(self.v11)),
+            {self.capacitor.pk: 5, self.resistor.pk: 1},
+        )
+
+    def test_another_version_keeps_the_base_line(self):
+        self.assertEqual(
+            self._as_dict(self.fault.recipe_lines(self.v07)),
+            {self.capacitor.pk: 3, self.resistor.pk: 1},
+        )
+
+    def _apply_for(self, equipment):
+        payload = {'fault_ids': [self.fault.pk]}
+        if equipment is not None:
+            payload['equipment_id'] = equipment.pk
+        return self.client_http.post(
+            f'/repair-orders/{self.order.pk}/apply-fault-template/', payload
+        )
+
+    def test_applying_to_a_unit_of_that_version_writes_the_override(self):
+        unit = Equipment.objects.create(
+            model=self.model, serial_number='SN-RV-11', version=self.v11
+        )
+        RepairOrderEquipment.objects.create(repair_order=self.order, equipment=unit)
+
+        self.assertTrue(self._apply_for(unit).json()['success'])
+        written = {d.part_id: d.quantity_used for d in self.order.details.all()}
+        self.assertEqual(written, {self.capacitor.pk: 5, self.resistor.pk: 1})
+
+    def test_applying_to_a_unit_without_a_version_writes_the_base_line(self):
+        unit = Equipment.objects.create(model=self.model, serial_number='SN-RV-NONE')
+        RepairOrderEquipment.objects.create(repair_order=self.order, equipment=unit)
+
+        self.assertTrue(self._apply_for(unit).json()['success'])
+        written = {d.part_id: d.quantity_used for d in self.order.details.all()}
+        self.assertEqual(written, {self.capacitor.pk: 3, self.resistor.pk: 1})
+
+    def test_a_version_only_line_does_not_leak_to_other_versions(self):
+        """Уточнение по детали, которой нет в общем рецепте, достаётся
+        только своей версии."""
+        extra = SparePart.objects.create(part_number='RV-3', name='Дроссель', current_stock=10)
+        FaultTypePart.objects.create(
+            fault_type=self.fault, part=extra, quantity=2, version=self.v07
+        )
+
+        self.assertNotIn(extra.pk, self._as_dict(self.fault.recipe_lines(self.v11)))
+        self.assertNotIn(extra.pk, self._as_dict(self.fault.recipe_lines()))
+        self.assertEqual(self._as_dict(self.fault.recipe_lines(self.v07))[extra.pk], 2)
+
+    def test_the_recipe_rejects_a_version_of_another_model(self):
+        other_model = EquipmentModel.objects.create(name='ШУНЛ-7')
+        stranger = EquipmentVersion.objects.create(equipment_model=other_model, name='2.0')
+
+        data = {
+            'equipment_model': self.model.pk, 'name': 'С чужой версией',
+            'description': '', 'complexity': 'simple',
+            'parts-TOTAL_FORMS': '1', 'parts-INITIAL_FORMS': '0',
+            'parts-MIN_NUM_FORMS': '0', 'parts-MAX_NUM_FORMS': '1000',
+            'parts-0-part': self.capacitor.pk, 'parts-0-quantity': '1',
+            'parts-0-version': stranger.pk,
+        }
+        response = self.client_http.post('/faults/create/', data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(FaultType.objects.filter(name='С чужой версией').exists())
+
+
+class ReferenceCopyTests(TestCase):
+    """«Создать копию» открывает форму создания, заполненную образцом.
+    До нажатия «Сохранить» в справочнике не появляется ничего."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_copy', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        self.version = EquipmentVersion.objects.create(equipment_model=self.model, name='1.1')
+        self.capacitor = SparePart.objects.create(
+            part_number='CP-1', name='Конденсатор 470 мкФ', component_type='Конденсатор',
+            package='радиальный', min_stock=5, application='Otis',
+            description='Электролитический', current_stock=42,
+        )
+        self.resistor = SparePart.objects.create(part_number='CP-2', name='Резистор')
+
+        self.fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Высыхание конденсаторов', complexity='complex',
+        )
+        FaultTypePart.objects.create(fault_type=self.fault, part=self.capacitor, quantity=3)
+        FaultTypePart.objects.create(
+            fault_type=self.fault, part=self.resistor, quantity=2, version=self.version
+        )
+
+    # --- Типовая неисправность ---
+
+    def test_copying_a_fault_fills_the_form_from_the_source(self):
+        response = self.client_http.get(f'/faults/create/?copy_from={self.fault.pk}')
+
+        self.assertEqual(response.status_code, 200)
+        form = response.context['form']
+        self.assertEqual(form.initial['equipment_model'], self.model.pk)
+        self.assertIn('копия', form.initial['name'])
+        self.assertEqual(form.initial['description'], 'Высыхание конденсаторов')
+        self.assertEqual(form.initial['complexity'], 'complex')
+
+    def test_copying_a_fault_brings_the_whole_recipe(self):
+        response = self.client_http.get(f'/faults/create/?copy_from={self.fault.pk}')
+
+        forms = response.context['formset'].forms
+        self.assertEqual(
+            [(form.initial['part'], form.initial['quantity'], form.initial['version'])
+             for form in forms[:2]],
+            [(self.capacitor.pk, 3, None), (self.resistor.pk, 2, self.version.pk)],
+        )
+        # Последняя строка пустая — чтобы в копию можно было дописать деталь
+        self.assertEqual(len(forms), 3)
+        self.assertNotIn('part', forms[2].initial)
+
+    def test_opening_a_copy_writes_nothing(self):
+        faults_before = FaultType.objects.count()
+        lines_before = FaultTypePart.objects.count()
+
+        self.client_http.get(f'/faults/create/?copy_from={self.fault.pk}')
+
+        self.assertEqual(FaultType.objects.count(), faults_before)
+        self.assertEqual(FaultTypePart.objects.count(), lines_before)
+
+    def test_saving_the_copy_creates_a_second_fault_with_its_recipe(self):
+        data = {
+            'equipment_model': self.model.pk, 'name': 'высохли конденсаторы (копия)',
+            'description': 'Высыхание конденсаторов', 'complexity': 'complex',
+            'parts-TOTAL_FORMS': '2', 'parts-INITIAL_FORMS': '0',
+            'parts-MIN_NUM_FORMS': '0', 'parts-MAX_NUM_FORMS': '1000',
+            'parts-0-part': self.capacitor.pk, 'parts-0-quantity': '3', 'parts-0-version': '',
+            'parts-1-part': self.resistor.pk, 'parts-1-quantity': '2',
+            'parts-1-version': self.version.pk,
+        }
+        response = self.client_http.post(f'/faults/create/?copy_from={self.fault.pk}', data)
+
+        self.assertEqual(response.status_code, 302)
+        copy = FaultType.objects.get(name='высохли конденсаторы (копия)')
+        self.assertEqual(copy.complexity, 'complex')
+        self.assertEqual(copy.parts.count(), 2)
+        # Образец при этом не тронут
+        self.assertEqual(self.fault.parts.count(), 2)
+
+    def test_a_copy_of_a_missing_fault_is_just_an_empty_form(self):
+        response = self.client_http.get('/faults/create/?copy_from=999999')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['copy_source'])
+
+    # --- Карточка детали ---
+
+    def test_copying_a_part_fills_the_form_but_not_the_article(self):
+        response = self.client_http.get(f'/parts/create/?copy_from={self.capacitor.pk}')
+
+        self.assertEqual(response.status_code, 200)
+        initial = response.context['form'].initial
+        self.assertEqual(initial['name'], 'Конденсатор 470 мкФ')
+        self.assertEqual(initial['component_type'], 'Конденсатор')
+        self.assertEqual(initial['application'], 'Otis')
+        self.assertNotIn('part_number', initial)
+
+    def test_opening_a_part_copy_writes_nothing(self):
+        before = SparePart.objects.count()
+
+        self.client_http.get(f'/parts/create/?copy_from={self.capacitor.pk}')
+
+        self.assertEqual(SparePart.objects.count(), before)
+
+    def test_saving_a_part_copy_starts_from_an_empty_shelf(self):
+        response = self.client_http.post('/parts/create/', {
+            'part_number': 'CP-1-COPY', 'name': 'Конденсатор 470 мкФ',
+            'component_type': 'Конденсатор', 'package': 'радиальный',
+            'min_stock': '5', 'lead_time_days': '0',
+            'application': 'Otis', 'description': 'Электролитический',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        copy = SparePart.objects.get(part_number='CP-1-COPY')
+        self.assertEqual(copy.current_stock, 0)
+        self.capacitor.refresh_from_db()
+        self.assertEqual(self.capacitor.current_stock, 42)
+
+
+class EquipmentTypeDirectoryTests(TestCase):
+    """Тип оборудования — справочник со своими экранами; права как
+    у моделей: правка всем авторизованным, удаление складу и мастеру."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_types', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.drive = EquipmentType.objects.create(name='Привод дверей')
+
+    def test_the_list_opens(self):
+        self.assertContains(self.client_http.get('/equipment/types/'), 'Привод дверей')
+
+    def test_creating_and_editing(self):
+        self.client_http.post('/equipment/types/create/', {
+            'name': 'Преобразователь частоты', 'description': '',
+        })
+        created = EquipmentType.objects.get(name='Преобразователь частоты')
+
+        self.client_http.post(f'/equipment/types/{created.pk}/edit/', {
+            'name': 'Преобразователь частоты', 'description': 'ПЧ',
+        })
+        created.refresh_from_db()
+
+        self.assertEqual(created.description, 'ПЧ')
+
+    def test_deleting_a_type_leaves_the_models_alone(self):
+        model = EquipmentModel.objects.create(name='EkoDrive 2.0', equipment_type=self.drive)
+
+        response = self.client_http.post(f'/equipment/types/{self.drive.pk}/delete/')
+
+        self.assertRedirects(response, '/equipment/types/')
+        model.refresh_from_db()
+        self.assertIsNone(model.equipment_type_id)
+
+    def test_an_accountant_cannot_delete_a_type(self):
+        accountant = Employee.objects.create_user(
+            username='accountant_types', full_name='Бухгалтер', password='pass', role='accountant'
+        )
+        client = TestClient()
+        client.force_login(accountant)
+
+        response = client.post(f'/equipment/types/{self.drive.pk}/delete/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(EquipmentType.objects.filter(pk=self.drive.pk).exists())
+
+    def test_an_anonymous_user_is_sent_to_login(self):
+        response = TestClient().get('/equipment/types/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response.url)
+
+    def test_the_type_is_not_the_generic_word_of_the_defect_act(self):
+        """`kind` печатается в акте перед названием модели, тип — нет.
+        Смешивать их нельзя: у модели «Преобразователь частоты Emotron»
+        родовое слово уже в названии, и тип его туда не добавляет."""
+        model = EquipmentModel.objects.create(
+            name='Преобразователь частоты Emotron',
+            equipment_type=EquipmentType.objects.create(name='Преобразователь частоты'),
+        )
+
+        self.assertEqual(model.full_name, 'Преобразователь частоты Emotron')
+
+
+class EquipmentVersionDirectoryTests(TestCase):
+    """Версия модели — справочник; у единицы она необязательна."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_versions', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+        self.model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='1.1', note='алюминиевый корпус'
+        )
+
+    def test_the_list_shows_the_note(self):
+        response = self.client_http.get('/equipment/versions/')
+
+        self.assertContains(response, '1.1')
+        self.assertContains(response, 'алюминиевый корпус')
+
+    def test_creating_a_version(self):
+        self.client_http.post('/equipment/versions/create/', {
+            'equipment_model': self.model.pk, 'name': '0.7', 'note': 'пластиковый корпус',
+        })
+
+        self.assertTrue(
+            EquipmentVersion.objects.filter(equipment_model=self.model, name='0.7').exists()
+        )
+
+    def test_two_versions_of_one_model_cannot_repeat(self):
+        with self.assertRaises(IntegrityError):
+            EquipmentVersion.objects.create(equipment_model=self.model, name='1.1')
+
+    def test_deleting_a_version_leaves_the_units_alone(self):
+        unit = Equipment.objects.create(
+            model=self.model, serial_number='SN-VD-1', version=self.version
+        )
+
+        response = self.client_http.post(f'/equipment/versions/{self.version.pk}/delete/')
+
+        self.assertRedirects(response, '/equipment/versions/')
+        unit.refresh_from_db()
+        self.assertIsNone(unit.version_id)
+
+    def test_an_accountant_cannot_delete_a_version(self):
+        accountant = Employee.objects.create_user(
+            username='accountant_versions', full_name='Бухгалтер', password='pass', role='accountant'
+        )
+        client = TestClient()
+        client.force_login(accountant)
+
+        response = client.post(f'/equipment/versions/{self.version.pk}/delete/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(EquipmentVersion.objects.filter(pk=self.version.pk).exists())
+
+    def test_the_equipment_form_rejects_a_version_of_another_model(self):
+        other = EquipmentModel.objects.create(name='ШУНЛ-5')
+
+        response = self.client_http.post('/equipment/create/', {
+            'model': other.pk, 'version': self.version.pk,
+            'serial_number': 'SN-VD-2', 'manufacture_date': '', 'current_client': '',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Equipment.objects.filter(serial_number='SN-VD-2').exists())
+
+
+class OptionalTypeAndVersionTests(TestCase):
+    """Тип у модели, версия и дата изготовления у единицы — необязательны:
+    без них всё работает от начала до конца, как работало раньше."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_optional', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+    def test_a_model_without_a_type_and_a_unit_without_a_version(self):
+        self.client_http.post('/equipment/models/create/', {'name': 'БУАД-77', 'kind': ''})
+        model = EquipmentModel.objects.get(name='БУАД-77')
+        self.assertIsNone(model.equipment_type_id)
+
+        self.client_http.post('/equipment/create/', {
+            'model': model.pk, 'version': '', 'serial_number': 'SN-OPT-1',
+            'manufacture_date': '', 'current_client': '',
+        })
+        unit = Equipment.objects.get(serial_number='SN-OPT-1')
+        self.assertIsNone(unit.version_id)
+        self.assertIsNone(unit.manufacture_date)
+
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Без версий', inn='7700000904')
+        )
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=unit, diagnosis='не включается'
+        )
+
+        act = self.client_http.get(
+            f'/repair-orders/{order.pk}/equipment/{roe.pk}/act/defect/'
+        )
+        quote = self.client_http.get(f'/repair-orders/{order.pk}/quote/')
+
+        self.assertContains(act, 'не включается')
+        self.assertEqual(quote.status_code, 200)
+
+    def test_the_manufacture_date_is_kept_when_it_was_read_off_the_box(self):
+        model = EquipmentModel.objects.create(name='БУАД-78')
+        self.client_http.post('/equipment/create/', {
+            'model': model.pk, 'version': '', 'serial_number': 'SN-OPT-2',
+            'manufacture_date': '2019-04-01', 'current_client': '',
+        })
+
+        self.assertEqual(
+            Equipment.objects.get(serial_number='SN-OPT-2').manufacture_date,
+            datetime.date(2019, 4, 1),
+        )
+
+
+class MigrationOnLiveDataTests(TransactionTestCase):
+    """Миграция накатывается на базу, в которой уже есть модели, версии
+    которых никто не заводил, оборудование, неисправности и заказы.
+
+    На Raspberry Pi лежат настоящие данные заказчиков, и обновление
+    не должно ни падать, ни выдумывать значения: всё новое приходит
+    пустым или со значением по умолчанию.
+    """
+
+    BEFORE = '0033_invoice_paid_notice'
+    AFTER = '0034_equipment_type_version_fault_complexity'
+
+    available_apps = None
+
+    def _migrate(self, target):
+        from django.db import connection as db_connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(db_connection)
+        executor.loader.build_graph()
+        state = executor.migrate([('core', target)])
+        return state
+
+    def tearDown(self):
+        # База остаётся на последней миграции — следующие тесты работают
+        # с актуальной схемой
+        self._migrate(self.AFTER)
+
+    def test_existing_rows_survive_and_get_empty_values(self):
+        old_state = self._migrate(self.BEFORE)
+
+        OldModel = old_state.apps.get_model('core', 'EquipmentModel')
+        OldEquipment = old_state.apps.get_model('core', 'Equipment')
+        OldFault = old_state.apps.get_model('core', 'FaultType')
+        OldPart = old_state.apps.get_model('core', 'SparePart')
+        OldRecipe = old_state.apps.get_model('core', 'FaultTypePart')
+        OldClient = old_state.apps.get_model('core', 'Client')
+        OldOrder = old_state.apps.get_model('core', 'RepairOrder')
+        OldOrderEquipment = old_state.apps.get_model('core', 'RepairOrderEquipment')
+
+        model = OldModel.objects.create(name='EkoDrive 2.0', kind='Преобразователь частоты')
+        unit = OldEquipment.objects.create(model=model, serial_number='SN-MIGRATE-1')
+        fault = OldFault.objects.create(
+            equipment_model=model, name='высохли конденсаторы', description='Высыхание'
+        )
+        part = OldPart.objects.create(part_number='MG-1', name='Конденсатор')
+        OldRecipe.objects.create(fault_type=fault, part=part, quantity=3)
+        order = OldOrder.objects.create(
+            client=OldClient.objects.create(name='ООО Миграция', inn='7700000905'),
+            order_number='M-1',
+        )
+        OldOrderEquipment.objects.create(repair_order=order, equipment=unit)
+
+        self._migrate(self.AFTER)
+
+        migrated_model = EquipmentModel.objects.get(name='EkoDrive 2.0')
+        migrated_unit = Equipment.objects.get(serial_number='SN-MIGRATE-1')
+        migrated_fault = FaultType.objects.get(name='высохли конденсаторы')
+
+        # Ничего не выдумано: тип пуст, версии нет, дата изготовления пуста
+        self.assertIsNone(migrated_model.equipment_type_id)
+        self.assertEqual(migrated_model.kind, 'Преобразователь частоты')
+        self.assertIsNone(migrated_unit.version_id)
+        self.assertIsNone(migrated_unit.manufacture_date)
+        self.assertEqual(EquipmentType.objects.count(), 0)
+        self.assertEqual(EquipmentVersion.objects.count(), 0)
+
+        # Сложность у старых неисправностей — «простой», как у поля
+        # по умолчанию; рецепт остаётся общим для всех исполнений
+        self.assertEqual(migrated_fault.complexity, 'simple')
+        self.assertEqual(migrated_fault.parts.count(), 1)
+        self.assertIsNone(migrated_fault.parts.first().version_id)
+
+        # Заказ и его оборудование на месте
+        self.assertEqual(RepairOrder.objects.get(order_number='M-1').order_equipments.count(), 1)

@@ -1,9 +1,10 @@
 """
-Настройка Django Admin для LiftTeam v2.53.0.
+Настройка Django Admin для LiftTeam v2.54.0.
 """
 from django.contrib import admin
 from .models import (
-    Employee, Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
+    Employee, Client, EquipmentModel, EquipmentType, EquipmentVersion,
+    Equipment, FaultType, FaultTypePart, RepairOrder,
     RepairOrderEquipment, OrderStatusHistory, SparePart, StorageCell, RepairOrderDetail,
     StockMovement, StockAllocation, OrderCost, Payment
 )
@@ -30,14 +31,29 @@ class ClientAdmin(admin.ModelAdmin):
     list_filter = ['name']
 
 
+@admin.register(EquipmentType)
+class EquipmentTypeAdmin(admin.ModelAdmin):
+    list_display = ['name']
+    search_fields = ['name']
+
+
 @admin.register(EquipmentModel)
 class EquipmentModelAdmin(admin.ModelAdmin):
+    list_display = ['name', 'equipment_type', 'kind']
+    list_filter = ['equipment_type']
     search_fields = ['name']
+
+
+@admin.register(EquipmentVersion)
+class EquipmentVersionAdmin(admin.ModelAdmin):
+    list_display = ['equipment_model', 'name', 'note']
+    list_filter = ['equipment_model']
+    search_fields = ['name', 'equipment_model__name']
 
 
 @admin.register(Equipment)
 class EquipmentAdmin(admin.ModelAdmin):
-    list_display = ['model', 'serial_number', 'current_client']
+    list_display = ['model', 'version', 'serial_number', 'manufacture_date', 'current_client']
     search_fields = ['serial_number', 'model__name']
     list_filter = ['model']
 
@@ -50,7 +66,7 @@ class FaultTypePartInline(admin.TabularInline):
 
 @admin.register(FaultType)
 class FaultTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'equipment_model']
+    list_display = ['name', 'equipment_model', 'complexity']
     list_filter = ['equipment_model']
     search_fields = ['name', 'equipment_model__name']
     inlines = [FaultTypePartInline]

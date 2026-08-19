@@ -1,12 +1,22 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-cpu me-2"></i>{{ title }}</h2>
     <a href="{% url 'part_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
 </div>
+
+{% if copy_source %}
+<div class="alert alert-info">
+    <i class="bi bi-files me-2"></i>
+    Это копия карточки «{{ copy_source.part_number }} — {{ copy_source.name }}».
+    Артикул не подставлен: он у каждой детали свой. Остаток, ячейки и история
+    движений не копируются — это карточка, а не деталь на полке. Пока форма
+    не сохранена, новой детали не создано.
+</div>
+{% endif %}
 
 <div class="card">
     <div class="card-body">

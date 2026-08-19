@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -257,6 +257,14 @@ function applyFaultTemplate(button) {
 
     const params = new URLSearchParams();
     faultIds.forEach(id => params.append('fault_ids', id));
+
+    // Единица нужна серверу, чтобы взять уточнения рецепта по её версии
+    // исполнения: с какой-то версии тех же деталей нужно другое количество.
+    // Не выбрана — применится общая часть рецепта, как и раньше
+    const equipmentSelect = row.querySelector('[name$="-equipment"]');
+    if (equipmentSelect && equipmentSelect.value) {
+        params.append('equipment_id', equipmentSelect.value);
+    }
 
     button.disabled = true;
     LiftTeamWS.fetch(applyUrl, {

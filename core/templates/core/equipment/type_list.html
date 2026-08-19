@@ -1,0 +1,46 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Типы оборудования — LiftTeam v2.54.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-tags me-2"></i>Типы оборудования</h2>
+    <div>
+        <a href="{% url 'equipment_model_list' %}" class="btn btn-outline-secondary me-2"><i class="bi bi-arrow-left me-2"></i>К моделям</a>
+        <a href="{% url 'equipment_type_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новый тип</a>
+    </div>
+</div>
+
+<p class="text-muted">
+    Тип принадлежит модели, а не отдельному прибору: любой EkoDrive 2.0 —
+    преобразователь частоты, в какой бы коробке он ни приехал. Тип
+    необязателен: у моделей, заведённых раньше, он пуст, пока его не проставят.
+</p>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-light">
+                    <tr><th>Название</th><th>Описание</th><th class="text-end">Моделей</th><th class="text-end">Действия</th></tr>
+                </thead>
+                <tbody>
+                    {% for equipment_type in types %}
+                    <tr>
+                        <td>{{ equipment_type.name }}</td>
+                        <td>{% if equipment_type.description %}{{ equipment_type.description }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{{ equipment_type.model_count }}</td>
+                        <td class="text-end">
+                            <a href="{% url 'equipment_type_edit' equipment_type.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'equipment_type_delete' equipment_type.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-center text-muted py-4">Типы оборудования не заведены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

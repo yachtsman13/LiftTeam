@@ -1,12 +1,21 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-clipboard2-pulse me-2"></i>{{ title }}</h2>
     <a href="{% url 'fault_type_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
 </div>
+
+{% if copy_source %}
+<div class="alert alert-info">
+    <i class="bi bi-files me-2"></i>
+    Это копия неисправности «{{ copy_source.name }}» ({{ copy_source.equipment_model.name }})
+    вместе с рецептом. Пока форма не сохранена, в справочнике ничего не создано —
+    правьте что нужно и нажмите «Сохранить».
+</div>
+{% endif %}
 
 {% if form.errors or formset.errors or formset.non_form_errors %}
 <div class="alert alert-danger">
@@ -36,14 +45,25 @@
                     {{ form.equipment_model }}
                     {% if form.equipment_model.errors %}<div class="text-danger small">{{ form.equipment_model.errors.0 }}</div>{% endif %}
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <label class="form-label">{{ form.name.label }}</label>
                     {{ form.name }}
+                    <div class="form-text">{{ form.name.help_text }}</div>
                     {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">{{ form.complexity.label }}</label>
+                    {{ form.complexity }}
+                    <div class="form-text">
+                        Единица считается сложной, если сложна хотя бы одна из её
+                        неисправностей.
+                    </div>
+                    {% if form.complexity.errors %}<div class="text-danger small">{{ form.complexity.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-12">
                     <label class="form-label">{{ form.description.label }}</label>
                     {{ form.description }}
+                    <div class="form-text">{{ form.description.help_text }}</div>
                     {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors.0 }}</div>{% endif %}
                 </div>
             </div>
@@ -53,13 +73,17 @@
                 <p class="text-muted small">
                     Список деталей, который в заказе предлагается кнопкой «Применить шаблон» —
                     он только предлагает, а редактируют его уже в самом заказе как обычные детали.
+                    Строка «для всех версий» — общая; строка с версией заменяет общую по этой же
+                    детали и только у этого исполнения (с какой-то версии тех же конденсаторов
+                    нужно не три, а пять). Применимость проставляется руками: программа
+                    не догадывается, какая версия похожа на какую.
                 </p>
                 <div id="partsFormset">
                     {{ formset.management_form }}
                     {% for line_form in formset %}
                     <div class="fault-part-row border rounded p-2 mb-2">
                         <div class="row g-2 align-items-end">
-                            <div class="col-md-6">
+                            <div class="col-md-5">
                                 <label class="form-label small">{{ line_form.part.label }}</label>
                                 {% comment %}
                                     Общий выбор детали вместо списка на весь
@@ -69,12 +93,17 @@
                                 {% include 'core/_part_picker.html' with name=line_form.part.html_name value=line_form.part.value value_label=line_form.instance.part %}
                                 {% if line_form.part.errors %}<div class="text-danger small">{{ line_form.part.errors.0 }}</div>{% endif %}
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-md-2">
                                 <label class="form-label small">{{ line_form.quantity.label }}</label>
                                 {{ line_form.quantity }}
                                 {% if line_form.quantity.errors %}<div class="text-danger small">{{ line_form.quantity.errors.0 }}</div>{% endif %}
                             </div>
                             <div class="col-md-3">
+                                <label class="form-label small">{{ line_form.version.label }}</label>
+                                {{ line_form.version }}
+                                {% if line_form.version.errors %}<div class="text-danger small">{{ line_form.version.errors.0 }}</div>{% endif %}
+                            </div>
+                            <div class="col-md-2">
                                 {% if line_form.instance.pk %}
                                 <div class="form-check">
                                     {{ line_form.DELETE }}
@@ -168,5 +197,37 @@ function removePartRow(btn) {
     partsFormNum = rows.length;
     partsTotalForms.value = partsFormNum;
 }
+
+// ===== Версии в строках рецепта =====
+// В списке остаются только версии выбранной модели: версия чужой модели
+// не сработала бы никогда — у единицы другой модели её быть не может,
+// и сервер такую строку не примет.
+const VERSION_OPTIONS = [
+    {% for version in versions %}{id: '{{ version.pk }}', model: '{{ version.equipment_model_id }}', label: '{{ version.name|escapejs }}'}{% if not forloop.last %},{% endif %}
+    {% endfor %}
+];
+const faultModelSelect = document.getElementById('{{ form.equipment_model.id_for_label }}');
+
+function fillVersionSelect(select) {
+    const modelId = faultModelSelect ? faultModelSelect.value : '';
+    const current = select.value;
+    let html = '<option value="">Для всех версий</option>';
+    VERSION_OPTIONS.forEach(function(version) {
+        if (modelId && version.model !== modelId) return;
+        html += '<option value="' + version.id + '">' + version.label + '</option>';
+    });
+    select.innerHTML = html;
+    select.value = current;
+    // Версия пропала из списка вместе со сменой модели — строка становится
+    // общей, а не сохраняет молча уточнение, которое уже ни к чему
+    if (select.value !== current) select.value = '';
+}
+
+function updateVersionSelects() {
+    document.querySelectorAll('.fault-part-version').forEach(fillVersionSelect);
+}
+
+if (faultModelSelect) faultModelSelect.addEventListener('change', updateVersionSelects);
+updateVersionSelects();
 </script>
 {% endblock %}

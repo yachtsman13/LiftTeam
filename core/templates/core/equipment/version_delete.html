@@ -1,0 +1,30 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление версии — LiftTeam v2.54.0{% endblock %}
+
+{% block content %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Подтверждение удаления</h5>
+    </div>
+    <div class="card-body">
+        <p>Вы действительно хотите удалить версию <strong>{{ version }}</strong>?</p>
+        <p class="text-muted">
+            Это действие нельзя отменить.
+            {% if equipment_count %}
+            Единиц оборудования с этой версией: {{ equipment_count }} — они
+            останутся без версии, сами единицы не пострадают.
+            {% endif %}
+            {% if recipe_count %}
+            Уточнений рецептов по этой версии: {{ recipe_count }} — они будут
+            удалены, и рецепт снова станет общим для всех исполнений.
+            {% endif %}
+        </p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'equipment_version_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

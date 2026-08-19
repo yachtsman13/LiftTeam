@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.53.0{% endblock %}
+{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.54.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -89,6 +89,20 @@
                 <div class="col-md-2">
                     <label class="form-label small">{{ line.repair_complexity.label }}</label>
                     {{ line.repair_complexity }}
+                    {% comment %}
+                        Пустое поле означает не «простой», а «не задавали»:
+                        тогда сложность выводится из выбранных типовых
+                        неисправностей. Человек должен видеть, откуда взялось
+                        то, что напечатается в предложении.
+                    {% endcomment %}
+                    {% if line.instance.complexity_is_derived %}
+                    <div class="form-text">
+                        Из неисправностей: {{ line.instance.effective_complexity_display }}.
+                        Выберите значение, чтобы задать своё.
+                    </div>
+                    {% elif line.instance.repair_complexity %}
+                    <div class="form-text">Задано вручную.</div>
+                    {% endif %}
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small">{{ line.estimated_cost.label }}, ₽</label>
