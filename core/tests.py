@@ -10550,3 +10550,31 @@ class ScanLayerWiringTests(SimpleTestCase):
         self.assertIn('MAX_AVERAGE_MS = 30', code)
         self.assertIn('REPEAT_MS = 1000', code)
         self.assertIn('payload.length * MAX_AVERAGE_MS', code)
+
+
+class LeaveDialogWithoutBootstrapTests(TestCase):
+    """Окно «Несохранённые изменения» не должно запирать человека в форме,
+    когда Bootstrap не приехал из интернета.
+
+    Переход по ссылке отменяется вызовом preventDefault ещё до показа окна.
+    Раньше следом шло обращение к `bootstrap.Modal`, и без Bootstrap оно
+    падало с ошибкой: окно не появлялось, а переход уже был отменён —
+    нажатие на ссылку не делало ровно ничего. Сама разметка окна при этом
+    проступала текстом внизу каждой страницы: прячет её правило Bootstrap,
+    которого тоже не было.
+    """
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+
+    def test_leave_dialog_falls_back_without_bootstrap(self):
+        self.assertIn("typeof bootstrap === 'undefined'", self.base)
+
+    def test_dialog_hidden_by_own_rule(self):
+        self.assertIn('.modal { display: none; }', self.base)
+
+    def test_closing_goes_through_one_guarded_helper(self):
+        """Обе кнопки закрывают окно одним защищённым помощником, а не
+        обращаются к Bootstrap напрямую."""
+        self.assertIn('function hideLeaveDialog()', self.base)
+        self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
