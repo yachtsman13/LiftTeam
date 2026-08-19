@@ -1,0 +1,120 @@
+/*
+ * Вид сообщений сканера. Правила свои, а не классы Bootstrap: он приходит
+ * из интернета, а сканером работают именно тогда, когда руки заняты и
+ * разбираться, почему полоса выглядит как голый текст, некому.
+ *
+ * Файл местный — приезжает вместе со страницей с Raspberry Pi.
+ */
+
+/* Вспышка на всё окно: подтверждение видно боковым зрением, когда взгляд
+   на полке, а не на экране. Живёт полсекунды и кликам не мешает. */
+.scan-veil {
+    position: fixed;
+    inset: 0;
+    z-index: 1086;
+    pointer-events: none;
+    opacity: 0;
+    animation: scan-veil-fade 0.5s ease-out;
+}
+.scan-veil-ok { background: rgba(25, 135, 84, 0.35); }
+.scan-veil-fail { background: rgba(176, 42, 55, 0.4); }
+
+@keyframes scan-veil-fade {
+    0% { opacity: 0; }
+    15% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* Полоса с текстом. Снизу по центру: сверху полоса «нет связи» (1090),
+   справа снизу — сообщения об остатках (1080). Она ниже полосы о связи
+   намеренно: обрыв связи важнее любого скана. */
+.scan-flash {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    z-index: 1085;
+    width: calc(100% - 24px);
+    max-width: 560px;
+    box-sizing: border-box;
+    padding: 12px 16px;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 1rem;
+    line-height: 1.35;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.scan-flash-ok { background: #146c43; }
+.scan-flash-fail { background: #b02a37; }
+
+/* Мигание самой полосы при повторном скане: два одинаковых сообщения
+   подряд иначе неотличимы от одного. */
+.scan-flash-shown { animation: scan-flash-in 0.35s ease-out; }
+
+@keyframes scan-flash-in {
+    0% { transform: translateX(-50%) scale(0.94); filter: brightness(1.8); }
+    100% { transform: translateX(-50%) scale(1); filter: brightness(1); }
+}
+
+.scan-flash-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.scan-flash-icon {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.scan-flash-text { flex: 1; }
+
+.scan-flash-actions {
+    display: block;
+    margin-top: 8px;
+}
+.scan-flash-action {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    background: #fff;
+    color: #212529;
+    text-decoration: none;
+    font-weight: 600;
+}
+.scan-flash-action:hover { background: #e9ecef; color: #000; }
+
+/* Отключение звука — прямо в полосе: другого места, до которого дотянешься
+   со сканером в руках, нет, а на складе бывает нужно замолчать немедленно. */
+.scan-flash-mute {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    padding: 2px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 20px;
+    background: transparent;
+    color: #fff;
+    font-size: 0.7rem;
+    cursor: pointer;
+}
+.scan-flash-mute:hover { background: rgba(255, 255, 255, 0.15); }
+.scan-flash-muted { border-style: dashed; opacity: 0.85; }
+
+@media print {
+    .scan-flash, .scan-veil { display: none !important; }
+}
+
+/* ---- страница «Сканирование» ---- */
+
+.scan-target {
+    border: 2px dashed #adb5bd;
+    border-radius: 12px;
+    padding: 24px 16px;
+    text-align: center;
+    color: #6c757d;
+    background: #fff;
+}
+.scan-target strong { color: #212529; }
+
+.scan-history-empty { color: #6c757d; }

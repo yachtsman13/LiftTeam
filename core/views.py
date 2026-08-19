@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.54.0.
+Views для LiftTeam v2.55.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -52,7 +52,7 @@ from .utils import (
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import invoicing, messengers, notifications, tbank, updater
+from . import invoicing, messengers, notifications, scanning, tbank, updater
 
 
 def _send_stock_update(part):
@@ -4308,6 +4308,164 @@ def short_equipment(request, pk):
     """
     get_object_or_404(Equipment, pk=pk)
     return redirect('equipment_history', pk=pk)
+
+
+# ==================== СКАНИРОВАНИЕ ====================
+
+# Сканер — это клавиатура: он «набирает» содержимое кода и жмёт Enter.
+# Ловит это `core/static/js/scanner.js`, разбирает — `core/scanning.py`,
+# а здесь только страница «что это за коробка на полке» и ответ на вопрос
+# «что лежит за этим кодом».
+#
+# Съёмка камерой браузера здесь невозможна и не задумана: камеру браузер
+# отдаёт только в защищённом окружении (HTTPS), а программа открывается
+# по обычному http на имени в Tailscale.
+
+
+@login_required
+def scan_page(request):
+    """Страница «Сканирование»: поднести любой код и увидеть, что это.
+
+    Нужна не для действия, а для ответа на вопрос: коробка с полки,
+    наклейка на пакете, приехавший прибор — что это и что с ним делать.
+    Разобранные коды копятся списком тут же, чтобы проверить несколько
+    штук подряд, не теряя предыдущие ответы.
+    """
+    return render(request, 'core/scan.html')
+
+
+def _scan_part(part):
+    cell = part.current_cell
+    return {
+        'title': part.part_number,
+        'subtitle': part.name,
+        'lines': [
+            {'label': 'Характеристики', 'value': _label_specs(part)},
+            {'label': 'Корпус', 'value': part.package},
+            {'label': 'Остаток', 'value': f'{part.current_stock} шт (минимум {part.min_stock})'},
+            {'label': 'Ячейка', 'value': cell.address if cell else 'не назначена'},
+        ],
+        'actions': [
+            {'label': 'Карточка детали', 'url': reverse('part_detail', args=[part.pk])},
+            {'label': 'Приход', 'url': reverse('part_stock_incoming', args=[part.pk])},
+            {'label': 'Расход', 'url': reverse('part_stock_outgoing', args=[part.pk])},
+        ],
+    }
+
+
+def _scan_cell(cell):
+    parts = list(cell.parts.all())
+    return {
+        'title': cell.address,
+        'subtitle': str(cell.cabinet),
+        'lines': [
+            {'label': 'Кассетница', 'value': str(cell.cabinet)},
+            {'label': 'Деталей в ячейке', 'value': str(len(parts))},
+            {'label': 'Что лежит',
+             'value': ', '.join(part.part_number for part in parts) or 'пусто'},
+        ],
+        'actions': [
+            {'label': 'Открыть в кассетнице',
+             'url': f"{reverse('storage_cell_grid')}?cabinet={cell.cabinet.number}&open_cell={cell.pk}"},
+            {'label': 'Этикетка', 'url': reverse('storage_cell_label', args=[cell.pk])},
+        ],
+    }
+
+
+def _scan_equipment(equipment):
+    return {
+        'title': equipment.serial_number,
+        'subtitle': equipment.model.full_name,
+        'lines': [
+            {'label': 'Модель', 'value': equipment.model.name},
+            {'label': 'Версия', 'value': equipment.version.name if equipment.version else ''},
+            {'label': 'Заказчик',
+             'value': equipment.current_client.name if equipment.current_client else 'не указан'},
+            {'label': 'Ремонтов', 'value': str(equipment.repair_orders.count())},
+        ],
+        'actions': [
+            {'label': 'История ремонтов', 'url': reverse('equipment_history', args=[equipment.pk])},
+            {'label': 'Карточка', 'url': reverse('equipment_edit', args=[equipment.pk])},
+        ],
+    }
+
+
+def _scan_order(order):
+    return {
+        'title': order.order_number,
+        'subtitle': order.client.name,
+        'lines': [
+            {'label': 'Статус', 'value': order.get_status_display()},
+            {'label': 'Оплата', 'value': order.get_payment_status_display()},
+            {'label': 'Принят', 'value': timezone.localtime(order.date_received).strftime('%d.%m.%Y')},
+            {'label': 'Единиц оборудования', 'value': str(order.order_equipments.count())},
+        ],
+        'actions': [
+            {'label': 'Открыть заказ', 'url': reverse('repair_order_detail', args=[order.pk])},
+        ],
+    }
+
+
+# Что искать и чем описывать — по видам кода. Модель и сборщик рядом,
+# чтобы новый вид добавлялся одной строкой, а не правкой в трёх местах.
+_SCAN_KINDS = {
+    'part': (SparePart, _scan_part),
+    'cell': (StorageCell, _scan_cell),
+    'equipment': (Equipment, _scan_equipment),
+    'order': (RepairOrder, _scan_order),
+}
+
+
+@login_required
+def scan_resolve(request):
+    """Что стоит за отсканированным кодом — в JSON, для страницы сканирования.
+
+    Разбор — общий (`core/scanning.py`), тот же, что проверяется тестами:
+    вид кода определяется видом пути, а не адресом сервера. Наклейка могла
+    быть напечатана с другой основой (`LABEL_BASE_URL`), и читаться она
+    обязана всё равно.
+
+    Неузнанный код — это ответ «не наш», а не догадка: неверно угаданный
+    номер открыл бы чужую карточку, и человек со сканером в руках этого
+    не заметил бы.
+    """
+    payload = (request.GET.get('code') or '').strip()
+    scan = scanning.decode(payload)
+
+    if not scan:
+        return JsonResponse({
+            'recognized': False,
+            'payload': payload[:200],
+            'message': 'Это не код LiftTeam. Подойдут наклейки программы — '
+                       'деталь, ячейка, оборудование, заказ.',
+        })
+
+    model, describe = _SCAN_KINDS[scan['kind']]
+    obj = model.objects.filter(pk=scan['id']).first()
+    label = scanning.kind_label(scan['kind'])
+
+    if obj is None:
+        return JsonResponse({
+            'recognized': True,
+            'found': False,
+            'kind': scan['kind'],
+            'kind_label': label,
+            'id': scan['id'],
+            'message': f'{label} №{scan["id"]} в программе не найдена — '
+                       f'запись удалили или наклейка от другой базы.',
+        })
+
+    payload_data = describe(obj)
+    payload_data.update({
+        'recognized': True,
+        'found': True,
+        'kind': scan['kind'],
+        'kind_label': label,
+        'id': scan['id'],
+    })
+    # Пустые строки не показываем: «Версия: —» ничего не добавляет
+    payload_data['lines'] = [line for line in payload_data['lines'] if line['value']]
+    return JsonResponse(payload_data)
 
 
 def label_base_url(request):

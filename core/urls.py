@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.54.0
+v2.55.0
 """
 from django.urls import path
 from . import views
@@ -90,6 +90,12 @@ urlpatterns = [
     path('parts/export/', views.part_export, name='part_export'),
     path('parts/<int:pk>/label/', views.part_label, name='part_label'),
     path('parts/labels/', views.part_labels_batch, name='part_labels_batch'),
+
+    # Сканирование. Страница «что это за коробка на полке»: поднести любой
+    # код и увидеть, что это и что с этим делать. Сам разбор кода — общий
+    # (core/scanning.py), и на нём же стоит слой сканера в браузере.
+    path('scan/', views.scan_page, name='scan_page'),
+    path('scan/resolve/', views.scan_resolve, name='scan_resolve'),
 
     # Короткие адреса для QR-кодов: чем короче ссылка, тем крупнее модули кода.
     # `e` сохранён, хотя отдельную этикетку оборудования больше не печатают:

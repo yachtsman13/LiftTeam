@@ -30,7 +30,7 @@ from django.utils import timezone
 
 from django import forms
 
-from . import invoicing, messengers, net, notifications, tbank, tochka, views, webhooks
+from . import invoicing, messengers, net, notifications, scanning, tbank, tochka, views, webhooks
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
@@ -10326,3 +10326,227 @@ class MigrationOnLiveDataTests(TransactionTestCase):
 
         # Заказ и его оборудование на месте
         self.assertEqual(RepairOrder.objects.get(order_number='M-1').order_equipments.count(), 1)
+
+
+class ScanDecodeTests(SimpleTestCase):
+    """Разбор того, что пришло со сканера.
+
+    Главное здесь — что вид кода определяется видом пути, а не адресом
+    сервера: наклейки печатались с той основы, что стояла в LABEL_BASE_URL
+    на момент печати, и вчерашняя наклейка обязана читаться сегодня.
+    Второе главное — что неузнанный код именно неузнан, а не угадан:
+    угаданный номер открыл бы чужую карточку, и человек со сканером
+    в руках этого не заметил бы.
+    """
+
+    def test_all_four_kinds(self):
+        for prefix, kind in (('p', 'part'), ('c', 'cell'), ('e', 'equipment'), ('o', 'order')):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    scanning.decode(f'http://lifteam.taile9b605.ts.net/{prefix}/12'),
+                    {'kind': kind, 'id': 12},
+                )
+
+    def test_host_does_not_matter(self):
+        """Наклейка напечатана с другого адреса — читается всё равно."""
+        for payload in (
+            'http://lifteam.taile9b605.ts.net/p/7',
+            'http://192.168.1.50:8000/p/7',
+            'https://lifteam.example.org/p/7',
+            'http://100.83.12.4/p/7',
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(scanning.decode(payload), {'kind': 'part', 'id': 7})
+
+    def test_with_and_without_trailing_slash(self):
+        self.assertEqual(scanning.decode('http://pi/o/3'), {'kind': 'order', 'id': 3})
+        self.assertEqual(scanning.decode('http://pi/o/3/'), {'kind': 'order', 'id': 3})
+
+    def test_bare_path_and_whitespace(self):
+        """Со сканера приходит и голый путь, и лишние пробелы вокруг."""
+        self.assertEqual(scanning.decode('/c/5'), {'kind': 'cell', 'id': 5})
+        self.assertEqual(scanning.decode('c/5'), {'kind': 'cell', 'id': 5})
+        self.assertEqual(scanning.decode('  \n/c/5/\t '), {'kind': 'cell', 'id': 5})
+        self.assertEqual(scanning.decode('﻿/c/5'), {'kind': 'cell', 'id': 5})
+
+    def test_query_and_fragment_are_ignored(self):
+        self.assertEqual(scanning.decode('http://pi/p/9?from=label'), {'kind': 'part', 'id': 9})
+        self.assertEqual(scanning.decode('http://pi/p/9#top'), {'kind': 'part', 'id': 9})
+
+    def test_not_ours_is_not_guessed(self):
+        """Всё, что не одна из четырёх форм, — чужой код, а не догадка."""
+        for payload in (
+            '',
+            None,
+            '4607034170264',                      # штрихкод товара из магазина
+            'https://example.com/',
+            'http://pi/parts/12/',                # длинный адрес той же детали
+            '/p/',
+            '/p/abc',
+            '/x/12',
+            '/p/12/edit/',
+            '/p/12 /c/13',
+            'p12',
+            'BEGIN:VCARD',
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(scanning.decode(payload))
+
+    def test_kind_label_is_russian(self):
+        self.assertEqual(scanning.kind_label('part'), 'Радиодеталь')
+        self.assertEqual(scanning.kind_label('nonsense'), 'Неизвестный вид')
+
+
+class ScanPageTests(TestCase):
+    """Страница «Сканирование» и разбор кода на сервере."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='scan_user', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+        self.part = SparePart.objects.create(
+            part_number='SCAN-R1', name='Резистор для скана',
+            component_type='Резистор', current_stock=8, min_stock=2,
+        )
+        self.cabinet = Cabinet.objects.create(number=11, name='Сканы')
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.order_by('cell_row').first()
+        self.cell.parts.add(self.part)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-скан')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='SN-SCAN-1')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Скан', inn='7700000222')
+        )
+
+    def _resolve(self, code):
+        return self.client_http.get('/scan/resolve/', {'code': code}).json()
+
+    def test_page_requires_login(self):
+        for url in ('/scan/', '/scan/resolve/'):
+            with self.subTest(url=url):
+                response = TestClient().get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn('/login/', response['Location'])
+
+    def test_page_opens(self):
+        response = self.client_http.get('/scan/')
+        self.assertEqual(response.status_code, 200)
+
+    def test_resolves_all_four_kinds(self):
+        cases = {
+            f'/p/{self.part.pk}': ('part', 'SCAN-R1'),
+            f'/c/{self.cell.pk}': ('cell', self.cell.address),
+            f'/e/{self.equipment.pk}': ('equipment', 'SN-SCAN-1'),
+            f'/o/{self.order.pk}': ('order', self.order.order_number),
+        }
+        for code, (kind, title) in cases.items():
+            with self.subTest(code=code):
+                data = self._resolve(code)
+                self.assertTrue(data['recognized'])
+                self.assertTrue(data['found'])
+                self.assertEqual(data['kind'], kind)
+                self.assertEqual(data['title'], title)
+                self.assertTrue(data['actions'])
+
+    def test_foreign_host_resolves(self):
+        """Наклейка напечатана с другой основой — код всё равно наш."""
+        data = self._resolve(f'http://lifteam.taile9b605.ts.net/p/{self.part.pk}')
+        self.assertTrue(data['found'])
+        self.assertEqual(data['title'], 'SCAN-R1')
+
+    def test_slash_at_the_end_does_not_matter(self):
+        without = self._resolve(f'/o/{self.order.pk}')
+        with_slash = self._resolve(f'/o/{self.order.pk}/')
+        self.assertEqual(without, with_slash)
+
+    def test_missing_object_is_reported_not_invented(self):
+        data = self._resolve('/p/999999')
+        self.assertTrue(data['recognized'])
+        self.assertFalse(data['found'])
+        self.assertEqual(data['kind'], 'part')
+        self.assertIn('не найдена', data['message'])
+
+    def test_unrecognized_payload(self):
+        data = self._resolve('4607034170264')
+        self.assertFalse(data['recognized'])
+        self.assertNotIn('kind', data)
+        self.assertIn('не код LiftTeam', data['message'])
+
+    def test_part_answer_carries_stock_and_cell(self):
+        """По ответу решают, идти к полке или заказывать, — значит остаток
+        и адрес ячейки обязательны."""
+        data = self._resolve(f'/p/{self.part.pk}')
+        values = {line['label']: line['value'] for line in data['lines']}
+        self.assertIn('8 шт', values['Остаток'])
+        self.assertEqual(values['Ячейка'], self.cell.address)
+
+    def test_short_routes_lead_where_the_scan_says(self):
+        """Скан без подписанного экрана открывает объект — теми же
+        короткими адресами, что записаны в QR."""
+        response = self.client_http.get(f'/p/{self.part.pk}')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], f'/parts/{self.part.pk}/')
+
+
+class ScanLayerWiringTests(SimpleTestCase):
+    """Слой сканера подключён на каждой странице и не зависит от Bootstrap.
+
+    Bootstrap приезжает из интернета и не приезжал уже дважды; сканером
+    работают с занятыми руками, и молчащая полоса подтверждения — это
+    способ завести неверные данные, не заметив этого.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+    TEMPLATES = Path(__file__).resolve().parent / 'templates' / 'core'
+
+    def _code(self, path):
+        """Сам код, без комментариев: в них как раз и написано, чего
+        здесь быть не должно."""
+        source = path.read_text(encoding='utf-8')
+        source = re.sub(r'/\*.*?\*/', '', source, flags=re.S)
+        return re.sub(r'^\s*//.*$', '', source, flags=re.M)
+
+    def test_loaded_from_base_template(self):
+        base = (self.TEMPLATES / 'base.html').read_text(encoding='utf-8')
+        self.assertIn("js/scanner.js", base)
+        self.assertIn("css/scanner.css", base)
+
+    def test_no_bootstrap_js(self):
+        for name in ('static/js/scanner.js', 'templates/core/scan.html'):
+            with self.subTest(file=name):
+                path = Path(__file__).resolve().parent / name
+                code = self._code(path)
+                self.assertNotIn('data-bs-', code)
+                self.assertNotIn('bootstrap.', code)
+                self.assertNotIn('new bootstrap', code)
+
+    def test_requests_go_through_the_connection_layer(self):
+        """Голый fetch означал бы, что обрыв связи выглядит как «не найдено»
+        вместо общей полосы вверху страницы."""
+        code = self._code(self.TEMPLATES / 'scan.html')
+        self.assertIn('LiftTeamWS.fetch', code)
+        self.assertNotIn('window.fetch(', code)
+
+    def test_scanner_knows_the_same_four_kinds_as_the_server(self):
+        """Разбор в браузере и на сервере обязан совпадать: расхождение
+        означало бы, что скан открывает не то, что показала страница."""
+        code = self._code(self.STATIC / 'js' / 'scanner.js')
+        for prefix, kind in scanning.KINDS.items():
+            with self.subTest(prefix=prefix):
+                self.assertIn(f"{prefix}: '{kind}'", code)
+
+    def test_repeat_and_speed_thresholds_are_stated(self):
+        """Пороги — предмет этого слоя: скан узнаётся по средней скорости
+        набора, а повтор в течение секунды считается одним сканом.
+
+        Средняя, а не каждый промежуток по отдельности: в браузере видно,
+        как заминка посреди кода разрывала его пополам и деталь
+        превращалась в «это не наш код»."""
+        code = self._code(self.STATIC / 'js' / 'scanner.js')
+        self.assertIn('MAX_AVERAGE_MS = 30', code)
+        self.assertIn('REPEAT_MS = 1000', code)
+        self.assertIn('payload.length * MAX_AVERAGE_MS', code)

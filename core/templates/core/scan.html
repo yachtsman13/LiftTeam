@@ -1,0 +1,240 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Сканирование — LiftTeam v2.55.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-upc-scan"></i> Сканирование</h2>
+    {% comment %}
+        Отключение звука — обычный флажок, без Bootstrap JS. Состояние
+        хранится в браузере: на складском терминале звук нужен, а за столом
+        в тишине — нет, и решать это должно устройство, а не настройка
+        на весь коллектив.
+    {% endcomment %}
+    <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="scanSound" checked>
+        <label class="form-check-label" for="scanSound">Звук сканера</label>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-7">
+        <div class="scan-target mb-3" id="scanTarget">
+            <div class="fs-4 mb-1"><i class="bi bi-upc-scan"></i></div>
+            <div><strong>Поднесите сканер к коду на наклейке</strong></div>
+            <div class="small mt-1">
+                Деталь, ячейка, оборудование или заказ — программа скажет, что это.
+                Никуда нажимать не нужно: сканер работает как клавиатура.
+            </div>
+        </div>
+
+        {% comment %}
+            Ручной ввод — для кода, который не читается (наклейка потёрлась)
+            и для проверки сканера. Набор руками медленный, слой сканера его
+            не перехватывает, поэтому отправляем сами.
+        {% endcomment %}
+        <form class="input-group mb-3" id="scanManualForm">
+            <input type="text" class="form-control" id="scanManualInput"
+                   placeholder="Или наберите код руками: /p/12" autocomplete="off">
+            <button class="btn btn-outline-secondary" type="submit">Разобрать</button>
+        </form>
+
+        <div id="scanResult"></div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Сканы этой сессии</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="scanHistoryClear">Очистить</button>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush" id="scanHistory">
+                    <div class="list-group-item scan-history-empty">Пока ничего не сканировали</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">Что нужно от сканера</div>
+            <div class="card-body small">
+                <p class="mb-2">
+                    Годится только <strong>двумерный сканер (2D imager)</strong>: обычный
+                    одномерный лазерный QR-код не читает вовсе, ни при какой настройке.
+                </p>
+                <p class="mb-2">
+                    Сканер должен посылать <strong>Enter</strong> после кода — почти все
+                    так и настроены с завода.
+                </p>
+                <p class="mb-2">
+                    Устройство, с которого сканируют, обязано быть в той же сети Tailscale:
+                    в коде записана ссылка на программу.
+                </p>
+                <p class="mb-0 text-muted">
+                    Съёмка камерой телефона прямо со страницы невозможна: браузер отдаёт
+                    камеру только по HTTPS, а программа открывается по обычному http.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    'use strict';
+
+    var HISTORY_LIMIT = 8;
+
+    var resultBox = document.getElementById('scanResult');
+    var historyBox = document.getElementById('scanHistory');
+    var soundBox = document.getElementById('scanSound');
+    var manualForm = document.getElementById('scanManualForm');
+    var manualInput = document.getElementById('scanManualInput');
+    var history = [];
+
+    /* ---- звук ---- */
+
+    soundBox.checked = !LiftTeamScanner.isMuted();
+    soundBox.addEventListener('change', function () {
+        LiftTeamScanner.setMuted(!soundBox.checked);
+    });
+    // Звук выключают и кнопкой в самой полосе сообщения — флажок должен
+    // это показывать, иначе он врёт
+    document.addEventListener('scanner:mute', function (event) {
+        soundBox.checked = !event.detail.muted;
+    });
+
+    /* ---- разметка ответа ---- */
+
+    function element(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null) node.textContent = text;
+        return node;
+    }
+
+    function card(data) {
+        var box = element('div', 'card mb-3');
+        var header = element('div', 'card-header d-flex justify-content-between align-items-center');
+        header.appendChild(element('span', 'fw-bold', data.kind_label || 'Неизвестный код'));
+        if (data.id) header.appendChild(element('span', 'badge bg-secondary', '№' + data.id));
+        box.appendChild(header);
+
+        var body = element('div', 'card-body');
+
+        if (!data.recognized || !data.found) {
+            body.appendChild(element('p', 'mb-0', data.message));
+            box.appendChild(body);
+            box.classList.add('border-danger');
+            return box;
+        }
+
+        body.appendChild(element('h5', 'card-title mb-1', data.title));
+        if (data.subtitle) body.appendChild(element('p', 'text-muted mb-3', data.subtitle));
+
+        var list = element('dl', 'row mb-3');
+        (data.lines || []).forEach(function (line) {
+            list.appendChild(element('dt', 'col-5 col-sm-4 small text-muted', line.label));
+            list.appendChild(element('dd', 'col-7 col-sm-8 mb-1', line.value));
+        });
+        body.appendChild(list);
+
+        var actions = element('div', 'd-flex gap-2 flex-wrap');
+        (data.actions || []).forEach(function (action) {
+            var link = element('a', 'btn btn-sm btn-outline-primary', action.label);
+            link.href = action.url;
+            actions.appendChild(link);
+        });
+        body.appendChild(actions);
+
+        box.appendChild(body);
+        return box;
+    }
+
+    function show(data) {
+        resultBox.innerHTML = '';
+        resultBox.appendChild(card(data));
+    }
+
+    /* ---- список сканов ----
+       Держится на странице, а не на сервере: смысл в том, чтобы проверить
+       подряд несколько коробок и видеть предыдущие ответы. Журнала сканов
+       программа не ведёт. */
+
+    function remember(data) {
+        history.unshift(data);
+        if (history.length > HISTORY_LIMIT) history.length = HISTORY_LIMIT;
+        drawHistory();
+    }
+
+    function drawHistory() {
+        historyBox.innerHTML = '';
+        if (!history.length) {
+            historyBox.appendChild(
+                element('div', 'list-group-item scan-history-empty', 'Пока ничего не сканировали'));
+            return;
+        }
+        history.forEach(function (data) {
+            var row = element('div', 'list-group-item');
+            var line = element('div', 'd-flex justify-content-between align-items-start gap-2');
+            var left = element('div');
+            left.appendChild(element('div', 'fw-bold', data.title || data.payload || 'Не наш код'));
+            left.appendChild(element('div', 'small text-muted',
+                data.found ? (data.kind_label + (data.subtitle ? ' · ' + data.subtitle : ''))
+                           : data.message));
+            line.appendChild(left);
+            if (data.found && data.actions && data.actions.length) {
+                var link = element('a', 'btn btn-sm btn-outline-secondary', 'Открыть');
+                link.href = data.actions[0].url;
+                line.appendChild(link);
+            }
+            row.appendChild(line);
+            historyBox.appendChild(row);
+        });
+    }
+
+    document.getElementById('scanHistoryClear').addEventListener('click', function () {
+        history = [];
+        drawHistory();
+        resultBox.innerHTML = '';
+    });
+
+    /* ---- сам скан ----
+       Экран принимает все четыре вида: он для того и сделан. Ответ уходит
+       обратно слою сканера строкой или отказом — говорит о результате он,
+       здесь только разметка. */
+
+    LiftTeamScanner.register({
+        kinds: ['part', 'cell', 'equipment', 'order'],
+        name: 'Сканирование',
+        onScan: function (scan) {
+            // LiftTeamWS.fetch, а не голый fetch: обрыв связи должен поднять
+            // общую полосу вверху страницы, а не выглядеть как «не найдено»
+            return LiftTeamWS.fetch('{% url "scan_resolve" %}?code=' + encodeURIComponent(scan.payload))
+                .then(function (response) {
+                    return response.ok ? response.json() : Promise.reject(response.status);
+                })
+                .then(function (data) {
+                    data.payload = scan.payload;
+                    show(data);
+                    remember(data);
+                    if (!data.found) {
+                        return {ok: false, text: data.message};
+                    }
+                    return data.kind_label + ': ' + data.title;
+                });
+        }
+    });
+
+    manualForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var text = manualInput.value.trim();
+        if (!text) return;
+        manualInput.value = '';
+        LiftTeamScanner.submit(text);
+    });
+})();
+</script>
+{% endblock %}
