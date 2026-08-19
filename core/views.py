@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.52.0.
+Views для LiftTeam v2.53.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -1278,11 +1278,20 @@ def _as_number(value):
         return None
 
 
-def _filter_parts(request):
-    """Общая фильтрация деталей по параметрам GET-запроса (используется списком и экспортом)."""
-    search = request.GET.get('q', '')
-    component_type = request.GET.get('component_type', '')
-    package = request.GET.get('package', '')
+def _filter_parts(params):
+    """Общая фильтрация деталей по параметрам запроса.
+
+    Одна на всех, кто отбирает детали: список, выгрузка и поиск для выбора
+    детали из формы. Второй набор условий рядом с этим неизбежно разошёлся
+    бы с ним — и «найдено 3» в списке не совпадало бы с тем, что предлагает
+    выбор детали в заказе.
+
+    `params` — словарь параметров запроса (`request.GET`), а не сам запрос:
+    так же отбирает и то, что фильтров в адресной строке не имеет.
+    """
+    search = params.get('q', '')
+    component_type = params.get('component_type', '')
+    package = params.get('package', '')
 
     # Диапазоны характеристик: поле в модели -> префикс параметра
     ranges = {
@@ -1292,13 +1301,17 @@ def _filter_parts(request):
         'capacitance': 'capacitance',
         'power': 'power',
     }
-    stock_state = request.GET.get('stock_state', '')
+    stock_state = params.get('stock_state', '')
     # Старая ссылка вида ?below_min=1 продолжает работать
-    if not stock_state and request.GET.get('below_min'):
+    if not stock_state and params.get('below_min'):
         stock_state = 'below'
 
-    stock_from = request.GET.get('stock_from', '')
-    stock_to = request.GET.get('stock_to', '')
+    stock_from = params.get('stock_from', '')
+    stock_to = params.get('stock_to', '')
+    # «Только то, что есть в наличии» — отдельно от условий про минимум:
+    # выбирающему деталь важно, лежит она на полке или нет, а не насколько
+    # запас близок к минимальному
+    in_stock = params.get('in_stock', '')
 
     parts = SparePart.objects.all()
     if search:
@@ -1313,6 +1326,8 @@ def _filter_parts(request):
         parts = parts.filter(component_type=component_type)
     if package:
         parts = parts.filter(package=package)
+    if in_stock:
+        parts = parts.filter(current_stock__gt=0)
 
     context = {
         'search': search,
@@ -1321,11 +1336,12 @@ def _filter_parts(request):
         'stock_from': stock_from,
         'stock_to': stock_to,
         'stock_state': stock_state,
+        'in_stock': in_stock,
     }
 
     for field, prefix in ranges.items():
         for bound, lookup in (('from', 'gte'), ('to', 'lte')):
-            raw = request.GET.get(f'{prefix}_{bound}', '')
+            raw = params.get(f'{prefix}_{bound}', '')
             context[f'{prefix}_{bound}'] = raw
             value = _as_number(raw)
             if value is not None:
@@ -1354,7 +1370,7 @@ def _filter_parts(request):
 
 @login_required
 def part_list(request):
-    parts, filter_context = _filter_parts(request)
+    parts, filter_context = _filter_parts(request.GET)
 
     paginator = Paginator(parts.order_by('part_number'), 25)
     page = request.GET.get('page')
@@ -1367,10 +1383,80 @@ def part_list(request):
     })
 
 
+# Сколько деталей отдавать в выбор детали за один запрос. Каталог — сотни
+# записей, и вываливать их целиком незачем: список длиннее полусотни уже
+# не просматривают, его уточняют. Что показано не всё, ответ говорит прямо —
+# иначе человек решит, что остальных деталей в программе нет
+PART_SEARCH_LIMIT = 50
+
+
+def _part_search_row(part):
+    """Одна строка выбора детали.
+
+    Остаток и адрес ячейки — не украшение: по ним решают, идти за деталью
+    к полке или заказывать её, и выбор без них просто отодвигает вопрос
+    на шаг дальше.
+    """
+    # Ячейку берём из уже загруженного списка, а не через current_cell:
+    # тот делает свой запрос на каждую деталь и сводит prefetch на нет
+    cells = list(part.storage_cells.all())
+    return {
+        'id': part.pk,
+        'part_number': part.part_number,
+        'name': part.name,
+        'label': f'{part.part_number} — {part.name}',
+        'specs': part.specs_display,
+        'component_type': part.component_type,
+        'package': part.package,
+        'stock': part.current_stock,
+        'min_stock': part.min_stock,
+        'stock_state': part.stock_state,
+        'cell': cells[0].address if cells else '',
+    }
+
+
+@login_required
+def part_search(request):
+    """Поиск детали для выбора из формы (JSON).
+
+    Отбор — тот же `_filter_parts`, что у списка радиодеталей: выбор детали
+    в заказе должен находить ровно то же, что и склад.
+
+    `exclude` — детали, которые в этом месте выбирать не из чего (например,
+    уже лежащие в этой ячейке). `id` — обратный запрос: как называется
+    деталь с таким номером; им подписывается уже сделанный выбор, когда
+    страница вернулась с ошибкой формы.
+    """
+    parts, _ = _filter_parts(request.GET)
+
+    part_id = request.GET.get('id', '')
+    if part_id.isdigit():
+        parts = parts.filter(pk=int(part_id))
+
+    exclude = [value for value in request.GET.get('exclude', '').split(',') if value.isdigit()]
+    if exclude:
+        parts = parts.exclude(pk__in=[int(value) for value in exclude])
+
+    parts = parts.prefetch_related('storage_cells__cabinet').order_by('part_number')
+    total = parts.count()
+    data = {
+        'results': [_part_search_row(part) for part in parts[:PART_SEARCH_LIMIT]],
+        'total': total,
+        'limit': PART_SEARCH_LIMIT,
+        'limited': total > PART_SEARCH_LIMIT,
+    }
+    # Список типов компонентов нужен выбору один раз — на первое открытие.
+    # Отдавать его на каждое нажатие клавиши значило бы гонять лишний
+    # запрос к базе на каждую букву
+    if request.GET.get('with_types'):
+        data['component_types'] = _part_choices()['component_types']
+    return JsonResponse(data)
+
+
 @login_required
 def part_export(request):
     """Экспорт радиодеталей в Excel (с учётом текущих фильтров списка)."""
-    parts, _ = _filter_parts(request)
+    parts, _ = _filter_parts(request.GET)
 
     # Заголовки — имена полей, а не русские подписи: этот же файл принимает
     # импорт, и переименование колонок разорвало бы выгрузку и загрузку
@@ -1840,21 +1926,16 @@ def storage_cell_grid(request):
         for number in sorted(rows_map)
     ]
 
-    parts = SparePart.objects.all().order_by('part_number')
-    all_parts_data = [
-        {'id': p.pk, 'label': f'{p.part_number} — {p.name}'}
-        for p in parts
-    ]
-
+    # Каталог деталей на страницу больше не выгружается: выбор детали
+    # спрашивает сервер сам. Прежде здесь в каждую сетку уезжали сотни
+    # записей — ровно тот список, который человек и не мог пролистать
     return render(request, 'core/storage_cells/grid.html', {
         'rows': rows,
         'cabinet': cabinet,
         'cabinets': cabinets,
         'selected_part': selected_part,
-        'parts': parts,
         'move_from': move_from,
         'cells_data_json': json.dumps(cells_data, ensure_ascii=False),
-        'all_parts_json': json.dumps(all_parts_data, ensure_ascii=False),
     })
 
 
@@ -2621,10 +2702,13 @@ def report_stock_movements(request):
     paginator = Paginator(movements, 50)
     page = request.GET.get('page')
 
-    parts_list = SparePart.objects.all().order_by('part_number')
+    # Отбор по детали — общий выбор детали, а не список всего каталога:
+    # подписать выбранное нужно только её одной
+    part_id = filter_context['part_id']
+    selected_part = SparePart.objects.filter(pk=part_id).first() if part_id.isdigit() else None
     return render(request, 'core/reports/stock_movements.html', {
         'movements': paginator.get_page(page),
-        'parts_list': parts_list,
+        'selected_part': selected_part,
         'movement_types': StockMovement.MOVEMENT_TYPE_CHOICES,
         **filter_context,
     })
@@ -4120,7 +4204,7 @@ def part_labels_batch(request):
     if ids:
         parts = SparePart.objects.filter(pk__in=ids)
     else:
-        parts, _ = _filter_parts(request)
+        parts, _ = _filter_parts(request.GET)
 
     parts = list(parts.prefetch_related('storage_cells').order_by('part_number')[:MAX_LABELS_PER_BATCH])
     base_url = label_base_url(request)

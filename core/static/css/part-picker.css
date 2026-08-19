@@ -1,0 +1,167 @@
+/*
+ * Выбор детали (part-picker.js, шаблон core/_part_picker.html).
+ *
+ * Свой файл, а не классы Bootstrap: Bootstrap приезжает из интернета,
+ * и панель выбора обязана оставаться пригодной, когда он не приехал.
+ * Классы Bootstrap здесь используются только для вида кнопок и полей —
+ * всё, от чего зависит, видно панель или нет и где она стоит, задано тут.
+ *
+ * Размеры — в rem и процентах: тем же выбором пользуются с телефона.
+ */
+
+.part-picker {
+    position: relative;
+}
+
+/* Поле с выбранной деталью не редактируется руками, но кликается —
+   поэтому курсор указывает на действие, а не на ввод текста */
+.part-picker-display {
+    cursor: pointer;
+    background-color: #fff;
+}
+
+.part-picker-panel {
+    position: fixed;
+    z-index: 1085;              /* выше модального окна (1055), ниже полосы «нет связи» (1090) */
+    display: flex;
+    flex-direction: column;
+    max-height: 420px;
+    padding: 10px;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid #ced4da;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    box-sizing: border-box;
+}
+
+.part-picker-head {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.part-picker-head .part-picker-query {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.part-picker-close {
+    flex: 0 0 auto;
+    line-height: 1;
+    font-size: 1.1rem;
+    padding: 0.25rem 0.6rem;
+}
+
+.part-picker-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 0.85rem;
+}
+
+.part-picker-filters .part-picker-type {
+    flex: 1 1 140px;
+    min-width: 0;
+}
+
+.part-picker-stock-filter {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    cursor: pointer;
+    margin: 0;
+}
+
+.part-picker-results {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 60px;
+    border-top: 1px solid #e9ecef;
+}
+
+.part-picker-result {
+    padding: 7px 8px;
+    border-bottom: 1px solid #f1f3f5;
+    cursor: pointer;
+    line-height: 1.25;
+}
+
+.part-picker-result:hover,
+.part-picker-result.active {
+    background: #e7f1ff;
+}
+
+.part-picker-main {
+    font-size: 0.92rem;
+}
+
+.part-picker-number {
+    font-weight: 600;
+}
+
+.part-picker-name {
+    color: #212529;
+}
+
+.part-picker-specs,
+.part-picker-meta {
+    font-size: 0.78rem;
+    color: #6c757d;
+}
+
+.part-picker-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 2px;
+}
+
+/* Те же три состояния остатка, что и в сетке кассетниц: дефицит красным,
+   «ровно на минимуме» — предупреждением. Разные цвета в разных местах
+   означали бы, что одну и ту же деталь надо перепроверять глазами. */
+.part-picker-stock-low {
+    color: #b02a37;
+    font-weight: 600;
+}
+
+.part-picker-stock-edge {
+    color: #997404;
+    font-weight: 600;
+}
+
+.part-picker-cell {
+    color: #0a58ca;
+}
+
+.part-picker-empty,
+.part-picker-notice {
+    padding: 10px 4px;
+    font-size: 0.82rem;
+    color: #6c757d;
+}
+
+.part-picker-notice {
+    padding: 0 4px;
+    border-top: 1px solid #e9ecef;
+    padding-top: 6px;
+}
+
+/* Телефон: панель занимает экран целиком. Выпадающий список в четыре
+   строки под полем на 390 px бесполезен — в него не видно ни остатка,
+   ни адреса ячейки, ради которых выбор и затевался. */
+@media (max-width: 575.98px) {
+    .part-picker-panel {
+        left: 8px;
+        right: 8px;
+        /* Ниже кнопки меню: она на узком экране висит в левом верхнем углу
+           поверх всего (z-index 1100), и панель, начатая от восьми пикселей,
+           получала эту кнопку прямо на поле поиска. */
+        top: 62px;
+        bottom: 8px;
+        width: auto;
+        max-height: none;
+    }
+}

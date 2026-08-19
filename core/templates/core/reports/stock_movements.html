@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Журнал движений — LiftTeam v2.52.0{% endblock %}
+{% block title %}Журнал движений — LiftTeam v2.53.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -14,13 +14,12 @@
 <div class="card">
     <div class="card-body">
         <form method="get" class="row g-3 mb-3">
+            {% comment %}
+                Отбор по детали — общий выбор детали с поиском вместо списка
+                всего каталога. Уходит то же поле «part» с её номером.
+            {% endcomment %}
             <div class="col-md-3">
-                <select name="part" class="form-select">
-                    <option value="">Все детали</option>
-                    {% for p in parts_list %}
-                    <option value="{{ p.pk }}" {% if part_id == p.pk|stringformat:"s" %}selected{% endif %}>{{ p.part_number }}</option>
-                    {% endfor %}
-                </select>
+                {% include 'core/_part_picker.html' with name='part' value=selected_part.pk value_label=selected_part placeholder='Все детали' %}
             </div>
             <div class="col-md-2">
                 <select name="type" class="form-select">

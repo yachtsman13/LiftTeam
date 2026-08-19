@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.52.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.53.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -241,12 +241,15 @@
             <option value="{{ c.number }}" {% if cabinet.pk == c.pk %}selected{% endif %}>Кассетница {{ c.label }}</option>
             {% endfor %}
         </select>
-        <select class="form-select" style="width: 220px;" onchange="window.location.href='?cabinet={{ cabinet.number }}&selected_part='+this.value">
-            <option value="">Выбрать деталь...</option>
-            {% for p in parts %}
-            <option value="{{ p.pk }}" {% if selected_part == p %}selected{% endif %}>{{ p.part_number }} — {{ p.name }}</option>
-            {% endfor %}
-        </select>
+        {% comment %}
+            Показать деталь на сетке. Раньше здесь был список всего каталога;
+            теперь общий выбор детали — с поиском, отборами, остатком
+            и адресом ячейки. Выбранная деталь подсвечивается сразу:
+            переход делает обработчик события ниже.
+        {% endcomment %}
+        <div id="gridPartPicker" style="width: 260px;">
+            {% include 'core/_part_picker.html' with name='selected_part_picker' value=selected_part.pk value_label=selected_part placeholder='Найти деталь на сетке...' %}
+        </div>
     </div>
 </div>
 
@@ -321,10 +324,17 @@
             <div class="modal-body cell-info-modal">
                 <div id="infoPartsList" class="cell-parts-list"></div>
 
+                {% comment %}
+                    Добавление детали в ячейку. Прежде здесь был список всего
+                    каталога, собранный на странице; теперь общий выбор детали,
+                    который спрашивает сервер. Детали, уже лежащие в этой
+                    ячейке, из поиска исключаются — их номера проставляет
+                    showCellInfo в data-exclude.
+                {% endcomment %}
                 <form id="addPartForm" class="d-flex gap-2 mb-3" onsubmit="return submitAddPart(event)">
-                    <select id="addPartSelect" class="form-select">
-                        <option value="">Добавить деталь в эту ячейку...</option>
-                    </select>
+                    <div id="addPartPicker" class="flex-grow-1">
+                        {% include 'core/_part_picker.html' with name='part_id' placeholder='Добавить деталь в эту ячейку...' %}
+                    </div>
                     <button type="submit" class="btn btn-success text-nowrap"><i class="bi bi-plus-lg me-1"></i>Добавить</button>
                 </form>
 
@@ -371,7 +381,6 @@
 
 <script>
 const CELLS_DATA = {{ cells_data_json|safe }};
-const ALL_PARTS = {{ all_parts_json|safe }};
 
 // Живое обновление остатков (stock-updates.js) лежит в отдельном файле
 // и до объявленной через const переменной не дотянется — отдаём явно.
@@ -409,6 +418,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 });
+
+// Выбор детали в панели инструментов: переход на сетку с подсветкой.
+// Слушаем событие выбора, а не onchange списка, которого больше нет.
+(function () {
+    const toolbarPicker = document.querySelector('#gridPartPicker .part-picker');
+    if (!toolbarPicker) return;
+    toolbarPicker.addEventListener('part-picker:change', function (event) {
+        const params = new URLSearchParams();
+        params.set('cabinet', '{{ cabinet.number }}');
+        if (event.detail.id) params.set('selected_part', event.detail.id);
+        window.location.href = '?' + params.toString();
+    });
+})();
 
 function handleCellClick(el) {
     const cellId = el.dataset.cellId;
@@ -458,12 +480,11 @@ function showCellInfo(el) {
         }).join('');
     }
 
-    const inCellIds = data.parts.map(function(p) { return p.id; });
-    const select = document.getElementById('addPartSelect');
-    select.innerHTML = '<option value="">Добавить деталь в эту ячейку...</option>' +
-        ALL_PARTS.filter(function(p) { return inCellIds.indexOf(p.id) === -1; })
-            .map(function(p) { return '<option value="' + p.id + '">' + escapeHtml(p.label) + '</option>'; })
-            .join('');
+    // Деталей, уже лежащих в этой ячейке, в выборе быть не должно —
+    // раньше их отсеивал сам список, теперь отсеивает поиск на сервере
+    const picker = document.querySelector('#addPartPicker .part-picker');
+    picker.dataset.exclude = data.parts.map(function(p) { return p.id; }).join(',');
+    LiftTeamPartPicker.reset(picker);
 
     document.getElementById('infoLabelLink').href = '/storage-cells/' + selectedCellId + '/label/';
 
@@ -481,8 +502,11 @@ function escapeHtml(str) {
 // и даёт понятный текст вместо технического сообщения браузера.
 function submitAddPart(event) {
     event.preventDefault();
-    const partId = document.getElementById('addPartSelect').value;
-    if (!partId) return false;
+    const partId = document.querySelector('#addPartPicker .part-picker-value').value;
+    if (!partId) {
+        alert('Сначала выберите деталь');
+        return false;
+    }
 
     LiftTeamWS.fetch('/storage-cells/' + selectedCellId + '/add-part/', {
         method: 'POST',

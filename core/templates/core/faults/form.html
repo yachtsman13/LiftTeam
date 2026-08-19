@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.52.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.53.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -61,7 +61,12 @@
                         <div class="row g-2 align-items-end">
                             <div class="col-md-6">
                                 <label class="form-label small">{{ line_form.part.label }}</label>
-                                {{ line_form.part }}
+                                {% comment %}
+                                    Общий выбор детали вместо списка на весь
+                                    каталог. Имя поля прежнее (parts-N-part),
+                                    формсет об этой замене не знает.
+                                {% endcomment %}
+                                {% include 'core/_part_picker.html' with name=line_form.part.html_name value=line_form.part.value value_label=line_form.instance.part %}
                                 {% if line_form.part.errors %}<div class="text-danger small">{{ line_form.part.errors.0 }}</div>{% endif %}
                             </div>
                             <div class="col-md-3">
@@ -105,11 +110,18 @@ let partsFormNum = parseInt(partsTotalForms.value);
 
 function addPartRow() {
     const container = document.getElementById('partsFormset');
-    const template = container.querySelector('.fault-part-row');
+    const rows = container.querySelectorAll('.fault-part-row');
+    const template = rows[rows.length - 1];
     if (!template) return;
 
     const newRow = template.cloneNode(true);
-    const oldPrefix = 'parts-' + (partsFormNum - 1) + '-';
+    // Приставку берём из самой строки-образца, а не считаем от числа форм.
+    // Копировалась при этом первая строка, а имя ей давалось по номеру
+    // последней: у новой строки оставались имена полей первой, форма
+    // приходила с двумя строками под одним номером и не сохранялась вовсе —
+    // «Деталь: обязательное поле» при заполненной детали
+    const sample = template.querySelector('[name^="parts-"]');
+    const oldPrefix = sample ? sample.name.match(/^parts-\d+-/)[0] : 'parts-0-';
     const newPrefix = 'parts-' + partsFormNum + '-';
     newRow.innerHTML = newRow.innerHTML.split(oldPrefix).join(newPrefix);
 
@@ -119,12 +131,24 @@ function addPartRow() {
         }
     });
 
+    // Новая строка — это новая запись рецепта. Оставшийся от образца номер
+    // записи означал бы правку существующей строки вместо добавления
+    newRow.querySelectorAll('input[name$="-id"]').forEach(function(el) {
+        el.value = '';
+    });
+
     const deleteCheck = newRow.querySelector('.form-check');
     if (deleteCheck) {
         deleteCheck.outerHTML = '<button type="button" class="btn btn-outline-danger btn-sm remove-part-row" onclick="removePartRow(this)"><i class="bi bi-trash"></i></button>';
     }
 
     container.appendChild(newRow);
+
+    // Очистка полей выше скрытые поля пропускает намеренно (в них служебные
+    // значения формсета), а номер выбранной детали лежит именно в скрытом —
+    // без этого новая строка приходила бы с деталью из предыдущей
+    if (window.LiftTeamPartPicker) LiftTeamPartPicker.reset(newRow);
+
     partsFormNum++;
     partsTotalForms.value = partsFormNum;
 }

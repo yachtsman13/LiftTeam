@@ -1,0 +1,55 @@
+{% comment %}
+Выбор детали из каталога — один на всю программу.
+
+Заменяет собой обычный список деталей: в каталоге сотни записей, и листать
+их, чтобы найти одну, невозможно. Наружу отдаёт то же самое, что отдавал
+список: скрытое поле с номером детали под прежним именем. Поэтому
+принимающие представления и формы менять не нужно.
+
+Подключение (одной строкой вместо поля формы):
+
+    {% include 'core/_part_picker.html' with name=form.part.html_name %}
+
+Параметры:
+    name        — имя поля, под которым уйдёт номер детали (обязательный);
+    value       — выбранная деталь (номер), если выбор уже сделан;
+    value_label — как её подписать; если не передать, подпись запросится
+                  у сервера по номеру;
+    placeholder — что писать, пока ничего не выбрано;
+    exclude     — номера деталей через запятую, которые здесь выбирать нельзя.
+
+Разметка намеренно обходится без Bootstrap JS: ни `data-bs-toggle`,
+ни `modal`. Bootstrap приезжает из интернета, и если он не приехал —
+а на телефоне через Tailscale это обычное дело — выбор детали обязан
+работать всё равно. Прячется панель атрибутом `hidden`, за которым в
+base.html закреплено `display: none !important`.
+{% endcomment %}
+<div class="part-picker" data-part-picker data-search-url="{% url 'part_search' %}"{% if exclude %} data-exclude="{{ exclude }}"{% endif %}>
+    <input type="hidden" name="{{ name }}" value="{{ value|default_if_none:'' }}" class="part-picker-value">
+    <div class="input-group part-picker-control">
+        <input type="text" class="form-control part-picker-display" readonly
+               value="{{ value_label|default_if_none:'' }}"
+               placeholder="{{ placeholder|default:'Деталь не выбрана' }}"
+               aria-label="Выбранная деталь">
+        <button type="button" class="btn btn-outline-secondary part-picker-clear" title="Убрать выбранную деталь"{% if not value %} hidden{% endif %}>&times;</button>
+        <button type="button" class="btn btn-outline-primary part-picker-open text-nowrap">Выбрать</button>
+    </div>
+
+    <div class="part-picker-panel" hidden role="dialog" aria-label="Выбор детали">
+        <div class="part-picker-head">
+            <input type="text" class="form-control part-picker-query" autocomplete="off"
+                   placeholder="Артикул, название, тип..." aria-label="Поиск детали">
+            <button type="button" class="btn btn-outline-secondary part-picker-close" title="Закрыть">&times;</button>
+        </div>
+        <div class="part-picker-filters">
+            <select class="form-select form-select-sm part-picker-type" aria-label="Тип компонента">
+                <option value="">Все типы</option>
+            </select>
+            <label class="part-picker-stock-filter">
+                <input type="checkbox" class="part-picker-in-stock"> только в наличии
+            </label>
+        </div>
+        <div class="part-picker-results" role="listbox"></div>
+        <div class="part-picker-notice" hidden></div>
+    </div>
+</div>

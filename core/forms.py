@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.52.0.
+Формы для LiftTeam v2.53.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -114,6 +114,11 @@ class FaultTypeForm(forms.ModelForm):
 
 
 class FaultTypePartForm(forms.ModelForm):
+    """Строка рецепта типовой неисправности.
+
+    Поле `part`, как и в заказе, рисуется общим выбором детали, а не
+    виджетом формы; имя поля при этом прежнее (`parts-N-part`).
+    """
     class Meta:
         model = FaultTypePart
         fields = ['part', 'quantity']
@@ -306,6 +311,13 @@ class DefectActForm(forms.ModelForm):
 
 
 class RepairOrderDetailForm(forms.ModelForm):
+    """Деталь в заказе.
+
+    Поле `part` в карточке заказа рисуется не виджетом формы, а общим
+    выбором детали (`core/templates/core/_part_picker.html`): каталог
+    в несколько сотен записей списком не листается. Наружу выбор отдаёт
+    то же самое имя поля, поэтому проверка здесь не изменилась.
+    """
     class Meta:
         model = RepairOrderDetail
         fields = ['part', 'quantity_used']

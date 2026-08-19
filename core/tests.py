@@ -23,6 +23,7 @@ from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test import Client as TestClient
 from django.test import RequestFactory
+from django.template.loader import render_to_string
 from django.test.utils import CaptureQueriesContext
 from django.urls import resolve
 from django.utils import timezone
@@ -9178,6 +9179,331 @@ class TBankInvoiceExternalIdTests(SimpleTestCase):
         value = provider.external_id({'invoiceId': '3fa85f64-5717-4562-b3fc-2c963f66afa6'})
 
         self.assertEqual(value, '3fa85f64-5717-4562-b3fc-2c963f66afa6')
+
+
+class PartSearchEndpointTests(TestCase):
+    """Поиск детали для выбора из формы.
+
+    Отбор здесь тот же, что у списка радиодеталей, и это главное:
+    вторая, чуть иначе написанная фильтрация означала бы, что выбор детали
+    в заказе находит не то же, что склад.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='search_user', full_name='Кладовщик', password='pass', role='warehouse'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.employee)
+
+        self.cabinet = Cabinet.objects.create(number=7, name='Поиск')
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.order_by('cell_row').first()
+
+        self.resistor = SparePart.objects.create(
+            part_number='R-100', name='Резистор 100 Ом', component_type='Резистор',
+            package='0805', resistance=Decimal('100'), resistance_unit='Ом',
+            current_stock=25, min_stock=5,
+        )
+        self.capacitor = SparePart.objects.create(
+            part_number='C-220', name='Конденсатор 220 мкФ', component_type='Конденсатор',
+            package='DIP', capacitance=Decimal('220'), capacitance_unit='мкФ',
+            current_stock=0, min_stock=3,
+        )
+        self.transistor = SparePart.objects.create(
+            part_number='T-500', name='Транзистор мощный', component_type='Транзистор',
+            current_stock=4, min_stock=0,
+        )
+        self.cell.parts.add(self.resistor)
+
+    def _search(self, **params):
+        return self.client_http.get('/parts/search/', params).json()
+
+    def test_requires_login(self):
+        """Каталог склада — не для гостя: остальные складские страницы
+        закрыты так же."""
+        response = TestClient().get('/parts/search/')
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response['Location'])
+
+    def test_free_text_finds_by_article_and_by_name(self):
+        by_article = self._search(q='R-100')
+        self.assertEqual([row['id'] for row in by_article['results']], [self.resistor.pk])
+
+        by_name = self._search(q='Транзистор мощный')
+        self.assertEqual([row['id'] for row in by_name['results']], [self.transistor.pk])
+
+    def test_filters_by_component_type(self):
+        data = self._search(component_type='Конденсатор')
+        self.assertEqual([row['id'] for row in data['results']], [self.capacitor.pk])
+
+    def test_in_stock_filter_hides_what_is_not_on_the_shelf(self):
+        """«Только в наличии» — про то, лежит деталь на полке или нет,
+        а не про близость к минимальному остатку."""
+        data = self._search(in_stock='1')
+        found = {row['id'] for row in data['results']}
+        self.assertIn(self.resistor.pk, found)
+        self.assertIn(self.transistor.pk, found)
+        self.assertNotIn(self.capacitor.pk, found)
+
+    def test_row_carries_stock_and_cell(self):
+        """Остаток и адрес ячейки — то, по чему решают, идти к полке
+        или заказывать. Без них выбор просто отодвигает вопрос."""
+        row = self._search(q='R-100')['results'][0]
+        self.assertEqual(row['part_number'], 'R-100')
+        self.assertEqual(row['name'], 'Резистор 100 Ом')
+        self.assertEqual(row['stock'], 25)
+        self.assertEqual(row['min_stock'], 5)
+        self.assertEqual(row['cell'], self.cell.address)
+        self.assertEqual(row['specs'], '100Ом')
+        self.assertEqual(row['stock_state'], 'ok')
+
+    def test_part_without_a_cell_says_so_instead_of_breaking(self):
+        row = self._search(q='T-500')['results'][0]
+        self.assertEqual(row['cell'], '')
+
+    def test_result_cap_is_reported(self):
+        """Показано не всё — об этом надо сказать прямо, иначе человек
+        решит, что остальных деталей в программе нет."""
+        SparePart.objects.bulk_create([
+            SparePart(part_number=f'MASS-{index:03d}', name='Массовая деталь', current_stock=1)
+            for index in range(60)
+        ])
+        data = self._search(q='Массовая')
+
+        self.assertEqual(len(data['results']), views.PART_SEARCH_LIMIT)
+        self.assertEqual(data['total'], 60)
+        self.assertTrue(data['limited'])
+        self.assertEqual(data['limit'], views.PART_SEARCH_LIMIT)
+
+    def test_short_result_is_not_marked_as_capped(self):
+        data = self._search(q='R-100')
+        self.assertFalse(data['limited'])
+        self.assertEqual(data['total'], 1)
+
+    def test_excluded_parts_do_not_show_up(self):
+        """В ячейке уже лежащую деталь предлагать в неё же незачем."""
+        data = self._search(exclude=str(self.resistor.pk))
+        self.assertNotIn(self.resistor.pk, {row['id'] for row in data['results']})
+
+    def test_lookup_by_id_returns_the_label_of_an_already_chosen_part(self):
+        data = self._search(id=str(self.capacitor.pk))
+        self.assertEqual([row['id'] for row in data['results']], [self.capacitor.pk])
+        self.assertEqual(data['results'][0]['label'], 'C-220 — Конденсатор 220 мкФ')
+
+    def test_component_types_are_sent_only_when_asked(self):
+        """Список типов выбору нужен один раз, на первое открытие: тянуть
+        его на каждую букву — лишний запрос к базе на каждое нажатие."""
+        self.assertNotIn('component_types', self._search(q='R'))
+        self.assertEqual(
+            self._search(with_types='1')['component_types'],
+            ['Конденсатор', 'Резистор', 'Транзистор'],
+        )
+
+    def test_search_uses_the_same_filtering_as_the_parts_list(self):
+        """Одна фильтрация на список, выгрузку и выбор детали: разойдись
+        они, «найдено 3» на складе не совпало бы с тем, что предлагает
+        выбор детали в заказе."""
+        params = {'q': 'Резистор', 'component_type': 'Резистор', 'stock_from': '10'}
+        found_in_picker = {row['id'] for row in self._search(**params)['results']}
+        listed = self.client_http.get('/parts/', params).context['parts']
+        self.assertEqual(found_in_picker, {part.pk for part in listed})
+
+
+class PartPickerEverywhereTests(TestCase):
+    """Выбор детали стоит везде, где выбирают деталь.
+
+    Проверяется по каждой странице отдельно: страница, тихо вернувшаяся
+    к списку на весь каталог, — это ровно то, на что жаловался владелец.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='picker_admin', full_name='Админ', password='pass'
+        )
+        self.client_http = TestClient()
+        self.client_http.force_login(self.admin)
+
+        self.part = SparePart.objects.create(
+            part_number='PK-1', name='Деталь выбора', component_type='Резистор',
+            current_stock=10, min_stock=1,
+        )
+        self.cabinet = Cabinet.objects.create(number=3, name='Выбор')
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.order_by('cell_row').first()
+
+        self.model = EquipmentModel.objects.create(name='БУАД-выбор')
+        self.fault = FaultType.objects.create(equipment_model=self.model, name='Не включается')
+        FaultTypePart.objects.create(fault_type=self.fault, part=self.part, quantity=2)
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Выбор', inn='7700000111')
+        )
+
+    def _picker_code(self):
+        """Сам код выбора детали, без пояснений в комментариях: в них
+        как раз и написано, чего здесь быть не должно."""
+        source = (self.STATIC / 'js' / 'part-picker.js').read_text(encoding='utf-8')
+        source = re.sub(r'/\*.*?\*/', '', source, flags=re.S)
+        return re.sub(r'^\s*//.*$', '', source, flags=re.M)
+
+    def _pages(self):
+        return {
+            'заказ': f'/repair-orders/{self.order.pk}/',
+            'типовая неисправность': f'/faults/{self.fault.pk}/edit/',
+            'сетка кассетниц': '/storage-cells/',
+            'журнал движений': '/reports/stock-movements/',
+        }
+
+    def test_every_page_carries_the_picker(self):
+        for title, url in self._pages().items():
+            with self.subTest(page=title):
+                content = self.client_http.get(url).content.decode()
+                self.assertIn('data-part-picker', content)
+                self.assertIn('part-picker-value', content)
+                self.assertIn('/parts/search/', content)
+
+    def test_no_page_renders_the_whole_catalogue_as_a_list(self):
+        """Каталог целиком в разметке — то, ради чего всё это делалось:
+        листать несколько сотен деталей в поисках одной невозможно."""
+        for title, url in self._pages().items():
+            with self.subTest(page=title):
+                content = self.client_http.get(url).content.decode()
+                self.assertNotIn(f'value="{self.part.pk}">PK-1', content)
+                self.assertNotIn('PK-1 — Деталь выбора</option>', content)
+
+    def test_grid_page_no_longer_ships_the_catalogue_to_the_browser(self):
+        """Раньше сетка увозила в браузер весь каталог отдельным списком
+        ALL_PARTS — на каждое открытие кассетницы."""
+        content = self.client_http.get('/storage-cells/').content.decode()
+        self.assertNotIn('ALL_PARTS', content)
+        self.assertNotIn('addPartSelect', content)
+
+    def test_field_names_are_the_ones_the_views_already_expect(self):
+        """Скрытое поле подставляется под прежним именем — принимающие
+        представления и формы об этой замене не знают."""
+        order_page = self.client_http.get(f'/repair-orders/{self.order.pk}/').content.decode()
+        self.assertIn('name="part"', order_page)
+
+        fault_page = self.client_http.get(f'/faults/{self.fault.pk}/edit/').content.decode()
+        self.assertIn('name="parts-0-part"', fault_page)
+
+        grid = self.client_http.get('/storage-cells/').content.decode()
+        self.assertIn('name="part_id"', grid)
+
+        report = self.client_http.get('/reports/stock-movements/').content.decode()
+        self.assertIn('name="part"', report)
+
+    def test_already_chosen_part_is_shown_by_name(self):
+        """Рецепт неисправности открывается с уже выбранными деталями —
+        человек должен видеть, что выбрано, а не пустое поле."""
+        content = self.client_http.get(f'/faults/{self.fault.pk}/edit/').content.decode()
+        self.assertIn(f'value="{self.part.pk}"', content)
+        self.assertIn('PK-1 — Деталь выбора', content)
+
+    def test_adding_a_part_to_an_order_still_works(self):
+        response = self.client_http.post(
+            f'/repair-orders/{self.order.pk}/add-detail/',
+            {'part': self.part.pk, 'quantity_used': 3},
+        )
+        self.assertEqual(response.status_code, 302)
+        detail = self.order.details.get()
+        self.assertEqual(detail.part_id, self.part.pk)
+        self.assertEqual(detail.quantity_used, 3)
+
+    def test_adding_a_part_to_a_cell_still_works(self):
+        response = self.client_http.post(
+            f'/storage-cells/{self.cell.pk}/add-part/', {'part_id': self.part.pk}
+        )
+        self.assertTrue(response.json()['success'])
+        self.assertIn(self.part, self.cell.parts.all())
+
+    def test_saving_a_fault_recipe_still_works(self):
+        other = SparePart.objects.create(part_number='PK-2', name='Вторая деталь', current_stock=1)
+        response = self.client_http.post(f'/faults/{self.fault.pk}/edit/', {
+            'equipment_model': self.model.pk,
+            'name': 'Не включается',
+            'description': '',
+            'parts-TOTAL_FORMS': '2',
+            'parts-INITIAL_FORMS': '1',
+            'parts-MIN_NUM_FORMS': '0',
+            'parts-MAX_NUM_FORMS': '1000',
+            'parts-0-id': self.fault.parts.get().pk,
+            'parts-0-fault_type': self.fault.pk,
+            'parts-0-part': self.part.pk,
+            'parts-0-quantity': '2',
+            'parts-1-part': other.pk,
+            'parts-1-quantity': '5',
+        })
+        self.assertEqual(response.status_code, 302)
+        recipe = {line.part_id: line.quantity for line in self.fault.parts.all()}
+        self.assertEqual(recipe, {self.part.pk: 2, other.pk: 5})
+
+    def test_report_filter_by_part_still_works(self):
+        StockMovement.objects.create(
+            part=self.part, movement_type='incoming', quantity=5,
+        )
+        page = self.client_http.get('/reports/stock-movements/', {'part': self.part.pk})
+        self.assertEqual([m.part_id for m in page.context['movements']], [self.part.pk])
+        self.assertEqual(page.context['selected_part'], self.part)
+
+    def test_new_recipe_row_gets_its_own_field_numbers(self):
+        """Кнопка «Добавить деталь» в рецепте копировала первую строку,
+        а имена полей давала ей по номеру последней. Новая строка приходила
+        с именами первой, и рецепт не сохранялся вовсе — форма отвечала
+        «Деталь: обязательное поле» на заполненную деталь."""
+        source = (Path(__file__).resolve().parent / 'templates' / 'core' /
+                  'faults' / 'form.html').read_text(encoding='utf-8')
+        self.assertIn('rows[rows.length - 1]', source)
+        self.assertNotIn("'parts-' + (partsFormNum - 1) + '-'", source)
+        # Номер записи от образца в новой строке означал бы правку старой
+        self.assertIn('input[name$="-id"]', source)
+
+    def test_picker_does_not_lean_on_bootstrap_javascript(self):
+        """Bootstrap приезжает из интернета, и дважды уже не приезжал.
+        Выбор детали обязан работать без него."""
+        # Проверяем готовую разметку, а не исходник шаблона: в исходнике
+        # `data-bs-` встречается в пояснении, почему его здесь нет
+        markup = render_to_string('core/_part_picker.html', {'name': 'part'})
+        self.assertNotIn('data-bs-', markup)
+        self.assertNotIn('class="modal', markup)
+        # Панель прячется атрибутом hidden — за ним в base.html закреплено
+        # display: none !important, и оно не зависит от чужих стилей
+        self.assertIn('hidden', markup)
+
+        source = self._picker_code()
+        self.assertNotIn('bootstrap.', source)
+        self.assertNotIn('data-bs-', source)
+
+    def test_picker_asks_the_server_through_the_shared_connection_layer(self):
+        """Голый fetch спрятал бы обрыв связи под «ничего не найдено»."""
+        source = self._picker_code()
+        self.assertIn('LiftTeamWS.fetch(', source)
+        self.assertNotIn('window.fetch(', source)
+        self.assertNotIn('= fetch(', source)
+
+    def test_picker_files_are_loaded_on_every_page(self):
+        """Выбор подключается одной вставкой шаблона: искать, где ещё
+        дописать скрипт, при добавлении пятого места не придётся."""
+        content = self.client_http.get('/parts/').content.decode()
+        self.assertIn('js/part-picker.js', content)
+        self.assertIn('css/part-picker.css', content)
+        self.assertLess(content.index('js/ws-connection.js'), content.index('js/part-picker.js'))
+
+    def test_keyboard_works_without_a_mouse(self):
+        """Мастера работают быстро, и выбор, требующий мыши, раздражает
+        сильнее прежнего длинного списка."""
+        source = (self.STATIC / 'js' / 'part-picker.js').read_text(encoding='utf-8')
+        for key in ('ArrowDown', 'ArrowUp', 'Enter', 'Escape'):
+            with self.subTest(key=key):
+                self.assertIn(key, source)
+
+    def test_empty_state_and_cap_notice_are_spelled_out(self):
+        source = (self.STATIC / 'js' / 'part-picker.js').read_text(encoding='utf-8')
+        self.assertIn('Ничего не найдено — уточните запрос', source)
+        self.assertIn('Показаны первые ', source)
 
 
 class WebhookTBankAddressListTests(SimpleTestCase):
