@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.50.1.
+Модели данных для LiftTeam v2.51.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -2129,3 +2129,71 @@ class InventorySessionLine(models.Model):
         return self.counted_quantity - self.expected_quantity
 
 
+
+
+class WebhookDelivery(models.Model):
+    """Уведомление, доставленное банком на публичный адрес программы.
+
+    Зачем запись. Уведомление приходит один раз, а банк при неудачном
+    ответе присылает его повторно — иногда несколько раз подряд. Без
+    следа о том, что именно и когда пришло, невозможно ни разобрать
+    жалобу «оплата не разнеслась», ни отличить повтор от нового события.
+    Поэтому каждая **принятая** доставка записывается целиком, до того
+    как с ней что-то делают.
+
+    Защита от повтора — ограничение уникальности на пару «банк + ключ
+    доставки». Ключ берётся из идентификатора события, если банк его
+    присылает, а если нет — из хеша тела запроса (`body_hash`). Хеш
+    надёжен как запасной вариант: два разных события с побайтово
+    одинаковым телом означали бы, что банк не сообщает ни времени,
+    ни номера, — тогда различить их всё равно нечем.
+
+    Чего здесь нет. Оплаты: ни суммы, ни ссылки на заказ. Разбор тела
+    уведомления не написан намеренно — см. `core/webhooks.py`. Пока
+    неизвестна схема подписи банка, ни одна доставка не принимается,
+    и записей в этой таблице на рабочей установке не будет вовсе.
+    """
+    STATUS_RECEIVED = 'received'
+    STATUS_PROCESSED = 'processed'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_RECEIVED, 'Принято'),
+        (STATUS_PROCESSED, 'Разобрано'),
+        (STATUS_FAILED, 'Разобрать не удалось'),
+    ]
+
+    provider = models.CharField('Банк', max_length=20,
+                                choices=invoicing.PROVIDER_CHOICES, db_index=True)
+    # Идентификатор события у банка. Пусто — банк его не прислал либо
+    # мы ещё не знаем, в каком поле он лежит (см. `core/webhooks.py`)
+    event_id = models.CharField('Событие у банка', max_length=200, blank=True)
+    # Ключ, по которому доставка считается повтором: идентификатор события,
+    # а без него — хеш тела. Хранится отдельным полем, потому что
+    # ограничение уникальности должно работать в обоих случаях одинаково
+    dedup_key = models.CharField('Ключ доставки', max_length=200)
+    body_hash = models.CharField('Хеш тела', max_length=64, db_index=True)
+    # Тело запроса как пришло. Нужно ровно для разбора неполадок: понять,
+    # что именно прислал банк, по одному хешу нельзя
+    body = models.TextField('Тело запроса', blank=True)
+
+    received_at = models.DateTimeField('Получено', auto_now_add=True)
+    processed_at = models.DateTimeField('Разобрано', null=True, blank=True)
+    status = models.CharField('Состояние', max_length=10, choices=STATUS_CHOICES,
+                              default=STATUS_RECEIVED, db_index=True)
+    # Чем кончилось: причина отказа или что сделано. Секретов здесь быть
+    # не должно — текст пишется и в журнал
+    result = models.TextField('Итог', blank=True)
+
+    class Meta:
+        verbose_name = 'Уведомление банка'
+        verbose_name_plural = 'Уведомления банков'
+        ordering = ['-received_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['provider', 'dedup_key'],
+                name='unique_webhook_delivery',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.get_provider_display()} → {self.dedup_key} ({self.get_status_display()})'

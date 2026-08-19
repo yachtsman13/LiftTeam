@@ -18,7 +18,7 @@ import openpyxl
 from channels.db import database_sync_to_async
 from django.conf import settings
 from django.core.management import call_command
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test import Client as TestClient
 from django.test.utils import CaptureQueriesContext
@@ -27,14 +27,14 @@ from django.utils import timezone
 
 from django import forms
 
-from . import invoicing, messengers, net, notifications, tbank, tochka, views
+from . import invoicing, messengers, net, notifications, tbank, tochka, views, webhooks
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
-    StorageCell, parse_layout, plural_genitive, format_spec,
+    StorageCell, WebhookDelivery, parse_layout, plural_genitive, format_spec,
 )
 
 
@@ -8620,3 +8620,304 @@ class OrderFormStartupTests(TestCase):
         настройки в него ничего бы не дал."""
         base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
         self.assertLess(base.index('js/ws-connection.js'), base.index('{% block extra_js %}'))
+
+
+class WebhookIntakeTests(TestCase):
+    """Приём уведомлений от банков — дверь, которая смотрит в интернет.
+
+    Проверяющие подписи не написаны (схемы подписи в документации банков,
+    а она недоступна), поэтому дверь заперта дважды: приём выключен
+    настройками, а включённый отказывает на каждом запросе. Тесты
+    закрепляют именно это: пока проверка не написана, ни одно уведомление
+    не должно быть принято ни при каких настройках.
+    """
+
+    TBANK_URL = '/webhooks/tbank/'
+    TOCHKA_URL = '/webhooks/tochka/'
+
+    def setUp(self):
+        self.http = TestClient()
+
+    def post(self, url, body=b'{"paid": true}', **extra):
+        return self.http.post(url, data=body, content_type='application/json', **extra)
+
+    def assertNothingStored(self):
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    # --- Выключено ---
+
+    def test_disabled_provider_answers_503(self):
+        """По умолчанию приём выключен у обоих банков."""
+        for url in (self.TBANK_URL, self.TOCHKA_URL):
+            with self.subTest(url=url):
+                self.assertEqual(self.post(url).status_code, 503)
+        self.assertNothingStored()
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True)
+    def test_each_provider_is_switched_on_separately(self):
+        """Включение одного банка не открывает второй."""
+        self.assertEqual(self.post(self.TOCHKA_URL).status_code, 503)
+        self.assertEqual(self.post(self.TBANK_URL).status_code, 403)
+        self.assertNothingStored()
+
+    # --- Включено, но проверять подпись нечем ---
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_TOCHKA_ENABLED=True)
+    def test_enabled_without_verifier_forbids_everything(self):
+        for url in (self.TBANK_URL, self.TOCHKA_URL):
+            with self.subTest(url=url):
+                response = self.post(url)
+                self.assertEqual(response.status_code, 403)
+        self.assertNothingStored()
+
+    def test_verifiers_refuse_and_say_what_is_missing(self):
+        """Отказ должен называть недостающее, иначе он неотличим от ошибки."""
+        for code in (invoicing.TBANK, invoicing.TOCHKA):
+            with self.subTest(code=code):
+                verifier = webhooks.get_verifier(code)
+                with self.assertRaises(webhooks.WebhookNotVerifiable) as caught:
+                    verifier.verify(None, b'{}')
+                self.assertIn('подпис', str(caught.exception))
+                self.assertIn('документаци', str(caught.exception))
+
+    def test_unknown_provider_code_is_an_error(self):
+        with self.assertRaises(webhooks.WebhookError):
+            webhooks.get_verifier('sberbank')
+
+    # --- Метод ---
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True)
+    def test_only_post_is_accepted(self):
+        for method in ('get', 'put', 'delete', 'patch'):
+            with self.subTest(method=method):
+                response = getattr(self.http, method)(self.TBANK_URL)
+                self.assertEqual(response.status_code, 405)
+        self.assertNothingStored()
+
+    def test_method_is_checked_even_when_disabled(self):
+        self.assertEqual(self.http.get(self.TBANK_URL).status_code, 405)
+
+    # --- Размер тела ---
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_MAX_BODY_BYTES=100)
+    def test_oversized_body_is_rejected_before_parsing(self):
+        """Отказ идёт до разбора: разбирать мегабайт мусора незачем."""
+        with patch.object(webhooks, 'parse_payload',
+                          side_effect=AssertionError('тело не должно разбираться')):
+            response = self.post(self.TBANK_URL, body=b'x' * 500)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertNothingStored()
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_MAX_BODY_BYTES=10000000,
+                       DATA_UPLOAD_MAX_MEMORY_SIZE=50)
+    def test_body_cut_short_by_django_is_also_413(self):
+        """Заголовок длины может и соврать — тогда чтение обрывает сам Django."""
+        response = self.post(self.TBANK_URL, body=b'x' * 500)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertNothingStored()
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_MAX_BODY_BYTES=100)
+    def test_body_within_limit_reaches_signature_check(self):
+        """Тело нужного размера доходит до проверки подписи — и там отказ."""
+        self.assertEqual(self.post(self.TBANK_URL, body=b'{"ok": 1}').status_code, 403)
+
+    # --- Список адресов ---
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_ALLOWED_IPS=['203.0.113.7'])
+    def test_address_outside_the_list_is_refused(self):
+        self.assertEqual(self.post(self.TBANK_URL, REMOTE_ADDR='198.51.100.9').status_code, 403)
+        self.assertEqual(self.post(self.TBANK_URL, REMOTE_ADDR='203.0.113.7').status_code, 403)
+        self.assertNothingStored()
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True, WEBHOOKS_ALLOWED_IPS=['203.0.113.7'])
+    def test_forwarded_headers_do_not_open_the_list(self):
+        """`X-Forwarded-For` ставит кто угодно — по нему не допускаем."""
+        with self.assertLogs('core.webhooks', level='WARNING') as captured:
+            response = self.post(self.TBANK_URL, REMOTE_ADDR='198.51.100.9',
+                                 HTTP_X_FORWARDED_FOR='203.0.113.7')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('не в списке', chr(10).join(captured.output))
+
+    # --- Ни входа, ни CSRF-токена ---
+
+    def test_no_login_required(self):
+        """Ответ 503, а не переадресация на страницу входа: банк не входит."""
+        response = self.post(self.TBANK_URL)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('login', response.get('Location', ''))
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True)
+    def test_no_csrf_token_required(self):
+        """С включённой проверкой CSRF запрос без токена доходит до подписи."""
+        strict = TestClient(enforce_csrf_checks=True)
+
+        response = strict.post(self.TBANK_URL, data=b'{}',
+                               content_type='application/json')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.content, b'signature verification unavailable')
+
+    # --- Журнал ---
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                       WEBHOOKS_TBANK_SECRET='webhook-secret-0123456789',
+                       TBANK_TOKEN='tbank-token-0123456789')
+    def test_secrets_never_reach_the_log(self):
+        with self.assertLogs('core.webhooks', level='WARNING') as captured:
+            self.post(self.TBANK_URL,
+                      body=b'{"secret": "webhook-secret-0123456789"}',
+                      HTTP_AUTHORIZATION='Bearer tbank-token-0123456789')
+
+        written = chr(10).join(captured.output)
+        self.assertNotIn('webhook-secret-0123456789', written)
+        self.assertNotIn('tbank-token-0123456789', written)
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True)
+    def test_the_log_says_enough_to_understand_the_refusal(self):
+        with self.assertLogs('core.webhooks', level='WARNING') as captured:
+            self.post(self.TBANK_URL, body=b'{"a": 1}', REMOTE_ADDR='198.51.100.9')
+
+        written = chr(10).join(captured.output)
+        self.assertIn('tbank', written)
+        self.assertIn('198.51.100.9', written)
+        self.assertIn('размер тела 8 байт', written)
+
+    @override_settings(WEBHOOKS_TBANK_ENABLED=True)
+    def test_the_body_is_not_written_to_the_log(self):
+        """В теле чужие данные, а разбирать отказы можно и без него."""
+        with self.assertLogs('core.webhooks', level='WARNING') as captured:
+            self.post(self.TBANK_URL, body='{"payer": "ООО Ромашка"}'.encode('utf-8'))
+
+        self.assertNotIn('Ромашка', chr(10).join(captured.output))
+
+    # --- Защита от повтора ---
+
+    def test_the_same_delivery_cannot_be_stored_twice(self):
+        """Ограничение уникальности — то, что не даст разнести оплату дважды.
+
+        Проверяется напрямую: до записи доставки приём сейчас не доходит
+        ни при каких настройках, потому что подпись проверять нечем.
+        """
+        body = b'{"event": "paid", "amount": 54000}'
+        digest = webhooks.body_hash(body)
+        WebhookDelivery.objects.create(
+            provider=invoicing.TBANK, dedup_key=digest, body_hash=digest,
+            body=body.decode(),
+        )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                WebhookDelivery.objects.create(
+                    provider=invoicing.TBANK, dedup_key=digest, body_hash=digest,
+                    body=body.decode(),
+                )
+
+        self.assertEqual(WebhookDelivery.objects.count(), 1)
+
+    def test_the_same_body_from_two_banks_is_two_deliveries(self):
+        """Ключ уникален внутри банка: одинаковое тело от разных банков —
+        разные события."""
+        body = b'{"event": "paid"}'
+        digest = webhooks.body_hash(body)
+        for code in (invoicing.TBANK, invoicing.TOCHKA):
+            WebhookDelivery.objects.create(provider=code, dedup_key=digest,
+                                           body_hash=digest, body=body.decode())
+
+        self.assertEqual(WebhookDelivery.objects.count(), 2)
+
+    def test_dedup_key_falls_back_to_the_body_hash(self):
+        """Пока неизвестно, в каком поле банк присылает номер события,
+        доставка различается по хешу тела."""
+        body = b'{"event": "paid"}'
+        verifier = webhooks.get_verifier(invoicing.TBANK)
+        digest = webhooks.body_hash(body)
+
+        key = webhooks.dedup_key(verifier, webhooks.parse_payload(body), digest)
+
+        self.assertEqual(key, digest)
+        self.assertEqual(len(digest), 64)
+
+    def test_body_hash_is_counted_over_the_exact_bytes(self):
+        self.assertNotEqual(webhooks.body_hash(b'{"a":1}'), webhooks.body_hash(b'{"a": 1}'))
+
+    def test_broken_json_does_not_raise(self):
+        """Разбор тела не должен падать: подпись считается по байтам,
+        а тело может оказаться чем угодно."""
+        self.assertEqual(webhooks.parse_payload(b'not json at all'), {})
+        self.assertEqual(webhooks.parse_payload(b'[1, 2, 3]'), {})
+        self.assertEqual(webhooks.parse_payload(b'\xff\xfe'), {})
+
+    # --- Разбор в оплату ---
+
+    def test_payment_application_is_not_written(self):
+        """Догадка здесь означала бы не тот заказ, отмеченный оплаченным."""
+        with self.assertRaises(NotImplementedError) as caught:
+            webhooks.apply_payment(None, {'amount': 54000})
+
+        self.assertIn('сумм', str(caught.exception))
+
+
+class WebhookUrlIsolationTests(TestCase):
+    """Наружу открыт ровно один каталог адресов — `/webhooks/`.
+
+    nginx на Raspberry Pi пускает снаружи всё, что начинается с этого
+    префикса, и отвечает 404 на остальное. Поэтому любой посторонний
+    маршрут, случайно оказавшийся под префиксом, оказался бы открыт
+    интернету, а вьюха приёма за его пределами — недоступна банку.
+    """
+
+    WEBHOOK_MODULE = 'core.webhook_views'
+    PREFIX = 'webhooks/'
+
+    def routes(self):
+        """Все маршруты программы: полный путь и то, что его обслуживает."""
+        from django.urls import get_resolver
+        from django.urls.resolvers import URLResolver
+
+        def walk(resolver, prefix=''):
+            for pattern in resolver.url_patterns:
+                path = prefix + str(pattern.pattern)
+                if isinstance(pattern, URLResolver):
+                    yield from walk(pattern, path)
+                else:
+                    yield path, pattern.callback
+
+        return list(walk(get_resolver()))
+
+    def test_nothing_but_webhooks_lives_under_the_prefix(self):
+        strangers = [
+            path for path, view in self.routes()
+            if path.startswith(self.PREFIX)
+            and getattr(view, '__module__', '') != self.WEBHOOK_MODULE
+        ]
+
+        self.assertEqual(strangers, [], 'под /webhooks/ попал посторонний маршрут')
+
+    def test_webhook_views_live_nowhere_else(self):
+        outside = [
+            path for path, view in self.routes()
+            if getattr(view, '__module__', '') == self.WEBHOOK_MODULE
+            and not path.startswith(self.PREFIX)
+        ]
+
+        self.assertEqual(outside, [], 'вьюха приёма оказалась вне /webhooks/')
+
+    def test_both_banks_are_routed(self):
+        paths = {path for path, view in self.routes()
+                 if getattr(view, '__module__', '') == self.WEBHOOK_MODULE}
+
+        self.assertEqual(paths, {'webhooks/tbank/', 'webhooks/tochka/'})
+
+    def test_an_unknown_bank_under_the_prefix_is_404(self):
+        response = TestClient().post('/webhooks/sberbank/', data=b'{}',
+                                     content_type='application/json')
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_prefix_itself_is_not_a_page(self):
+        self.assertEqual(TestClient().get('/webhooks/').status_code, 404)
