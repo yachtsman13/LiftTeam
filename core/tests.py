@@ -10580,7 +10580,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.0) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.1) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -10741,7 +10741,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.56.0).
+    """Кнопка меню — логотип на объёмной площадке (v2.56.1).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы
@@ -10830,3 +10830,61 @@ class MobileMenuButtonTests(SimpleTestCase):
             with self.subTest(template=rel):
                 text = (settings.BASE_DIR / rel).read_text(encoding='utf-8')
                 self.assertIn('.sidebar-toggle', text)
+
+    def test_the_logo_is_the_button_and_not_a_second_one(self):
+        """В шапке открытого меню логотип не рисуется отдельной картинкой.
+
+        Пока их было две, кнопка вставала поверх шапки и накрывала
+        логотип — владелец увидел ровно это. Логотип и кнопка должны
+        быть одним и тем же.
+        """
+        mobile = self.base.split('@media screen and (max-width: 768px)')[1]
+        self.assertIn('.sidebar .navbar-brand img { display: none; }', mobile)
+        # и название начинается правее кнопки, а не под ней
+        self.assertRegex(mobile, r'\.sidebar \.navbar-brand \{[^}]*padding-left')
+
+
+class MobileSidebarScrollTests(SimpleTestCase):
+    """Меню прокручивается, и до нижних разделов можно дойти.
+
+    Панель закреплена (position: fixed). Пока у неё стояло min-height:
+    100vh, меню длиннее экрана уезжало вниз за его край: страница под
+    панелью двигается сама по себе, а панель — нет, и «Оповещения»,
+    «Реквизиты» и «Обновление» на телефоне были недоступны вовсе.
+    """
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+
+    def rule(self, selector):
+        found = re.findall(r'(?<![\w-])%s\s*\{([^}]*)\}' % re.escape(selector), self.base)
+        self.assertTrue(found, 'правило %s не найдено' % selector)
+        return found[0]
+
+    def test_sidebar_is_exactly_one_screen_tall(self):
+        sidebar = self.rule('.sidebar')
+        self.assertIn('height: 100vh', sidebar)
+        self.assertNotIn('min-height: 100vh', sidebar)
+
+    def test_list_of_sections_scrolls_inside_the_sidebar(self):
+        nav = self.rule('.sidebar-nav')
+        self.assertIn('overflow-y: auto', nav)
+        # без min-height: 0 ячейка flex не сжимается и не прокручивается
+        self.assertIn('min-height: 0', nav)
+
+    def test_header_and_signature_stay_put(self):
+        fixed = self.rule('.sidebar .navbar-brand,\n        .sidebar-user')
+        self.assertIn('flex: 0 0 auto', fixed)
+
+    def test_scrolling_does_not_depend_on_bootstrap(self):
+        """Раскладка в столбец написана своими правилами.
+
+        В разметке стоят и классы Bootstrap (d-flex flex-column,
+        flex-grow-1), но держаться за них нельзя: Bootstrap приходит
+        из интернета, и вместе с ним пропала бы прокрутка меню.
+        """
+        sidebar = self.rule('.sidebar')
+        self.assertIn('display: flex', sidebar)
+        self.assertIn('flex-direction: column', sidebar)
+        self.assertIn('class="nav flex-column flex-grow-1 sidebar-nav"', self.base)
+        self.assertIn('sidebar-user', self.base)
