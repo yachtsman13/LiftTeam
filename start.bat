@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo.
 echo   ================================================
-echo    LiftTeam v2.56.1 — Starting Docker Containers
+echo    LiftTeam v2.56.2 — Starting Docker Containers
 echo   ================================================
 echo.
 
@@ -71,7 +71,7 @@ docker compose -f %COMPOSE_FILE% exec -T web python manage.py collectstatic --no
 
 echo.
 echo   ================================================
-echo    [OK] LiftTeam v2.56.1 is running
+echo    [OK] LiftTeam v2.56.2 is running
 echo   ================================================
 echo.
 echo   Access:   http://localhost/login/

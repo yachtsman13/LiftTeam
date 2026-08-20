@@ -10580,7 +10580,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.1) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.2) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -10741,7 +10741,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.56.1).
+    """Кнопка меню — логотип на объёмной площадке (v2.56.2).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы
@@ -10753,7 +10753,15 @@ class MobileMenuButtonTests(SimpleTestCase):
         self.button = self.base.split('class="sidebar-toggle"')[1].split('</button>')[0]
 
     def test_button_shows_the_logo(self):
-        self.assertIn('img/lift_team_logo.svg', self.button)
+        """Именно логотип, а не заглушка.
+
+        lift_team_logo.svg — это синий квадрат с буквами «LT», нарисованный
+        когда-то вместо картинки. Настоящий логотип, круглая эмблема
+        с микросхемой, лежит в lift_team_logo.png — он же стоит на входе,
+        в шапке меню и в актах. Кнопка обязана показывать его.
+        """
+        self.assertIn('img/lift_team_logo.png', self.button)
+        self.assertNotIn('lift_team_logo.svg', self.button)
         self.assertIn('sidebar-toggle-mark', self.button)
 
     def test_button_keeps_its_accessible_label(self):
@@ -10767,7 +10775,6 @@ class MobileMenuButtonTests(SimpleTestCase):
         скрипте: ошибка загрузки случается раньше, чем доходит очередь
         до скриптов внизу страницы.
         """
-        self.assertIn('img/lift_team_logo.png', self.button)
         self.assertIn('onerror=', self.button)
         self.assertIn('sidebar-toggle-letters', self.button)
         self.assertIn('>LT<', self.button)
@@ -10830,6 +10837,19 @@ class MobileMenuButtonTests(SimpleTestCase):
             with self.subTest(template=rel):
                 text = (settings.BASE_DIR / rel).read_text(encoding='utf-8')
                 self.assertIn('.sidebar-toggle', text)
+
+    def test_open_menu_scrolls_itself_and_not_the_page(self):
+        """Палец на открытом меню двигает разделы, а не страницу под ним.
+
+        Три условия, и каждое закрывает свой случай: страница под меню
+        замирает целиком, затемнение не ловит прокрутку, а список
+        разделов, докрученный до конца, не передаёт движение наружу.
+        """
+        self.assertIn('body.sidebar-open { overflow: hidden; }', self.base)
+        self.assertIn('.sidebar-backdrop { touch-action: none; }', self.base)
+        self.assertIn('overscroll-behavior: contain', self.base)
+        # и класс действительно снимается при закрытии, а не только вешается
+        self.assertIn("classList.toggle('sidebar-open', open)", self.base)
 
     def test_the_logo_is_the_button_and_not_a_second_one(self):
         """В шапке открытого меню логотип не рисуется отдельной картинкой.
