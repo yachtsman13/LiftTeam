@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.56.2.
+Views для LiftTeam v2.57.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -42,7 +42,8 @@ from .forms import (
     EquipmentVersionForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
-    RepairOrderEquipmentFormSet, PartImportForm, PaymentForm, OrganizationForm,
+    RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
+    RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
     CabinetForm, MyNotificationsForm, FaultTypeForm, FaultTypePartFormSet,
     make_fault_type_part_formset,
@@ -954,8 +955,8 @@ def repair_order_export(request):
 @login_required
 def repair_order_create(request):
     if request.method == 'POST':
-        form = RepairOrderForm(request.POST)
-        formset = RepairOrderEquipmentFormSet(request.POST, prefix='equipments')
+        form = RepairOrderIntakeForm(request.POST)
+        formset = RepairOrderEquipmentIntakeFormSet(request.POST, prefix='equipments')
         if form.is_valid() and formset.is_valid():
             order = form.save()
             formset.instance = order
@@ -967,12 +968,15 @@ def repair_order_create(request):
         # не выводил, оставались невидимыми — заказ молча не создавался
         messages.error(request, 'Заказ не сохранён: проверьте отмеченные поля')
     else:
-        form = RepairOrderForm()
-        formset = RepairOrderEquipmentFormSet(prefix='equipments')
+        form = RepairOrderIntakeForm()
+        formset = RepairOrderEquipmentIntakeFormSet(prefix='equipments')
     return render(request, 'core/repair_orders/form.html', {
         'form': form,
         'formset': formset,
-        'title': 'Новый заказ на ремонт'
+        'title': 'Новый заказ на ремонт',
+        # Форма приёма: остальные поля не спрятаны, а не показаны — их
+        # заполняют позже, каждое в свой момент, и шаблон о них не знает.
+        'intake': True,
     })
 
 

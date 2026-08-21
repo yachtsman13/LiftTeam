@@ -1,12 +1,26 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.56.2{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.57.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-tools me-2"></i>{{ title }}</h2>
     <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
 </div>
+
+{% comment %}
+    Приём спрашивает только то, что известно, когда прибор привезли.
+    Подпись объясняет, куда делось остальное: без неё мастер решит,
+    что поля пропали, и пойдёт их искать.
+{% endcomment %}
+{% if intake %}
+<div class="alert alert-light border small">
+    <i class="bi bi-info-circle me-1"></i>
+    Приём: от кого прибор, что с ним со слов заказчика и в каком виде
+    приехал. Диагноз, стоимость, выполненные работы, номера пломб и счёт
+    появятся позже — в акте дефектации и по кнопке «Редактировать».
+</div>
+{% endif %}
 
 {% if form.errors or formset.errors or formset.non_form_errors %}
 <div class="alert alert-danger">

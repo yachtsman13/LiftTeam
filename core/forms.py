@@ -1,5 +1,5 @@
 """
-Формы для LiftTeam v2.56.2.
+Формы для LiftTeam v2.57.0.
 """
 from django import forms
 from django.contrib.auth import authenticate
@@ -364,6 +364,47 @@ class RepairOrderEquipmentForm(forms.ModelForm):
 
 RepairOrderEquipmentFormSet = inlineformset_factory(
     RepairOrder, RepairOrderEquipment, form=RepairOrderEquipmentForm,
+    extra=1, can_delete=True
+)
+
+
+# Приём заказа и работа по нему — разные моменты, и знают о заказе они
+# разное. Когда прибор только привезли, известно: от кого, что с ним
+# со слов заказчика и в каком он виде приехал. Ни счёта, ни оплаты,
+# ни диагноза, ни стоимости, ни выполненных работ, ни номеров пломб
+# тогда ещё не существует: счёт выставляют после согласования, пломбы
+# ставят при выдаче, стоимость считают после диагностики. Показывать
+# их при приёме — значит просить заполнить то, чего человек не знает,
+# и прятать за ними те три поля, которые он знает.
+#
+# Приём — тот же приём, что и у DefectActForm: поля, которые заполняют
+# в другой момент, живут в форме своего момента. Полная форма никуда
+# не делась и открывается по «Редактировать» — на приёме её просто
+# не показывают, и ни одно поле при этом не потеряно.
+
+class RepairOrderIntakeForm(RepairOrderForm):
+    """Заказ в момент приёма: заказчик и что он рассказал.
+
+    Общее описание остаётся: оно печатается в акте приёма строкой
+    «Со слов заказчика» — то есть это как раз поле приёмки, а не работы.
+    """
+    class Meta(RepairOrderForm.Meta):
+        fields = ['client', 'fault_description']
+
+
+class RepairOrderEquipmentIntakeForm(RepairOrderEquipmentForm):
+    """Единица оборудования в момент приёма.
+
+    Начальное состояние — про то, что видно при осмотре: комплектность,
+    следы вскрытия, повреждения корпуса. Отсюда его и заполняют, а после
+    ремонта уже не восстановить.
+    """
+    class Meta(RepairOrderEquipmentForm.Meta):
+        fields = ['equipment', 'fault_description', 'initial_condition']
+
+
+RepairOrderEquipmentIntakeFormSet = inlineformset_factory(
+    RepairOrder, RepairOrderEquipment, form=RepairOrderEquipmentIntakeForm,
     extra=1, can_delete=True
 )
 

@@ -10,6 +10,13 @@ Django видел два значения одного поля и сохран�
 единица переписывала собой первую.
 
 Ожидает: eq_form, order (может отсутствовать — на странице создания).
+
+Поля показываются те, что есть в форме, а не все подряд: на приёме форма
+короче (RepairOrderEquipmentIntakeForm), и диагноза, стоимости, пломб
+и выполненных работ в ней просто нет — их заполняют позже. Отсюда
+проверки {% templatetag openblock %} if eq_form.<поле> {% templatetag closeblock %}
+вокруг каждого такого блока: без них на приёме рисовались бы пустые
+подписи и, у списка неисправностей, <select> вовсе без имени.
 {% endcomment %}
                     <div class="equipment-row border rounded p-3 mb-2">
                         <div class="row g-2">
@@ -38,6 +45,7 @@ Django видел два значения одного поля и сохран�
                                 <div class="text-danger small">{{ eq_form.fault_description.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% if eq_form.work_performed %}
                             <div class="col-md-4">
                                 <label class="form-label small">{{ eq_form.work_performed.label }}</label>
                                 {{ eq_form.work_performed }}
@@ -45,6 +53,8 @@ Django видел два значения одного поля и сохран�
                                 <div class="text-danger small">{{ eq_form.work_performed.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% endif %}
+                            {% if eq_form.seal_numbers %}
                             <div class="col-md-2">
                                 <label class="form-label small">{{ eq_form.seal_numbers.label }}</label>
                                 {{ eq_form.seal_numbers }}
@@ -52,6 +62,7 @@ Django видел два значения одного поля и сохран�
                                 <div class="text-danger small">{{ eq_form.seal_numbers.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% endif %}
                             <div class="col-md-2 d-flex align-items-end gap-2">
                                 {% if eq_form.instance.pk %}
                                 <div class="form-check mb-2">
@@ -80,6 +91,7 @@ Django видел два значения одного поля и сохран�
                                 {% endif %}
                             </div>
                         </div>
+                        {% if eq_form.faults %}
                         <div class="row g-2 mt-1">
                             <div class="col-md-8">
                                 <label class="form-label small">{{ eq_form.faults.label }}</label>
@@ -127,14 +139,16 @@ Django видел два значения одного поля и сохран�
                             </div>
                             {% endif %}
                         </div>
+                        {% endif %}
                         <div class="row g-2 mt-1">
-                            <div class="col-md-4">
+                            <div class="{% if eq_form.repair_cost %}col-md-4{% else %}col-md-12{% endif %}">
                                 <label class="form-label small">{{ eq_form.initial_condition.label }}</label>
                                 {{ eq_form.initial_condition }}
                                 {% if eq_form.initial_condition.errors %}
                                 <div class="text-danger small">{{ eq_form.initial_condition.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% if eq_form.repair_cost %}
                             <div class="col-md-3">
                                 <label class="form-label small">{{ eq_form.repair_cost.label }}</label>
                                 {{ eq_form.repair_cost }}
@@ -142,6 +156,8 @@ Django видел два значения одного поля и сохран�
                                 <div class="text-danger small">{{ eq_form.repair_cost.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% endif %}
+                            {% if eq_form.yandex_disk_folder %}
                             <div class="col-md-5">
                                 <label class="form-label small">{{ eq_form.yandex_disk_folder.label }}</label>
                                 {{ eq_form.yandex_disk_folder }}
@@ -149,6 +165,7 @@ Django видел два значения одного поля и сохран�
                                 <div class="text-danger small">{{ eq_form.yandex_disk_folder.errors.0 }}</div>
                                 {% endif %}
                             </div>
+                            {% endif %}
                         </div>
                         {% for hidden in eq_form.hidden_fields %}{{ hidden }}{% endfor %}
                     </div>

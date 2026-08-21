@@ -133,17 +133,50 @@ class RepairOrderAddDetailTests(TestCase):
 class RepairOrderFormErrorTests(TestCase):
     """Регрессия: форма молча не сохранялась. Ошибки полей «Стоимость ремонта»
     и «Папка на Яндекс.Диске» не выводились нигде — страница перезагружалась
-    без единого сообщения, и пользователь считал заказ созданным."""
+    без единого сообщения, и пользователь считал заказ созданным.
+
+    С v2.57.0 этих двух полей на приёме нет вовсе: стоимость считают после
+    диагностики, папку заводят по ходу работы. Проверка переехала туда, где
+    поля теперь живут, — на страницу редактирования. Она и была про то, что
+    ошибка поля видна, а не про то, на какой она странице.
+    """
 
     def setUp(self):
         self.user = Employee.objects.create_superuser(
             username='order_form', full_name='Тест', password='pass'
         )
         self.client_obj = ClientModel.objects.create(name='Заказчик формы')
+        self.model = EquipmentModel.objects.create(name='Модель формы')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-FORM-1'
+        )
         self.client_http = TestClient()
         self.client_http.force_login(self.user)
 
     def _post(self, **overrides):
+        """Приём: полей работы в форме нет, и посылать их незачем."""
+        data = {
+            'client': self.client_obj.pk,
+            'fault_description': '',
+            'equipments-TOTAL_FORMS': '1',
+            'equipments-INITIAL_FORMS': '0',
+            'equipments-MIN_NUM_FORMS': '0',
+            'equipments-MAX_NUM_FORMS': '1000',
+            'equipments-0-equipment': '',
+            'equipments-0-fault_description': '',
+            'equipments-0-initial_condition': '',
+        }
+        data.update(overrides)
+        return self.client_http.post('/repair-orders/create/', data)
+
+    def _order_with_equipment(self):
+        order = RepairOrder.objects.create(client=self.client_obj)
+        oe = RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=self.equipment
+        )
+        return order, oe
+
+    def _post_edit(self, order, oe, **overrides):
         data = {
             'client': self.client_obj.pk,
             'fault_description': '',
@@ -151,37 +184,173 @@ class RepairOrderFormErrorTests(TestCase):
             'invoice_date': '',
             'payment_status': 'unpaid',
             'equipments-TOTAL_FORMS': '1',
-            'equipments-INITIAL_FORMS': '0',
+            'equipments-INITIAL_FORMS': '1',
             'equipments-MIN_NUM_FORMS': '0',
             'equipments-MAX_NUM_FORMS': '1000',
-            'equipments-0-equipment': '',
+            'equipments-0-id': oe.pk,
+            'equipments-0-repair_order': order.pk,
+            'equipments-0-equipment': self.equipment.pk,
             'equipments-0-fault_description': '',
+            'equipments-0-work_performed': '',
             'equipments-0-seal_numbers': '',
             'equipments-0-initial_condition': '',
             'equipments-0-repair_cost': '',
             'equipments-0-yandex_disk_folder': '',
         }
         data.update(overrides)
-        return self.client_http.post('/repair-orders/create/', data)
+        return self.client_http.post(f'/repair-orders/{order.pk}/edit/', data)
 
     def test_valid_submission_creates_order(self):
         response = self._post()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(RepairOrder.objects.count(), 1)
 
-    def test_invalid_repair_cost_reports_error_and_creates_nothing(self):
-        response = self._post(**{'equipments-0-repair_cost': '15 000 руб'})
+    def test_invalid_repair_cost_reports_error_and_saves_nothing(self):
+        order, oe = self._order_with_equipment()
+        response = self._post_edit(order, oe, **{'equipments-0-repair_cost': '15 000 руб'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(RepairOrder.objects.count(), 0)
         self.assertIn('repair_cost', response.context['formset'].errors[0])
+        oe.refresh_from_db()
+        self.assertIsNone(oe.repair_cost)
 
-    def test_invalid_yandex_link_reports_error_and_creates_nothing(self):
-        response = self._post(**{'equipments-0-yandex_disk_folder': 'папка на диске'})
+    def test_invalid_yandex_link_reports_error_and_saves_nothing(self):
+        order, oe = self._order_with_equipment()
+        response = self._post_edit(order, oe, **{'equipments-0-yandex_disk_folder': 'папка на диске'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(RepairOrder.objects.count(), 0)
         self.assertIn('yandex_disk_folder', response.context['formset'].errors[0])
+        oe.refresh_from_db()
+        self.assertEqual(oe.yandex_disk_folder, '')
+
+
+class RepairOrderIntakeFormTests(TestCase):
+    """Приём заказа спрашивает то, что в этот момент известно, и только это.
+
+    Прибор привезли: известно, от кого он, что с ним со слов заказчика
+    и в каком он виде приехал. Счёта, оплаты, диагноза, стоимости,
+    выполненных работ и номеров пломб в этот момент не существует —
+    счёт выставляют после согласования, пломбы ставят при выдаче.
+    Ни одно поле при этом не потеряно: полная форма открывается
+    по «Редактировать».
+    """
+
+    INTAKE_ONLY = ['invoice_number', 'invoice_date', 'payment_status']
+    LATER_PER_UNIT = ['work_performed', 'seal_numbers', 'faults',
+                      'repair_cost', 'yandex_disk_folder']
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='intake', full_name='Приёмщик', password='pass'
+        )
+        self.client_obj = ClientModel.objects.create(name='Заказчик приёма')
+        self.model = EquipmentModel.objects.create(name='Модель приёма')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-INTAKE-1'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.user)
+
+    def test_intake_asks_only_what_is_known_on_arrival(self):
+        page = self.http.get('/repair-orders/create/')
+        form_fields = list(page.context['form'].fields)
+        self.assertEqual(form_fields, ['client', 'fault_description'])
+        # id, DELETE и repair_order — служебные поля набора форм, их
+        # добавляет Django, а не мы.
+        unit_fields = [name for name in page.context['formset'].empty_form.fields
+                       if name not in ('id', 'DELETE', 'repair_order')]
+        self.assertEqual(
+            unit_fields, ['equipment', 'fault_description', 'initial_condition']
+        )
+
+    def test_later_fields_are_not_on_the_intake_page_at_all(self):
+        """Не спрятаны стилями, а не отрисованы: спрятанное поле всё равно
+        уходит на сервер и всё равно занимает место в разметке."""
+        body = self.http.get('/repair-orders/create/').content.decode()
+        for name in self.INTAKE_ONLY:
+            with self.subTest(field=name):
+                self.assertNotIn('name="%s"' % name, body)
+        for name in self.LATER_PER_UNIT:
+            with self.subTest(field=name):
+                self.assertNotIn('equipments-0-%s' % name, body)
+                self.assertNotIn('equipments-__prefix__-%s' % name, body)
+
+    def test_editing_still_offers_every_field(self):
+        """Урезан приём, а не заказ: по «Редактировать» доступно всё."""
+        order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=self.equipment
+        )
+        page = self.http.get('/repair-orders/%d/edit/' % order.pk)
+        form_fields = list(page.context['form'].fields)
+        for name in self.INTAKE_ONLY:
+            self.assertIn(name, form_fields)
+        unit_fields = list(page.context['formset'].forms[0].fields)
+        for name in self.LATER_PER_UNIT:
+            self.assertIn(name, unit_fields)
+
+    def test_intake_says_where_the_other_fields_went(self):
+        """Иначе мастер решит, что поля пропали, и пойдёт их искать."""
+        body = self.http.get('/repair-orders/create/').content.decode()
+        self.assertIn('в акте дефектации и по кнопке «Редактировать»', body)
+
+        order = RepairOrder.objects.create(client=self.client_obj)
+        edit = self.http.get('/repair-orders/%d/edit/' % order.pk).content.decode()
+        self.assertNotIn('в акте дефектации и по кнопке «Редактировать»', edit)
+
+    def test_intake_saves_the_order_and_the_unit(self):
+        response = self.http.post('/repair-orders/create/', {
+            'client': self.client_obj.pk,
+            'fault_description': 'Не включается после грозы',
+            'equipments-TOTAL_FORMS': '1',
+            'equipments-INITIAL_FORMS': '0',
+            'equipments-MIN_NUM_FORMS': '0',
+            'equipments-MAX_NUM_FORMS': '1000',
+            'equipments-0-equipment': self.equipment.pk,
+            'equipments-0-fault_description': 'Гудит и не запускается',
+            'equipments-0-initial_condition': 'Корпус целый, пломбы на месте',
+        })
+        self.assertEqual(response.status_code, 302)
+        order = RepairOrder.objects.get()
+        self.assertEqual(order.fault_description, 'Не включается после грозы')
+        # Оплата и счёт остаются в состоянии «ещё не было», а не пустыми
+        # по недосмотру: значение берётся из модели, а не из формы.
+        self.assertEqual(order.payment_status, 'unpaid')
+        self.assertEqual(order.invoice_number, '')
+        self.assertIsNone(order.invoice_date)
+        unit = order.order_equipments.get()
+        self.assertEqual(unit.equipment, self.equipment)
+        self.assertEqual(unit.fault_description, 'Гудит и не запускается')
+        self.assertEqual(unit.initial_condition, 'Корпус целый, пломбы на месте')
+
+    def test_intake_ignores_fields_it_does_not_ask_for(self):
+        """Подсунутое в запрос поле работы на приёме не оседает в базе.
+
+        Форма их не объявляет, значит и не принимает: иначе «урезали»
+        значило бы только «убрали с экрана».
+        """
+        response = self.http.post('/repair-orders/create/', {
+            'client': self.client_obj.pk,
+            'fault_description': '',
+            'payment_status': 'paid',
+            'invoice_number': 'СЧ-1',
+            'equipments-TOTAL_FORMS': '1',
+            'equipments-INITIAL_FORMS': '0',
+            'equipments-MIN_NUM_FORMS': '0',
+            'equipments-MAX_NUM_FORMS': '1000',
+            'equipments-0-equipment': self.equipment.pk,
+            'equipments-0-fault_description': '',
+            'equipments-0-initial_condition': '',
+            'equipments-0-repair_cost': '9999',
+            'equipments-0-work_performed': 'Ничего не делали',
+        })
+        self.assertEqual(response.status_code, 302)
+        order = RepairOrder.objects.get()
+        self.assertEqual(order.payment_status, 'unpaid')
+        self.assertEqual(order.invoice_number, '')
+        unit = order.order_equipments.get()
+        self.assertIsNone(unit.repair_cost)
+        self.assertEqual(unit.work_performed, '')
 
 
 class StorageCellMultiPartTests(TestCase):
@@ -10580,7 +10749,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.2) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.57.0) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -10741,7 +10910,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.56.2).
+    """Кнопка меню — логотип на объёмной площадке (v2.57.0).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы
