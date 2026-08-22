@@ -15,6 +15,15 @@
         <div class="label-info" data-fit="0.5">
             <div class="label-model">{{ roe.equipment.model.name }}</div>
             <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
+            {% comment %}
+                Исполнение отдельной строкой, а не припиской к названию
+                модели: название и так переносится на две строки, и
+                приписка ушла бы в конец второй, где её не ищут.
+                В документах она идёт припиской — там строка одна.
+            {% endcomment %}
+            {% if roe.equipment.version %}
+            <div class="label-version">Исп. {{ roe.equipment.version.name }}</div>
+            {% endif %}
             <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
         </div>
 
@@ -33,5 +42,10 @@
     </div>
 
     <div class="label-company">LIFT TEAM · LIFTTEAM.RU</div>
-    <div class="label-phones">+7 964 524 84 00 · +7 977 760 10 89</div>
+    {% comment %}
+        Каждый номер неразрывен: переносится строка между номерами,
+        а не середина номера. Без этого «+7 964 524 84 00» рвалось
+        по пробелу и на наклейке оставалось «+7 964 524» и «84 00».
+    {% endcomment %}
+    <div class="label-phones"><span>+7 964 524 84 00</span> · <span>+7 977 760 10 89</span></div>
 </div>

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт приёма {{ order.order_number }} — LiftTeam v2.57.0{% endblock %}
+{% block title %}Акт приёма {{ order.order_number }} — LiftTeam v2.58.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2">
@@ -47,7 +47,7 @@
             {% for oe in order_equipments %}
             <tr>
                 <td class="num">{{ forloop.counter }}</td>
-                <td>{{ oe.equipment.model.name }}</td>
+                <td>{{ oe.equipment.model.name }}{{ oe.equipment.version_suffix }}</td>
                 <td>{{ oe.equipment.serial_number }}</td>
                 <td>{{ oe.seal_numbers|default:"—" }}</td>
                 <td>{{ oe.initial_condition|default:"—" }}</td>

@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.57.0.
+Модели данных для LiftTeam v2.58.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -577,6 +577,24 @@ class Equipment(models.Model):
     # Считывается с коробки при приёме, если её видно. Пусто — значит
     # не разобрали или на корпусе её нет
     manufacture_date = models.DateField('Дата изготовления', null=True, blank=True)
+
+    @property
+    def version_suffix(self):
+        """«, исп. 1.1» — приписка к названию модели, или пусто.
+
+        Одно место на всю программу, как и с текстом неисправности:
+        заказчик не должен получить в акте приёма одно название изделия,
+        а в акте дефектации другое. Версии нет — не печатается ничего,
+        и выдумывать «исп. 1.0» вместо пустого поля нельзя.
+
+        До v2.58.0 версия не шла ни в один документ — так было решено,
+        когда её заводили. Владелец решение изменил: одна и та же модель
+        в разных исполнениях — разное изделие, и в документе это должно
+        быть видно.
+        """
+        if self.version_id:
+            return f', исп. {self.version.name}'
+        return ''
     serial_number = models.CharField('Серийный номер', max_length=100, unique=True)
     # Серийник без регистра, пробелов и разделителей — чтобы найти «буад 1234»,
     # когда в базе лежит «БУАД-1234». Не unique: одинаковая нормализованная

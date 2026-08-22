@@ -84,6 +84,11 @@
         line-height: 1.05;
         overflow-wrap: anywhere;
     }
+    .label-version {
+        font-size: calc(5.5pt * var(--fit));
+        font-weight: bold;
+        white-space: nowrap;
+    }
     .label-date { font-size: calc(5.5pt * var(--fit)); white-space: nowrap; }
     /* Тот же размер, что и на складской этикетке: 12,3 мм. Без кольца вокруг
        кода он уже ничем не ограничен, но крупнее делать незачем — размер
@@ -106,7 +111,7 @@
        при 4,5 пунктах. */
     .label-company {
         text-align: center;
-        font-size: 5pt;
+        font-size: 4.5pt;
         font-weight: bold;
         line-height: 1;
         flex-shrink: 0;
@@ -115,12 +120,17 @@
     /* Жирный и крупнее, чем было (4,5 пункта обычным начертанием): на
        термопринтере тонкие штрихи такого размера пропечатываются через
        раз, и телефоны на готовой наклейке было почти не разобрать. */
+    /* На печати 5 пунктов почти не читались — по ним звонят, а не
+       разглядывают. Крупнее в одну строку не выходит: два номера
+       с разделителем при 6,5 пункта в 40 мм не помещаются, поэтому
+       строки две, а каждый номер внутри неразрывен. */
     .label-phones {
         text-align: center;
-        font-size: 5pt;
+        font-size: 6.5pt;
         font-weight: bold;
-        line-height: 1;
+        line-height: 1.05;
         flex-shrink: 0;
         padding-top: 0.3mm;
     }
+    .label-phones span { white-space: nowrap; }
 </style>

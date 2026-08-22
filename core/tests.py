@@ -135,7 +135,7 @@ class RepairOrderFormErrorTests(TestCase):
     и «Папка на Яндекс.Диске» не выводились нигде — страница перезагружалась
     без единого сообщения, и пользователь считал заказ созданным.
 
-    С v2.57.0 этих двух полей на приёме нет вовсе: стоимость считают после
+    С v2.58.0 этих двух полей на приёме нет вовсе: стоимость считают после
     диагностики, папку заводят по ходу работы. Проверка переехала туда, где
     поля теперь живут, — на страницу редактирования. Она и была про то, что
     ошибка поля видна, а не про то, на какой она странице.
@@ -9802,6 +9802,114 @@ class WebhookUrlIsolationTests(TestCase):
         self.assertEqual(TestClient().get('/webhooks/').status_code, 404)
 
 
+class EquipmentVersionInDocumentsTests(TestCase):
+    """Исполнение печатается и в документах, и на этикетке (с v2.58.0).
+
+    Заводя версии, решили обратное: «ни обозначение, ни комментарий ни
+    в один документ не идут». Владелец решение изменил — одна и та же
+    модель в разных исполнениях это разное изделие, и в документе это
+    должно быть видно. Комментарий к версии по-прежнему не печатается
+    нигде: «алюминиевый корпус» — заметка мастеру, а не заказчику.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_version_docs', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(
+            name='EkoDrive 2.0', kind='Преобразователь частоты'
+        )
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='1.1', note='алюминиевый корпус'
+        )
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-VER-1', version=self.version
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Подъём', inn='7700000902')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment,
+            diagnosis='вздулись конденсаторы',
+        )
+
+    def _pages(self):
+        return {
+            'акт приёма': '/repair-orders/%d/act/receive/' % self.order.pk,
+            'акт выполненных работ': '/repair-orders/%d/act/complete/' % self.order.pk,
+            'акт дефектации': '/repair-orders/%d/equipment/%d/act/defect/' % (
+                self.order.pk, self.roe.pk),
+            'этикетка': '/repair-orders/%d/equipment/%d/label/' % (
+                self.order.pk, self.roe.pk),
+        }
+
+    def test_version_reaches_every_document_and_the_label(self):
+        for name, url in self._pages().items():
+            with self.subTest(документ=name):
+                body = self.http.get(url).content.decode()
+                self.assertIn('1.1', body, '%s: исполнения нет' % name)
+
+    def test_the_note_stays_out_of_everything(self):
+        """«алюминиевый корпус» — заметка мастеру у стола. Заказчику
+        она ни в одном документе не нужна и не показывается."""
+        for name, url in self._pages().items():
+            with self.subTest(документ=name):
+                body = self.http.get(url).content.decode()
+                self.assertNotIn('алюминиевый корпус', body)
+
+    def test_without_a_version_nothing_is_printed(self):
+        """Пусто — значит пусто: «исп. 1.0» вместо незаполненного поля
+        не выдумывается, и документ печатается как до v2.58.0."""
+        self.equipment.version = None
+        self.equipment.save(update_fields=['version'])
+        self.assertEqual(self.equipment.version_suffix, '')
+        for name, url in self._pages().items():
+            with self.subTest(документ=name):
+                body = self.http.get(url).content.decode()
+                self.assertNotIn('исп.', body.lower())
+
+    def test_one_place_assembles_the_suffix(self):
+        """Сборка одна на все документы: заказчик не должен получить
+        в акте приёма одно название изделия, а в акте дефектации другое."""
+        self.assertEqual(self.equipment.version_suffix, ', исп. 1.1')
+
+
+class EquipmentLabelPhonesTests(SimpleTestCase):
+    """Телефоны на этикетке крупнее: на печати 5 пунктов почти не читались.
+
+    По ним звонят, а не разглядывают их, поэтому размер важнее, чем
+    свободное место под остальное.
+    """
+
+    STYLES = 'core/templates/core/repair_orders/_label_order_equipment_styles.html'
+    MARKUP = 'core/templates/core/repair_orders/_label_order_equipment.html'
+
+    def setUp(self):
+        self.styles = (settings.BASE_DIR / self.STYLES).read_text(encoding='utf-8')
+        self.markup = (settings.BASE_DIR / self.MARKUP).read_text(encoding='utf-8')
+
+    def test_phones_are_bigger_than_the_rest_of_the_footer(self):
+        phones = re.search(r'\.label-phones \{([^}]*)\}', self.styles).group(1)
+        company = re.search(r'\.label-company \{([^}]*)\}', self.styles).group(1)
+        size = lambda rule: float(re.search(r'font-size: ([\d.]+)pt', rule).group(1))
+        self.assertGreaterEqual(size(phones), 6.5)
+        self.assertGreater(size(phones), size(company))
+
+    def test_phones_stay_bold(self):
+        phones = re.search(r'\.label-phones \{([^}]*)\}', self.styles).group(1)
+        self.assertIn('font-weight: bold', phones)
+
+    def test_a_number_never_breaks_in_the_middle(self):
+        """Перенос допускается между номерами, но не внутри номера:
+        иначе на наклейке остаётся «+7 964 524» и «84 00»."""
+        self.assertIn('.label-phones span { white-space: nowrap; }', self.styles)
+        self.assertIn('<span>+7 964 524 84 00</span>', self.markup)
+        self.assertIn('<span>+7 977 760 10 89</span>', self.markup)
+
+
 class FaultTextInDocumentsTests(TestCase):
     """Короткое название типовой неисправности не попадает в документы
     никогда: в акт дефектации и в предложение идёт только полное описание,
@@ -10749,7 +10857,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.57.0) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.58.0) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -10910,7 +11018,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.57.0).
+    """Кнопка меню — логотип на объёмной площадке (v2.58.0).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы
