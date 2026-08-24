@@ -26,7 +26,7 @@ from django.test import Client as TestClient
 from django.test import RequestFactory
 from django.template.loader import render_to_string
 from django.test.utils import CaptureQueriesContext
-from django.urls import resolve
+from django.urls import resolve, reverse
 from django.utils import timezone
 
 from django import forms
@@ -12692,3 +12692,163 @@ class MobileSidebarScrollTests(SimpleTestCase):
         self.assertIn('flex-direction: column', sidebar)
         self.assertIn('class="nav flex-column flex-grow-1 sidebar-nav"', self.base)
         self.assertIn('sidebar-user', self.base)
+
+
+# ==================== СКАН ПО СКЛАДСКИМ ЭКРАНАМ (v2.67.0) ====================
+
+
+class WarehouseScanScreensTests(TestCase):
+    """Скан на складских экранах: пересчёт, сетка кассетниц, карточка детали.
+
+    До этого подписаны были только заказы. На складе сканер полезен больше:
+    в кассетнице двести ячеек, строки в таблице пересчёта отсортированы
+    не так, как детали лежат на полке, и артикул глазами ищут дольше,
+    чем считают сами детали.
+
+    Проверяется не поведение в браузере (его проверить нечем), а то, что
+    подписка на месте, принимает нужные виды кодов, ходит через слой связи
+    и не полагается на Bootstrap. Каждое из трёх уже ломалось в этом
+    проекте по отдельности.
+    """
+
+    TEMPLATES = Path(__file__).resolve().parent / 'templates' / 'core'
+
+    SCREENS = {
+        'inventory/count.html': ("kinds: ['part', 'cell']", "name: 'Инвентаризация'"),
+        'storage_cells/grid.html': ("kinds: ['part', 'cell']", "name: 'Кассетницы'"),
+        'parts/detail.html': ("kinds: ['cell']", "name: 'Карточка детали'"),
+    }
+
+    def setUp(self):
+        self.employee = Employee.objects.create_user(
+            username='scan_warehouse', full_name='Кладовщик',
+            password='pass', role='warehouse',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.part = SparePart.objects.create(
+            part_number='SCR-100n', name='Конденсатор 100 нФ',
+            component_type='Конденсатор', current_stock=40, min_stock=5,
+        )
+        self.cabinet = Cabinet.objects.create(number=41, name='Сканы склада')
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.order_by('cell_row').first()
+        self.cell.parts.add(self.part)
+
+    def source(self, name):
+        return (self.TEMPLATES / name).read_text(encoding='utf-8')
+
+    def test_every_warehouse_screen_is_subscribed(self):
+        """Подписка на месте и объявляет ровно те виды, которые берёт.
+
+        Вид, которого экран не ждёт, слой отказывает вслух и предлагает
+        обычный переход, — но только если знает, чего экран ждёт.
+        """
+        for name, (kinds, screen) in self.SCREENS.items():
+            with self.subTest(screen=name):
+                code = self.source(name)
+                self.assertIn('LiftTeamScanner.register', code)
+                self.assertIn(kinds, code)
+                self.assertIn(screen, code)
+
+    def test_scans_go_through_the_connection_layer(self):
+        """Голый fetch показал бы обрыв связи как «деталь не найдена»
+        вместо общей полосы вверху страницы."""
+        for name in ('storage_cells/grid.html',):
+            with self.subTest(screen=name):
+                code = self.source(name)
+                self.assertIn('LiftTeamWS.fetch', code)
+                self.assertNotIn('window.fetch(', code)
+
+    def test_the_grid_survives_without_bootstrap(self):
+        """Окна сетки рисует Bootstrap, а он приходит из интернета.
+
+        Пока `new bootstrap.Modal` стоял голым, он ронял весь обработчик
+        готовности страницы — вместе с окнами переставали работать режим
+        перемещения, переход с наклейки ячейки и подписка на сканер,
+        стоящие в той же функции ниже.
+        """
+        code = self.source('storage_cells/grid.html')
+        self.assertIn('cellInfoModal = null', code)
+        self.assertIn('if (cellInfoModal) cellInfoModal.show();', code)
+        self.assertIn('if (moveCabinetModal) moveCabinetModal.show();', code)
+        # А содержимое ячейки называется словами, не только в окне
+        self.assertIn("return 'Ячейка ' + data.address + ': ' + what;", code)
+
+    def test_count_rows_carry_the_numbers_the_scan_looks_up(self):
+        """Строка пересчёта ищется по номеру, а не по напечатанному тексту:
+        артикул может оказаться куском названия соседней детали."""
+        session = InventorySession.objects.create(
+            cabinet=self.cabinet, started_by=self.employee
+        )
+        line = InventorySessionLine.objects.create(
+            session=session, part=self.part, cell=self.cell,
+            expected_quantity=self.part.current_stock,
+        )
+
+        html = self.http.get(reverse('inventory_count', args=[session.pk])).content.decode()
+
+        self.assertIn('data-part="%d"' % self.part.pk, html)
+        self.assertIn('data-cell="%d"' % self.cell.pk, html)
+        self.assertIn('data-title="%s' % self.part.part_number, html)
+        self.assertIn('counted_%d' % line.pk, html)
+
+    def test_scan_answer_says_where_the_part_lies(self):
+        """Сетка открывает кассетницу и подсвечивает ячейку по этим полям.
+
+        Строки для человека («Ячейка: A-1-1») для этого не годятся: адрес
+        пришлось бы разбирать обратно, а разбор напечатанного — это способ
+        подсветить не ту ячейку.
+        """
+        data = self.http.get('/scan/resolve/?code=p/%d' % self.part.pk).json()
+
+        self.assertTrue(data['found'])
+        self.assertEqual(data['cell_id'], self.cell.pk)
+        self.assertEqual(data['cabinet_number'], self.cabinet.number)
+
+    def test_a_part_without_a_cell_says_so_instead_of_guessing(self):
+        homeless = SparePart.objects.create(
+            part_number='SCR-NOCELL', name='Не размещённая', current_stock=1,
+        )
+
+        data = self.http.get('/scan/resolve/?code=p/%d' % homeless.pk).json()
+
+        self.assertTrue(data['found'])
+        self.assertIsNone(data['cell_id'])
+        self.assertIsNone(data['cabinet_number'])
+
+    def test_the_grid_opens_without_a_single_cabinet(self):
+        """Свежая установка: кассетниц ещё нет.
+
+        Набор ячеек вставляется в скрипт как есть, и пока его не было,
+        получалось `const CELLS_DATA = ;` — синтаксическая ошибка, гасившая
+        весь скрипт страницы разом.
+        """
+        Cabinet.objects.all().delete()
+
+        html = self.http.get(reverse('storage_cell_grid')).content.decode()
+
+        self.assertIn('const CELLS_DATA = {};', html)
+
+    def test_moving_a_part_by_scan_reports_the_real_outcome(self):
+        """Перекладка отдаёт исход наружу: сказать «переложено», когда
+        перекладка не удалась, хуже, чем не сказать ничего."""
+        code = self.source('storage_cells/grid.html')
+
+        self.assertIn('return LiftTeamWS.fetch', code)
+        self.assertIn('return performMoveToCell(', code)
+        self.assertIn("ok: false, text: 'Переложить в ячейку '", code)
+
+    def test_the_part_card_does_not_move_the_part_by_itself(self):
+        """Скан выбирает ячейку, но не назначает её.
+
+        Назначение снимает деталь с прежней ячейки. Сделать это по одному
+        поднесению кода, без подтверждения, — способ потерять деталь
+        на складе из-за случайно задетого сканера.
+        """
+        code = self.source('parts/detail.html')
+
+        self.assertIn('select.value = id;', code)
+        self.assertNotIn('.submit()', code)
+        self.assertIn('нажмите «Назначить»', code)

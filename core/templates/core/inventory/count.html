@@ -1,6 +1,87 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.66.4{% endblock %}
+{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.67.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Подсветка строки, на которую привёл скан. Цвет задан целиком,
+       а не классом Bootstrap: он приходит из интернета, и когда
+       не приезжает, подсветки не было бы ровно тогда, когда человек
+       со сканером стоит у кассетницы. */
+    tr.scan-hit > td {
+        background-color: #fff3cd;
+        box-shadow: inset 0 0 0 9999px rgba(255, 193, 7, 0.15);
+    }
+    tr.scan-hit > td:first-child {
+        box-shadow: inset 4px 0 0 0 #ffc107, inset 0 0 0 9999px rgba(255, 193, 7, 0.15);
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Скан на пересчёте: подносят пакет с деталью — курсор встаёт в её поле.
+ *
+ * Ради этого коды и клеили. Кассетница на двести ячеек, строки в таблице
+ * отсортированы не так, как лежат детали на полке, и глазами артикул
+ * ищут дольше, чем считают сами детали.
+ *
+ * Виды два. Деталь — та самая строка. Ячейка — первая строка этой ячейки:
+ * наклейка ячейки крупная и наклеена на самом ящике, с неё удобно начать,
+ * а дальше идти по деталям внутри.
+ *
+ * Ничего не сохраняется и не считается: скан только доводит до поля.
+ * Количество вписывает человек — программа не знает, сколько он насчитал.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var table = document.querySelector('table.list-table');
+    if (!table || typeof LiftTeamScanner === 'undefined') return;
+
+    function highlight(row) {
+        var previous = table.querySelector('tr.scan-hit');
+        if (previous) previous.classList.remove('scan-hit');
+        row.classList.add('scan-hit');
+        row.scrollIntoView({block: 'center', behavior: 'smooth'});
+        var input = row.querySelector('.counted-input');
+        if (input) {
+            input.focus();
+            // Выделяем набранное: пересчитали ту же деталь второй раз —
+            // новая цифра заменяет старую, а не дописывается к ней
+            try { input.select(); } catch (e) {}
+        }
+    }
+
+    LiftTeamScanner.register({
+        kinds: ['part', 'cell'],
+        name: 'Инвентаризация',
+        onScan: function (scan) {
+            var attribute = scan.kind === 'part' ? 'data-part' : 'data-cell';
+            var row = table.querySelector('tr[' + attribute + '="' + scan.id + '"]');
+
+            if (!row) {
+                // Молчать нельзя: человек решит, что не сработал сканер,
+                // и поднесёт код ещё раз. Кнопка перехода — на случай,
+                // когда деталь и правда нужна, но не отсюда
+                var what = scan.kind === 'part'
+                    ? 'Этой детали нет в кассетнице {{ session.cabinet.number }}'
+                    : 'Эта ячейка не из кассетницы {{ session.cabinet.number }}';
+                return {
+                    ok: false,
+                    text: what + ' — в этой инвентаризации она не считается.',
+                    actions: [{label: 'Всё равно открыть', url: scan.url}]
+                };
+            }
+
+            highlight(row);
+            return scan.kind === 'part'
+                ? row.getAttribute('data-title') + ' — впишите количество'
+                : 'Ячейка: первая деталь в ней — ' + row.getAttribute('data-title');
+        }
+    });
+});
+</script>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -48,13 +129,22 @@
                     </thead>
                     <tbody>
                         {% for line in lines %}
-                        <tr>
+                        {% comment %}
+                            Номера детали и ячейки — атрибутами на строке:
+                            по ним скан находит нужную строку. В самих
+                            ячейках таблицы их нет, а искать строку по
+                            напечатанному тексту нельзя — артикул может
+                            совпасть с куском названия соседней детали.
+                        {% endcomment %}
+                        <tr data-part="{{ line.part_id }}"
+                            data-cell="{{ line.cell_id|default_if_none:'' }}"
+                            data-title="{{ line.part.part_number }} — {{ line.part.name }}">
                             <td data-label="Ячейка">{{ line.cell.address|default:"—" }}</td>
                             <td class="fw-bold" data-label="Артикул">{{ line.part.part_number }}</td>
                             <td data-label="Название">{{ line.part.name }}</td>
                             <td class="text-end" data-label="Учтено на начало">{{ line.expected_quantity }}</td>
                             <td data-label="Посчитано фактически">
-                                <input type="number" min="0" class="form-control form-control-sm"
+                                <input type="number" min="0" class="form-control form-control-sm counted-input"
                                        name="counted_{{ line.pk }}"
                                        value="{{ line.counted_quantity|default_if_none:'' }}"
                                        placeholder="—">

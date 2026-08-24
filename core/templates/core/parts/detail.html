@@ -1,7 +1,55 @@
 {% extends 'core/base.html' %}
 {% load lifteam %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.66.4{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.67.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Скан наклейки ячейки на карточке детали: подносят ящик — ячейка встаёт
+ * в поле «назначить». Размещая деталь, человек стоит у кассетницы,
+ * а адрес ячейки набирать неудобно: их сотни, и они похожи друг на друга.
+ *
+ * Сама перекладка **не выполняется**: скан только выбирает ячейку, кнопку
+ * «Назначить» нажимает человек. Скан снимает деталь с прежней ячейки,
+ * и сделать это по одному поднесению кода, без подтверждения, — способ
+ * потерять деталь на складе из-за случайно задетого сканера.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var select = document.getElementById('assignCellSelect');
+    if (!select || typeof LiftTeamScanner === 'undefined') return;
+
+    LiftTeamScanner.register({
+        kinds: ['cell'],
+        name: 'Карточка детали',
+        onScan: function (scan) {
+            var id = String(scan.id);
+            var option = Array.from(select.options).find(function (item) {
+                return item.value === id;
+            });
+
+            // Ячейки нет в списке — значит деталь уже в ней лежит:
+            // из выбора исключена ровно она (см. part_detail).
+            // Молчать нельзя, человек решит, что не сработал сканер
+            if (!option) {
+                return {
+                    ok: false,
+                    text: '{{ part.part_number }} уже лежит в этой ячейке'
+                          + '{% if part.current_cell %} ({{ part.current_cell.address }}){% endif %}.',
+                    actions: [{label: 'Открыть ячейку', url: scan.url}]
+                };
+            }
+
+            select.value = id;
+            select.scrollIntoView({block: 'center', behavior: 'smooth'});
+            select.focus();
+            return 'Ячейка ' + option.textContent.trim().split('\n')[0]
+                   + ' выбрана — нажмите «Назначить»';
+        }
+    });
+});
+</script>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -69,7 +117,7 @@
                 <form method="post" action="{% url 'part_assign_cell' part.pk %}">
                     {% csrf_token %}
                     <div class="input-group">
-                        <select name="cell_id" class="form-select">
+                        <select name="cell_id" class="form-select" id="assignCellSelect">
                             <option value="">{% if part.current_cell %}Переместить в другую ячейку...{% else %}Выберите ячейку...{% endif %}</option>
                             {% for cell in available_cells %}
                             <option value="{{ cell.pk }}">

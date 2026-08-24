@@ -2324,8 +2324,12 @@ def storage_cell_grid(request):
     """
     cabinets = list(Cabinet.objects.all())
     if not cabinets:
+        # Пустой набор ячеек нужен даже здесь: страница вставляет его
+        # в скрипт как есть, и без него получалось `const CELLS_DATA = ;` —
+        # синтаксическая ошибка, гасившая весь скрипт страницы разом
         return render(request, 'core/storage_cells/grid.html', {
             'cabinets': [], 'cabinet': None, 'rows': [],
+            'cells_data_json': '{}',
         })
 
     requested = request.GET.get('cabinet', '')
@@ -4752,6 +4756,12 @@ def scan_page(request):
 def _scan_part(part):
     cell = part.current_cell
     return {
+        # Где деталь лежит — отдельными полями, а не только строкой для
+        # человека: по ним сетка кассетниц открывает нужную кассетницу
+        # и подсвечивает ячейку, не заставляя искать её глазами. Тот же
+        # приём, что `equipment_id` у оборудования.
+        'cell_id': cell.pk if cell else None,
+        'cabinet_number': cell.cabinet.number if cell else None,
         'title': part.part_number,
         'subtitle': part.name,
         'lines': [

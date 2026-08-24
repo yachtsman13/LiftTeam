@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.66.4{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.67.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -395,8 +395,17 @@ let moveCabinetModal = null;
 let isMoveMode = false;
 
 document.addEventListener('DOMContentLoaded', function() {
-    cellInfoModal = new bootstrap.Modal(document.getElementById('cellInfoModal'));
-    moveCabinetModal = new bootstrap.Modal(document.getElementById('moveCabinetModal'));
+    // Bootstrap приезжает из интернета и не приезжал уже дважды. Без этой
+    // защиты обработчик падал на первой же строке — и вместе с окнами
+    // переставали работать режим перемещения, переход с наклейки ячейки
+    // и подписка на сканер, стоящие ниже в этой же функции.
+    try {
+        cellInfoModal = new bootstrap.Modal(document.getElementById('cellInfoModal'));
+        moveCabinetModal = new bootstrap.Modal(document.getElementById('moveCabinetModal'));
+    } catch (e) {
+        cellInfoModal = null;
+        moveCabinetModal = null;
+    }
 
     const urlParams = new URLSearchParams(window.location.search);
     const moveFrom = urlParams.get('move_from');
@@ -417,7 +426,105 @@ document.addEventListener('DOMContentLoaded', function() {
             showCellInfo(el);
         }
     }
+
+    registerGridScanner();
 });
+
+/*
+ * Скан на сетке кассетниц: два вопроса, на которые она и отвечает.
+ *
+ * Поднесли ячейку — показывается, что в ней лежит. Поднесли деталь —
+ * подсвечивается ячейка, в которой она лежит; это ровно то, ради чего
+ * в панели инструментов стоит выбор детали, только без набора артикула.
+ *
+ * В режиме перемещения ячейка — это назначение: выбрали деталь «переложить»
+ * и поднесли наклейку нужного ящика. Тем и ценно, что руки заняты коробкой.
+ *
+ * Кассетница на экране одна, а код может быть от соседней: тогда
+ * страница просто открывается на нужной. Молчаливого бездействия быть
+ * не должно — человек решит, что не сработал сканер.
+ */
+function registerGridScanner() {
+    if (typeof LiftTeamScanner === 'undefined') return;
+
+    LiftTeamScanner.register({
+        kinds: ['part', 'cell'],
+        name: 'Кассетницы',
+        onScan: function (scan) {
+            return scan.kind === 'cell' ? scanCell(scan) : scanPart(scan);
+        }
+    });
+}
+
+function scanCell(scan) {
+    const el = document.querySelector('.cell-item[data-cell-id="' + scan.id + '"]');
+    if (!el) {
+        // Ячейка из другой кассетницы: короткий адрес /c/<id>/ сам
+        // откроет сетку на нужной и раскроет ячейку
+        window.location.href = scan.url;
+        return 'Ячейка в другой кассетнице — открываю её';
+    }
+
+    const data = CELLS_DATA[String(scan.id)] || {address: el.dataset.address, parts: []};
+
+    if (isMoveMode) {
+        if (String(scan.id) === String(moveFromCellId)) {
+            return {ok: false, text: 'Деталь и так лежит в ячейке ' + data.address};
+        }
+        return performMoveToCell(String(scan.id)).then(function (moved) {
+            return moved
+                ? 'Деталь переложена в ячейку ' + data.address
+                : {ok: false, text: 'Переложить в ячейку ' + data.address + ' не удалось'};
+        });
+    }
+
+    showCellInfo(el);
+    el.scrollIntoView({block: 'center', behavior: 'smooth'});
+
+    // Содержимое называется вслух, а не только показывается в окне:
+    // окно рисует Bootstrap, а он приходит из интернета
+    const what = data.parts.length
+        ? data.parts.map(function (p) { return p.part_number; }).join(', ')
+        : 'пусто';
+    return 'Ячейка ' + data.address + ': ' + what;
+}
+
+function scanPart(scan) {
+    // LiftTeamWS.fetch, а не голый fetch: обрыв связи должен поднять общую
+    // полосу вверху страницы, а не выглядеть как «деталь не найдена»
+    return LiftTeamWS.fetch('{% url "scan_resolve" %}?code=' + encodeURIComponent(scan.payload))
+        .then(function (response) {
+            return response.ok ? response.json() : Promise.reject(response.status);
+        })
+        .then(function (data) {
+            if (!data.found) return {ok: false, text: data.message};
+
+            if (!data.cell_id) {
+                return {
+                    ok: false,
+                    text: data.title + ' не размещена ни в одной ячейке',
+                    actions: [{label: 'Карточка детали', url: scan.url}]
+                };
+            }
+
+            if (String(data.cabinet_number) !== '{{ cabinet.number }}') {
+                window.location.href = '?cabinet=' + data.cabinet_number +
+                                       '&selected_part=' + data.id;
+                return data.title + ' — в кассетнице ' + data.cabinet_number + ', открываю';
+            }
+
+            const el = document.querySelector('.cell-item[data-cell-id="' + data.cell_id + '"]');
+            if (el) {
+                document.querySelectorAll('.cell-item.selected').forEach(function (other) {
+                    other.classList.remove('selected');
+                });
+                el.classList.add('selected');
+                el.scrollIntoView({block: 'center', behavior: 'smooth'});
+            }
+            const cell = CELLS_DATA[String(data.cell_id)];
+            return data.title + ' — ячейка ' + (cell ? cell.address : '');
+        });
+}
 
 // Выбор детали в панели инструментов: переход на сетку с подсветкой.
 // Слушаем событие выбора, а не onchange списка, которого больше нет.
@@ -488,7 +595,7 @@ function showCellInfo(el) {
 
     document.getElementById('infoLabelLink').href = '/storage-cells/' + selectedCellId + '/label/';
 
-    cellInfoModal.show();
+    if (cellInfoModal) cellInfoModal.show();
 }
 
 function escapeHtml(str) {
@@ -546,7 +653,7 @@ function removePartFromCell(partId) {
 }
 
 function startMoveMode(partId) {
-    cellInfoModal.hide();
+    if (cellInfoModal) cellInfoModal.hide();
     moveFromCellId = selectedCellId;
     moveFromPartId = partId;
 
@@ -555,12 +662,12 @@ function startMoveMode(partId) {
         return;
     }
 
-    moveCabinetModal.show();
+    if (moveCabinetModal) moveCabinetModal.show();
 }
 
 function selectMoveCabinet(cabinet) {
     moveToCabinet = cabinet;
-    moveCabinetModal.hide();
+    if (moveCabinetModal) moveCabinetModal.hide();
 
     isMoveMode = true;
     document.getElementById('moveModeBanner').style.display = 'flex';
@@ -600,10 +707,13 @@ function cancelMoveMode() {
 function performMoveToCell(toCellId) {
     if (!moveFromPartId || !toCellId) {
         alert('Ошибка: не выбрана деталь или ячейка назначения');
-        return;
+        return Promise.resolve(false);
     }
 
-    LiftTeamWS.fetch('{% url "storage_cell_move" %}', {
+    // Исход возвращается наружу: щелчок по ячейке его не смотрит,
+    // а скану он нужен — сказать «переложено», когда перекладка не удалась,
+    // хуже, чем не сказать ничего.
+    return LiftTeamWS.fetch('{% url "storage_cell_move" %}', {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
@@ -614,12 +724,14 @@ function performMoveToCell(toCellId) {
         cancelMoveMode();
         if (data.success) {
             location.reload();
-        } else {
-            alert(data.error || 'Ошибка перемещения');
+            return true;
         }
+        alert(data.error || 'Ошибка перемещения');
+        return false;
     }).catch(err => {
         cancelMoveMode();
         alert(LiftTeamWS.errorText(err, 'Не удалось переместить деталь. Попробуйте ещё раз.'));
+        return false;
     });
 }
 </script>
