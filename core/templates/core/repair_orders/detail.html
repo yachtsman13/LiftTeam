@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.65.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.66.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -343,7 +343,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 </form>
                 <div class="table-responsive table-scroll">
                     <table class="table table-sm list-table">
-                        <thead><tr><th>Деталь</th><th>Кол-во</th><th>Куда ушла</th><th class="text-end">Себестоимость</th></tr></thead>
+                        <thead><tr><th>Деталь</th><th>Кол-во</th><th>Куда ушла</th><th class="text-end">Себестоимость</th><th style="width:1%"></th></tr></thead>
                         <tbody>
                             {% for detail in details %}
                             <tr>
@@ -369,9 +369,33 @@ document.addEventListener('DOMContentLoaded', function () {
                                     {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }} ₽
                                     {% else %}<span class="text-muted" title="Цена детали не заполнена">—</span>{% endif %}
                                 </td>
+                                {% comment %}
+                                    Возврат детали на склад — в те партии,
+                                    из которых её брали. У списаний, сделанных
+                                    до появления возвратов, связи с расходом
+                                    нет, и возвращать некуда: программа
+                                    говорит об этом, а не догадывается.
+                                {% endcomment %}
+                                <td class="col-actions text-nowrap">
+                                    {% if detail.returnable %}
+                                    <form method="post" action="{% url 'repair_order_return_detail' order.pk detail.pk %}" class="d-inline-flex gap-1">
+                                        {% csrf_token %}
+                                        <input type="number" name="quantity" value="{{ detail.quantity_used }}"
+                                               min="1" max="{{ detail.quantity_used }}"
+                                               class="form-control form-control-sm" style="width:5rem"
+                                               aria-label="Сколько вернуть">
+                                        <button type="submit" class="btn btn-sm btn-outline-warning"
+                                                title="Вернуть на склад, в те же партии">
+                                            <i class="bi bi-arrow-return-left"></i>
+                                        </button>
+                                    </form>
+                                    {% else %}
+                                    <span class="text-muted small" title="Списание сделано до появления возвратов: неизвестно, из каких партий брали">—</span>
+                                    {% endif %}
+                                </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="4" class="text-center text-muted">Детали не добавлены</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">Детали не добавлены</td></tr>
                             {% endfor %}
                         </tbody>
                         {% if details %}

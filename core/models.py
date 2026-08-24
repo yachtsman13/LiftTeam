@@ -2240,6 +2240,15 @@ class RepairOrderDetail(models.Model):
     )
     part = models.ForeignKey(SparePart, on_delete=models.CASCADE, verbose_name='Деталь')
     quantity_used = models.IntegerField('Количество', validators=[MinValueValidator(1)])
+    # Расход со склада, которым эта деталь списана. Нужен возврату: чтобы
+    # вернуть деталь в её партию, надо знать, из каких партий её брали,
+    # а это записано в распределении расхода. У списаний до v2.66.0 связи
+    # нет — их можно вернуть только без разбора по партиям, и программа
+    # об этом говорит, а не догадывается.
+    movement = models.ForeignKey(
+        'StockMovement', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='order_details', verbose_name='Расход со склада'
+    )
 
     class Meta:
         verbose_name = 'Деталь в заказе'
@@ -2247,6 +2256,126 @@ class RepairOrderDetail(models.Model):
 
     def __str__(self):
         return f"{self.part.name} x{self.quantity_used} в {self.repair_order.order_number}"
+
+    @property
+    def returnable(self):
+        """Можно ли вернуть эту деталь в её партию.
+
+        Нельзя, если расход не записан: у списаний до v2.66.0 связи
+        с движением нет, и в какие партии возвращать — неизвестно.
+        Возвращать «куда-нибудь» нельзя: это разъедет себестоимость
+        по FIFO, а заметят это через полгода в отчёте о прибыли.
+        """
+        return self.movement_id is not None
+
+    def return_to_stock(self, quantity, employee=None, notes=''):
+        """Вернуть `quantity` штук этой детали на склад — в те самые партии,
+        из которых её брали.
+
+        Партии разбираются **в обратном порядке**: сначала та, из которой
+        брали последней. Это отменяет списание ровно наоборот тому, как оно
+        делалось, и сохраняет главное свойство FIFO — что старые партии
+        израсходованы раньше новых. Разбирать с начала значило бы вернуть
+        деталь в старую партию, оставив израсходованной новую, то есть
+        перевернуть очередь.
+
+        Возврат не создаёт новой партии. Приход — это партия, из которой
+        потом списывают; возвращённая деталь в новую партию не превращается,
+        она возвращается в свою. Движение с типом «возврат» заводится
+        только затем, чтобы возврат был виден в журнале.
+
+        Себестоимость возвращённого считается по тем же партиям и по тому же
+        правилу, что и списание: часть без партии или партия без цены делают
+        сумму неизвестной целиком, а не нулевой. На эту сумму по заказу
+        заводится **отрицательная** затрата — правка прошлой записи стёрла бы
+        след, а по затратам считают прибыль.
+
+        Возвращает созданное движение.
+        """
+        if quantity < 1:
+            raise ValidationError('Вернуть можно хотя бы одну штуку')
+        if quantity > self.quantity_used:
+            raise ValidationError(
+                f'В заказе списано {self.quantity_used} шт., вернуть больше нельзя'
+            )
+        if not self.returnable:
+            raise ValidationError(
+                'Это списание сделано до появления возвратов: неизвестно, '
+                'из каких партий брали деталь. Верните её приходом на склад.'
+            )
+
+        with transaction.atomic():
+            returned_cost = self._unwind_allocations(quantity)
+
+            self.part.current_stock += quantity
+            self.part.save(update_fields=['current_stock'])
+
+            movement = StockMovement.objects.create(
+                part=self.part,
+                quantity=quantity,
+                movement_type='return',
+                repair_order=self.repair_order,
+                notes=notes or f'Возврат по заказу {self.repair_order.order_number}',
+                created_by=employee,
+            )
+
+            OrderCost.objects.create(
+                repair_order=self.repair_order,
+                category='parts',
+                amount=-returned_cost if returned_cost is not None else None,
+            )
+
+            self.quantity_used -= quantity
+            if self.quantity_used:
+                self.save(update_fields=['quantity_used'])
+            else:
+                # Вернули всё — записи об использовании больше нет.
+                # Движения при этом остаются: со склада деталь уходила
+                # и возвращалась, и в журнале это видно.
+                self.delete()
+
+        return movement
+
+    def _unwind_allocations(self, quantity):
+        """Разобрать распределение расхода на `quantity` штук, начиная
+        с партии, из которой брали последней.
+
+        Возвращает себестоимость возвращённого или None, если она неизвестна
+        хотя бы частично: партия без цены или часть, списанная вовсе без
+        партии (в минус). Неизвестное остаётся неизвестным — средних цен
+        и нулей здесь быть не должно.
+        """
+        remaining = quantity
+        cost = Decimal('0')
+        unknown = False
+
+        allocations = list(
+            self.movement.allocations
+            .select_related('incoming')
+            .order_by('-incoming__movement_date', '-incoming_id')
+        )
+        for allocation in allocations:
+            if remaining <= 0:
+                break
+            take = min(allocation.quantity, remaining)
+            price = allocation.incoming.unit_price
+            if price is None:
+                unknown = True
+            else:
+                cost += price * take
+            if take == allocation.quantity:
+                allocation.delete()
+            else:
+                allocation.quantity -= take
+                allocation.save(update_fields=['quantity'])
+            remaining -= take
+
+        if remaining > 0:
+            # Эта часть списывалась без партии — не хватало остатка.
+            # Её себестоимость и тогда была неизвестна.
+            unknown = True
+
+        return None if unknown else cost
 
     @property
     def cost(self):
@@ -2371,6 +2500,13 @@ class StockMovement(models.Model):
     MOVEMENT_TYPE_CHOICES = [
         ('incoming', 'Приход'),
         ('outgoing', 'Расход'),
+        # Возврат детали из заказа. Отдельный тип, а не приход: приход —
+        # это партия, из которой потом списывают по FIFO, а возвращённая
+        # деталь в новую партию не превращается — она возвращается
+        # в свою прежнюю, и делается это уменьшением распределения
+        # (`StockAllocation`), а не новой записью. Здесь движение нужно
+        # только затем, чтобы возврат был виден в журнале.
+        ('return', 'Возврат из заказа'),
     ]
 
     part = models.ForeignKey(SparePart, on_delete=models.CASCADE, related_name='movements', verbose_name='Деталь')
@@ -2401,7 +2537,7 @@ class StockMovement(models.Model):
         ordering = ['-movement_date']
 
     def __str__(self):
-        sign = '+' if self.movement_type == 'incoming' else '-'
+        sign = '-' if self.movement_type == 'outgoing' else '+'
         return f"{self.part.part_number} {sign}{self.quantity} ({self.get_movement_type_display()})"
 
     @property

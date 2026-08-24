@@ -10016,6 +10016,215 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class ReturnPartToBatchTests(TestCase):
+    """Возврат детали из заказа — в те самые партии, из которых её брали.
+
+    Вернуть «куда-нибудь» нельзя: себестоимость считается по партиям (FIFO),
+    и неверный возврат разъедет её так, что заметят через полгода в отчёте
+    о прибыли. Поэтому партии разбираются в обратном порядке — сначала та,
+    из которой брали последней: это отменяет списание ровно наоборот тому,
+    как оно делалось, и сохраняет свойство FIFO, что старые партии
+    израсходованы раньше новых.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='admin_return', full_name='Мастер', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.part = SparePart.objects.create(
+            part_number='C-220', name='Конденсатор', current_stock=0
+        )
+        # Две партии по разной цене: без этого возврат «не в ту» партию
+        # ничем не отличался бы от возврата в правильную
+        self.old_batch = StockMovement.objects.create(
+            part=self.part, quantity=3, movement_type='incoming',
+            unit_price=Decimal('10.00')
+        )
+        self.new_batch = StockMovement.objects.create(
+            part=self.part, quantity=5, movement_type='incoming',
+            unit_price=Decimal('20.00')
+        )
+        self.part.current_stock = 8
+        self.part.save(update_fields=['current_stock'])
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+
+    def _write_off(self, quantity):
+        views._use_repair_order_part(
+            self.order, self.part, quantity, self.employee, 'списание'
+        )
+        self.part.refresh_from_db()
+        return self.order.details.get()
+
+    def _batches(self):
+        self.old_batch.refresh_from_db()
+        self.new_batch.refresh_from_db()
+        return self.old_batch.remaining_in_batch, self.new_batch.remaining_in_batch
+
+    def _order_cost(self):
+        amounts = list(self.order.costs.values_list('amount', flat=True))
+        if any(a is None for a in amounts):
+            return None
+        return sum(amounts)
+
+    def test_the_newest_batch_is_unwound_first(self):
+        """Списали 5: три из старой партии и две из новой. Возвращаем две —
+        они обязаны вернуться в новую, иначе очередь FIFO перевернётся."""
+        detail = self._write_off(5)
+        self.assertEqual(self._batches(), (0, 3))
+
+        detail.return_to_stock(2, self.employee)
+
+        self.assertEqual(self._batches(), (0, 5))
+
+    def test_the_stock_and_the_order_agree_after_a_partial_return(self):
+        detail = self._write_off(5)
+
+        detail.return_to_stock(2, self.employee)
+
+        self.part.refresh_from_db()
+        detail.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 5)
+        self.assertEqual(detail.quantity_used, 3)
+
+    def test_the_cost_of_the_order_drops_by_exactly_what_came_back(self):
+        """3 по 10 плюс 2 по 20 — это 70. Вернули две по 20, осталось 30,
+        то есть ровно три штуки из старой партии."""
+        detail = self._write_off(5)
+        self.assertEqual(self._order_cost(), Decimal('70.00'))
+
+        detail.return_to_stock(2, self.employee)
+
+        self.assertEqual(self._order_cost(), Decimal('30.00'))
+
+    def test_the_correction_is_a_new_record_not_an_edit(self):
+        """Правка прошлой записи стёрла бы след, а по затратам считают
+        прибыль."""
+        detail = self._write_off(5)
+        detail.return_to_stock(2, self.employee)
+
+        amounts = sorted(self.order.costs.values_list('amount', flat=True))
+        self.assertEqual(amounts, [Decimal('-40.00'), Decimal('70.00')])
+
+    def test_returning_everything_removes_the_line_but_keeps_the_journal(self):
+        """Со склада деталь уходила и возвращалась — в журнале это видно,
+        даже когда в заказе её больше нет."""
+        detail = self._write_off(5)
+
+        detail.return_to_stock(5, self.employee)
+
+        self.assertFalse(self.order.details.exists())
+        self.assertEqual(self._batches(), (3, 5))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 8)
+        types = sorted(StockMovement.objects.filter(
+            repair_order=self.order).values_list('movement_type', flat=True))
+        self.assertEqual(types, ['outgoing', 'return'])
+
+    def test_a_return_is_not_a_new_batch(self):
+        """Приход — это партия, из которой потом списывают. Возвращённая
+        деталь в новую партию не превращается: она вернулась в свою."""
+        detail = self._write_off(5)
+        detail.return_to_stock(2, self.employee)
+
+        batches = StockMovement.objects.filter(
+            part=self.part, movement_type='incoming'
+        )
+        self.assertEqual(batches.count(), 2)
+        returned = StockMovement.objects.get(movement_type='return')
+        self.assertIsNone(returned.remaining_in_batch)
+
+    def test_more_than_was_written_off_is_refused(self):
+        detail = self._write_off(3)
+
+        with self.assertRaises(ValidationError):
+            detail.return_to_stock(4, self.employee)
+
+        detail.refresh_from_db()
+        self.assertEqual(detail.quantity_used, 3)
+        self.assertEqual(self._batches(), (0, 5))
+
+    def test_nothing_at_all_is_refused(self):
+        detail = self._write_off(3)
+
+        with self.assertRaises(ValidationError):
+            detail.return_to_stock(0, self.employee)
+
+    def test_an_old_write_off_cannot_be_returned_to_its_batch(self):
+        """У списаний до появления возвратов связи с расходом нет, и
+        в какие партии возвращать — неизвестно. Догадка тут хуже отказа."""
+        detail = self._write_off(3)
+        detail.movement = None
+        detail.save(update_fields=['movement'])
+
+        self.assertFalse(detail.returnable)
+        with self.assertRaises(ValidationError):
+            detail.return_to_stock(1, self.employee)
+
+    def test_a_part_written_off_into_the_red_returns_without_a_known_cost(self):
+        """Часть списывалась без партии — её себестоимость и тогда была
+        неизвестна. Ноль вместо неизвестного соврал бы."""
+        detail = self._write_off(10)          # партий всего на 8
+        self.assertIsNone(self._order_cost())
+
+        detail.return_to_stock(10, self.employee)
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 8)
+        self.assertEqual(self._batches(), (3, 5))
+        self.assertIsNone(self.order.costs.order_by('-pk').first().amount)
+
+    def test_a_batch_without_a_price_makes_the_whole_return_unknown(self):
+        StockMovement.objects.filter(pk=self.new_batch.pk).update(unit_price=None)
+        detail = self._write_off(5)
+
+        detail.return_to_stock(2, self.employee)
+
+        self.assertIsNone(self.order.costs.order_by('-pk').first().amount)
+
+    def test_the_page_returns_the_part(self):
+        detail = self._write_off(5)
+
+        response = self.http.post(
+            '/repair-orders/%d/details/%d/return/' % (self.order.pk, detail.pk),
+            {'quantity': '2'}
+        )
+
+        self.assertRedirects(response, '/repair-orders/%d/' % self.order.pk)
+        detail.refresh_from_db()
+        self.assertEqual(detail.quantity_used, 3)
+
+    def test_a_detail_from_another_order_is_not_returned(self):
+        """Иначе подставленный номер вернул бы чужую деталь."""
+        detail = self._write_off(5)
+        other = RepairOrder.objects.create(client=self.order.client)
+
+        response = self.http.post(
+            '/repair-orders/%d/details/%d/return/' % (other.pk, detail.pk),
+            {'quantity': '2'}
+        )
+
+        self.assertEqual(response.status_code, 404)
+        detail.refresh_from_db()
+        self.assertEqual(detail.quantity_used, 5)
+
+    def test_returning_is_not_a_get(self):
+        detail = self._write_off(5)
+
+        response = self.http.get(
+            '/repair-orders/%d/details/%d/return/' % (self.order.pk, detail.pk)
+        )
+
+        self.assertEqual(response.status_code, 405)
+        detail.refresh_from_db()
+        self.assertEqual(detail.quantity_used, 5)
+
+
 class PartsPerUnitTests(TestCase):
     """Деталь списывается в конкретную железку, а не «в заказ вообще».
 

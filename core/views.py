@@ -1155,7 +1155,7 @@ def _use_repair_order_part(order, part, quantity, employee, history_note,
     shortage = part.current_stock < quantity
     if order_equipment is None:
         order_equipment = order.sole_equipment
-    RepairOrderDetail.objects.create(
+    detail = RepairOrderDetail.objects.create(
         repair_order=order, order_equipment=order_equipment,
         part=part, quantity_used=quantity
     )
@@ -1170,6 +1170,10 @@ def _use_repair_order_part(order, part, quantity, employee, history_note,
         created_by=employee
     )
     StockAllocation.allocate(movement)
+    # Связь нужна возврату: чтобы вернуть деталь в её партию, надо знать,
+    # из каких партий её брали, а это записано в распределении расхода.
+    detail.movement = movement
+    detail.save(update_fields=['movement'])
     OrderCost.objects.create(
         repair_order=order, category='parts', amount=_cost_from_allocations(movement)
     )
@@ -1263,6 +1267,34 @@ def repair_order_add_detail(request, pk):
     else:
         messages.error(request, 'Ошибка при добавлении детали')
     return redirect('repair_order_detail', pk=pk)
+
+
+@login_required
+@require_POST
+def repair_order_return_detail(request, pk, detail_pk):
+    """Вернуть деталь из заказа на склад — в те партии, из которых брали.
+
+    Мастер вскрыл прибор, деталь не понадобилась или взял с запасом.
+    Возврат отменяет списание ровно наоборот тому, как оно делалось,
+    и себестоимость заказа уменьшается на стоимость возвращённого.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    detail = get_object_or_404(RepairOrderDetail, pk=detail_pk, repair_order=order)
+
+    raw = request.POST.get('quantity', '')
+    if not str(raw).isdigit():
+        messages.error(request, 'Возврат не сделан: укажите количество')
+        return redirect('repair_order_detail', pk=order.pk)
+
+    try:
+        detail.return_to_stock(int(raw), request.user)
+    except ValidationError as error:
+        messages.error(request, '; '.join(error.messages))
+    else:
+        messages.success(
+            request, f'{detail.part.name}: возвращено {raw} шт. на склад'
+        )
+    return redirect('repair_order_detail', pk=order.pk)
 
 
 @login_required
