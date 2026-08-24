@@ -1305,6 +1305,18 @@ class RepairOrder(models.Model):
             current_client__isnull=True,
         ).update(current_client_id=self.client_id)
 
+    @property
+    def sole_equipment(self):
+        """Единственная единица в заказе — или None, если их не одна.
+
+        Когда прибор в заказе один, спрашивать «в какую железку ушла
+        деталь» незачем: ответ очевиден, и лишний выбор только мешал бы
+        мастеру. Когда их несколько, программа не угадывает — деталь
+        остаётся общей по заказу, пока не укажут.
+        """
+        units = list(self.order_equipments.all()[:2])
+        return units[0] if len(units) == 1 else None
+
     def quote_rows(self):
         """Строки коммерческого предложения — по единице оборудования.
 
@@ -2215,6 +2227,17 @@ class StorageCell(models.Model):
 class RepairOrderDetail(models.Model):
     """Детали, использованные в заказе на ремонт."""
     repair_order = models.ForeignKey(RepairOrder, on_delete=models.CASCADE, related_name='details', verbose_name='Заказ')
+    # В какую именно железку ушла деталь. Пусто — «на заказ целиком»:
+    # так лежат все списания до v2.65.0 и те, где мастер не стал уточнять.
+    # Выдумывать привязку задним числом нельзя: в заказе из пяти приборов
+    # программа не знает, в который поставили конденсатор.
+    #
+    # SET_NULL, а не CASCADE: если единицу убрали из заказа, деталь
+    # со склада всё равно списана, и терять запись о ней нельзя.
+    order_equipment = models.ForeignKey(
+        'RepairOrderEquipment', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='details', verbose_name='Единица оборудования'
+    )
     part = models.ForeignKey(SparePart, on_delete=models.CASCADE, verbose_name='Деталь')
     quantity_used = models.IntegerField('Количество', validators=[MinValueValidator(1)])
 

@@ -1037,7 +1037,7 @@ def repair_order_detail(request, pk):
         RepairOrder.objects.prefetch_related('order_equipments__equipment__model', 'client'),
         pk=pk
     )
-    details = order.details.select_related('part')
+    details = order.details.select_related('part', 'order_equipment__equipment__model')
     history = order.status_history.select_related('changed_by').order_by('-changed_at')
     order_equipments = list(order.order_equipments.select_related('equipment__model').order_by('id'))
 
@@ -1128,7 +1128,8 @@ def _cost_from_allocations(movement):
     return sum((a.quantity * a.incoming.unit_price for a in allocations), Decimal('0'))
 
 
-def _use_repair_order_part(order, part, quantity, employee, history_note):
+def _use_repair_order_part(order, part, quantity, employee, history_note,
+                           order_equipment=None):
     """Списывает деталь со склада и создаёт запись использованной в заказе
     детали — общая часть добавления детали вручную и применения шаблона
     неисправности.
@@ -1144,10 +1145,20 @@ def _use_repair_order_part(order, part, quantity, employee, history_note):
     (`OrderCost`, category='parts') — этим и отличается от ручного
     списания (`part_stock_outgoing`), не привязанного к заказу.
 
+    `order_equipment` — в какую единицу ушла деталь. Не передана и прибор
+    в заказе один — привязывается к нему: ответ очевиден, и спрашивать
+    незачем. Приборов несколько — деталь остаётся общей по заказу, пока
+    мастер не укажет; угадывать программа не станет.
+
     Возвращает True, если остатка не хватило и он ушёл в минус.
     """
     shortage = part.current_stock < quantity
-    RepairOrderDetail.objects.create(repair_order=order, part=part, quantity_used=quantity)
+    if order_equipment is None:
+        order_equipment = order.sole_equipment
+    RepairOrderDetail.objects.create(
+        repair_order=order, order_equipment=order_equipment,
+        part=part, quantity_used=quantity
+    )
     part.current_stock -= quantity
     part.save(update_fields=['current_stock'])
     movement = StockMovement.objects.create(
@@ -1171,7 +1182,8 @@ def _use_repair_order_part(order, part, quantity, employee, history_note):
     return shortage
 
 
-def apply_fault_templates(order, fault_types, employee, version=None):
+def apply_fault_templates(order, fault_types, employee, version=None,
+                          order_equipment=None):
     """Строит объединённый рецепт деталей по выбранным неисправностям и
     списывает его одной атомарной транзакцией на все позиции сразу.
 
@@ -1184,6 +1196,9 @@ def apply_fault_templates(order, fault_types, employee, version=None):
     `version` — версия исполнения той единицы, к которой применяют рецепт.
     Известна — берутся уточнения рецепта для неё (см.
     `FaultType.recipe_lines`), неизвестна — только общие строки.
+
+    `order_equipment` — та же единица, но чтобы записать, в какую железку
+    ушли детали: рецепт применяют из её строки, значит и детали её.
 
     Возвращает (added, shortages): added — список (SparePart, количество)
     добавленных позиций в порядке первого появления детали среди рецептов;
@@ -1208,7 +1223,8 @@ def apply_fault_templates(order, fault_types, employee, version=None):
             quantity = merged_qty[part_id]
             shortage = _use_repair_order_part(
                 order, part, quantity, employee,
-                f'Деталь {part.name} x{quantity} добавлена по шаблону неисправности'
+                f'Деталь {part.name} x{quantity} добавлена по шаблону неисправности',
+                order_equipment=order_equipment
             )
             added.append((part, quantity))
             if shortage:
@@ -1225,6 +1241,11 @@ def repair_order_add_detail(request, pk):
     if form.is_valid():
         part = form.cleaned_data['part']
         quantity = form.cleaned_data['quantity_used']
+        # В какую единицу ушла деталь. Не указана — списание останется
+        # общим по заказу, а если прибор в заказе один, привязка
+        # проставится сама (см. _use_repair_order_part).
+        unit_id = request.POST.get('order_equipment')
+        unit = order.order_equipments.filter(pk=unit_id).first() if unit_id else None
 
         if part.current_stock < quantity:
             messages.warning(request,
@@ -1234,7 +1255,8 @@ def repair_order_add_detail(request, pk):
         with transaction.atomic():
             _use_repair_order_part(
                 order, part, quantity, request.user,
-                f'Добавлена деталь {part.name} x{quantity}'
+                f'Добавлена деталь {part.name} x{quantity}',
+                order_equipment=unit
             )
 
         messages.success(request, f'Деталь {part.name} добавлена в заказ')
@@ -1262,11 +1284,15 @@ def repair_order_apply_fault_template(request, pk):
     # уточнения рецепта расписаны именно по версиям. Единица не передана
     # или версии у неё нет — действует общая часть рецепта
     version = None
+    target_unit = None
     equipment_id = request.POST.get('equipment_id', '')
     if str(equipment_id).isdigit():
         equipment = Equipment.objects.filter(pk=equipment_id).select_related('version').first()
         if equipment is not None:
             version = equipment.version
+            # Рецепт применяют из строки конкретной единицы — значит
+            # и детали уходят в неё, а не «в заказ вообще»
+            target_unit = order.order_equipments.filter(equipment=equipment).first()
 
     if not fault_types:
         return JsonResponse({
@@ -1274,7 +1300,9 @@ def repair_order_apply_fault_template(request, pk):
             'error': 'Выберите хотя бы одну неисправность из списка — «Другое» своего рецепта не имеет.'
         })
 
-    added, shortages = apply_fault_templates(order, fault_types, request.user, version=version)
+    added, shortages = apply_fault_templates(
+        order, fault_types, request.user, version=version, order_equipment=target_unit
+    )
     if not added:
         return JsonResponse({
             'success': False,

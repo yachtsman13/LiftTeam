@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.64.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.65.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -320,24 +320,58 @@ document.addEventListener('DOMContentLoaded', function () {
                         с номером детали, представление не изменилось.
                     {% endcomment %}
                     <div class="col-md-5">{% include 'core/_part_picker.html' with name=detail_form.part.html_name placeholder='Деталь не выбрана' %}</div>
-                    <div class="col-md-3">{{ detail_form.quantity_used }}</div>
-                    <div class="col-md-4"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                    <div class="col-md-2">{{ detail_form.quantity_used }}</div>
+                    {% comment %}
+                        Спрашиваем, в какую железку ушла деталь, только когда
+                        приборов в заказе несколько. Когда он один, ответ
+                        очевиден, и лишний выбор мешал бы: программа
+                        привязывает деталь сама.
+                    {% endcomment %}
+                    {% if order_equipments|length > 1 %}
+                    <div class="col-md-3">
+                        <select name="order_equipment" class="form-select" aria-label="В какую единицу">
+                            <option value="">На заказ целиком</option>
+                            {% for oe in order_equipments %}
+                            <option value="{{ oe.pk }}">{{ forloop.counter }}. {{ oe.equipment.designation }} — {{ oe.equipment.serial_number }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-2"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                    {% else %}
+                    <div class="col-md-5"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                    {% endif %}
                 </form>
                 <div class="table-responsive table-scroll">
                     <table class="table table-sm list-table">
-                        <thead><tr><th>Деталь</th><th>Кол-во</th><th class="text-end">Себестоимость</th></tr></thead>
+                        <thead><tr><th>Деталь</th><th>Кол-во</th><th>Куда ушла</th><th class="text-end">Себестоимость</th></tr></thead>
                         <tbody>
                             {% for detail in details %}
                             <tr>
                                 <td data-label="Деталь">{{ detail.part.name }}</td>
                                 <td data-label="Кол-во">{{ detail.quantity_used }}</td>
+                                <td data-label="Куда ушла">
+                                    {% if detail.order_equipment %}
+                                    <a href="#unit-{{ detail.order_equipment.pk }}" class="text-decoration-none">
+                                        {{ detail.order_equipment.equipment.designation }}
+                                        <span class="text-muted small">{{ detail.order_equipment.equipment.serial_number }}</span>
+                                    </a>
+                                    {% else %}
+                                    {% comment %}
+                                        Пусто — это «на заказ целиком»: так лежат
+                                        списания, сделанные до появления привязки,
+                                        и те, где мастер не стал уточнять.
+                                        Выдумывать за него нельзя.
+                                    {% endcomment %}
+                                    <span class="text-muted">на заказ целиком</span>
+                                    {% endif %}
+                                </td>
                                 <td class="text-end text-nowrap" data-label="Себестоимость">
                                     {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }} ₽
                                     {% else %}<span class="text-muted" title="Цена детали не заполнена">—</span>{% endif %}
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="3" class="text-center text-muted">Детали не добавлены</td></tr>
+                            <tr><td colspan="4" class="text-center text-muted">Детали не добавлены</td></tr>
                             {% endfor %}
                         </tbody>
                         {% if details %}
@@ -347,7 +381,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         {% endcomment %}
                         <tfoot>
                             <tr>
-                                <th colspan="2" class="text-end">Детали на сумму:</th>
+                                <th colspan="3" class="text-end">Детали на сумму:</th>
                                 <th class="text-end text-nowrap">{{ details_cost|floatformat:2 }} ₽</th>
                             </tr>
                         </tfoot>

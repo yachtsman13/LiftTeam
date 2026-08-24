@@ -10016,6 +10016,140 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class PartsPerUnitTests(TestCase):
+    """Деталь списывается в конкретную железку, а не «в заказ вообще».
+
+    В заказе с одним прибором привязка очевидна и проставляется сама;
+    с несколькими программа не угадывает — деталь остаётся общей, пока
+    мастер не укажет. Так решил владелец: неверная привязка хуже пустой,
+    потому что по ней потом считают, во сколько обошёлся ремонт.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_parts_unit', full_name='Мастер', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.first = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=self.model, serial_number='SN-U1'),
+        )
+        self.part = SparePart.objects.create(
+            part_number='C-100', name='Конденсатор', current_stock=50
+        )
+
+    def _second_unit(self):
+        return RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=self.model, serial_number='SN-U2'),
+        )
+
+    def _add(self, **extra):
+        data = {'part': self.part.pk, 'quantity_used': 2}
+        data.update(extra)
+        return self.http.post('/repair-orders/%d/add-detail/' % self.order.pk, data)
+
+    def test_one_unit_in_the_order_gets_the_part_by_itself(self):
+        self._add()
+
+        detail = self.order.details.get()
+        self.assertEqual(detail.order_equipment, self.first)
+
+    def test_several_units_leave_the_part_on_the_order(self):
+        """Программа не угадывает, в который из пяти приборов поставили
+        конденсатор."""
+        self._second_unit()
+
+        self._add()
+
+        detail = self.order.details.get()
+        self.assertIsNone(detail.order_equipment)
+
+    def test_the_master_can_name_the_unit(self):
+        second = self._second_unit()
+
+        self._add(order_equipment=second.pk)
+
+        detail = self.order.details.get()
+        self.assertEqual(detail.order_equipment, second)
+
+    def test_a_unit_from_another_order_is_not_accepted(self):
+        """Иначе подставленный номер увёл бы деталь в чужой ремонт."""
+        other_order = RepairOrder.objects.create(client=self.order.client)
+        alien = RepairOrderEquipment.objects.create(
+            repair_order=other_order,
+            equipment=Equipment.objects.create(model=self.model, serial_number='SN-ALIEN'),
+        )
+        self._second_unit()
+
+        self._add(order_equipment=alien.pk)
+
+        detail = self.order.details.get()
+        self.assertIsNone(detail.order_equipment)
+
+    def test_the_stock_is_written_off_the_same_way_as_before(self):
+        """Привязка — это только запись о том, куда ушла деталь. Склад,
+        партии и себестоимость считаются как считались."""
+        self._add()
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 48)
+        movement = StockMovement.objects.get(part=self.part, movement_type='outgoing')
+        self.assertEqual(movement.repair_order, self.order)
+
+    def test_removing_a_unit_keeps_the_write_off(self):
+        """Деталь со склада списана — терять запись о ней нельзя,
+        даже если единицу убрали из заказа."""
+        self._add()
+        self.first.delete()
+
+        detail = self.order.details.get()
+        self.assertIsNone(detail.order_equipment)
+        self.assertEqual(detail.quantity_used, 2)
+
+    def test_the_recipe_puts_parts_into_the_unit_it_came_from(self):
+        """Кнопку «применить шаблон» нажимают в строке единицы — значит
+        и детали её."""
+        second = self._second_unit()
+        fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы'
+        )
+        FaultTypePart.objects.create(fault_type=fault, part=self.part, quantity=3)
+
+        self.http.post('/repair-orders/%d/apply-fault-template/' % self.order.pk, {
+            'fault_ids': [fault.pk], 'equipment_id': second.equipment_id,
+        })
+
+        detail = self.order.details.get()
+        self.assertEqual(detail.order_equipment, second)
+        self.assertEqual(detail.quantity_used, 3)
+
+    def test_the_card_asks_only_when_there_is_a_choice(self):
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+        self.assertNotContains(page, 'name="order_equipment"')
+
+        self._second_unit()
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+        self.assertContains(page, 'name="order_equipment"')
+        self.assertContains(page, 'На заказ целиком')
+
+    def test_old_write_offs_read_as_on_the_order(self):
+        """Списания до появления привязки лежат пустыми, и это честно:
+        выдумывать за них нельзя."""
+        self._second_unit()
+        self._add()
+
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+
+        self.assertContains(page, 'на заказ целиком')
+
+
 class PriceListTests(TestCase):
     """Прайсы: базовый и по заказчикам.
 
