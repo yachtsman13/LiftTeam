@@ -2664,7 +2664,8 @@ def _cell_label(cell, base_url):
         items = [p.part_number for p in parts]
         package = packages.pop() if len(packages) == 1 else ''
 
-    link = qr_url(base_url, 'c', cell.pk)
+    payload = qr_payload('c', cell.pk)
+    link = qr_link(base_url, 'c', cell.pk)
     return {
         'cell': cell,
         'cell_parts': parts,
@@ -2678,7 +2679,8 @@ def _cell_label(cell, base_url):
         # Ссылка вместо простого адреса: сканирование сразу открывает
         # содержимое, а не показывает строку, которую потом ищут вручную
         'qr_url': link,
-        'qr_img': generate_qr_image(link),
+        'qr_payload': payload,
+        'qr_img': generate_qr_image(payload),
     }
 
 
@@ -2690,7 +2692,7 @@ def storage_cell_label(request, pk):
     base_url = label_base_url(request)
     context = _cell_label(cell, base_url)
     context['qr_base'] = base_url
-    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    context['qr_warning'] = qr_length_warning([context['qr_payload']])
     return render(request, 'core/storage_cells/label.html', context)
 
 
@@ -2707,12 +2709,14 @@ def _order_equipment_label(order, roe, position, base_url):
     (сколько именно, зависит от длины LABEL_BASE_URL), поэтому место под
     него освобождено: эмблема с этикетки убрана, код печатается сам по себе.
     """
-    link = qr_url(base_url, 'o', order.pk)
+    payload = qr_payload('u', roe.pk)
+    link = qr_link(base_url, 'u', roe.pk)
     return {
         'order': order,
         'roe': roe,
         'position': position,
-        'qr_img': generate_qr_image(link),
+        'qr_payload': payload,
+        'qr_img': generate_qr_image(payload),
         'qr_url': link,
     }
 
@@ -2731,7 +2735,7 @@ def repair_order_equipment_label(request, order_pk, roe_pk):
     base_url = label_base_url(request)
     context = _order_equipment_label(order, roe, position, base_url)
     context['qr_base'] = base_url
-    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    context['qr_warning'] = qr_length_warning([context['qr_payload']])
     return render(request, 'core/repair_orders/equipment_label.html', context)
 
 
@@ -2773,7 +2777,7 @@ def repair_order_labels_batch(request):
         'layout': _batch_layout(request),
         'limit': MAX_LABELS_PER_BATCH,
         'qr_base': base_url,
-        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+        'qr_warning': qr_length_warning(label['qr_payload'] for label in labels),
     })
 
 
@@ -2809,7 +2813,7 @@ def repair_order_equipment_labels(request, pk):
         'layout': _batch_layout(request),
         'limit': MAX_LABELS_PER_BATCH,
         'qr_base': base_url,
-        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+        'qr_warning': qr_length_warning(label['qr_payload'] for label in labels),
         'order': order,
         'back_url': reverse('repair_order_detail', args=[order.pk]),
     })
@@ -4315,6 +4319,28 @@ def short_order(request, pk):
 
 
 @login_required
+def short_order_equipment(request, pk):
+    """Короткий адрес единицы оборудования в заказе: /u/<id>/
+
+    Это код с наклейки на самом приборе. Ведёт в карточку заказа и сразу
+    к нужной строке: у мастера в руках плата, и ему нужно, что с ней
+    в этой работе — заявленная неисправность, что уже сделано, гарантия.
+    История ремонтов этой единицы вообще — ссылкой оттуда же, отдельной
+    кнопкой в строке.
+
+    До v2.61.0 наклейка вела на заказ целиком, а какая это единица,
+    подсказывал только номер позиции, напечатанный рядом. Так было
+    не от хорошей жизни: в код помещался адрес сервера, и на номер
+    позиции знаков уже не оставалось.
+    """
+    roe = get_object_or_404(
+        RepairOrderEquipment.objects.select_related('repair_order'), pk=pk
+    )
+    url = reverse('repair_order_detail', args=[roe.repair_order_id])
+    return redirect(f'{url}#unit-{roe.pk}')
+
+
+@login_required
 def short_equipment(request, pk):
     """Короткий адрес единицы оборудования для QR: /e/<id>/
 
@@ -4422,6 +4448,27 @@ def _scan_order(order):
     }
 
 
+def _scan_order_equipment(roe):
+    """Единица в заказе: что это за прибор и что с ним в этой работе."""
+    order = roe.repair_order
+    return {
+        'title': roe.equipment.designation,
+        'subtitle': f'{order.order_number} — {order.client.name}',
+        'lines': [
+            {'label': 'Серийный номер', 'value': roe.equipment.serial_number},
+            {'label': 'Неисправность', 'value': roe.fault_description},
+            {'label': 'Выполнено', 'value': roe.work_performed},
+            {'label': 'Статус заказа', 'value': order.get_status_display()},
+        ],
+        'actions': [
+            {'label': 'Открыть в заказе',
+             'url': reverse('repair_order_detail', args=[order.pk]) + f'#unit-{roe.pk}'},
+            {'label': 'История этой единицы',
+             'url': reverse('equipment_history', args=[roe.equipment_id])},
+        ],
+    }
+
+
 # Что искать и чем описывать — по видам кода. Модель и сборщик рядом,
 # чтобы новый вид добавлялся одной строкой, а не правкой в трёх местах.
 _SCAN_KINDS = {
@@ -4429,6 +4476,7 @@ _SCAN_KINDS = {
     'cell': (StorageCell, _scan_cell),
     'equipment': (Equipment, _scan_equipment),
     'order': (RepairOrder, _scan_order),
+    'order_equipment': (RepairOrderEquipment, _scan_order_equipment),
 }
 
 
@@ -4499,40 +4547,57 @@ def label_base_url(request):
     return configured.rstrip('/') if configured else request.build_absolute_uri('/').rstrip('/')
 
 
-def qr_url(base_url, prefix, pk):
-    """Ссылка, которая уходит в QR-код.
+def qr_payload(prefix, pk):
+    """То, что лежит внутри QR-кода: `u/123`, `p/45`.
 
-    Без косой черты на конце — это ровно один символ, но на этикетке заказа
-    он решает: QR там 9,6 мм, и 27-й символ переводит код с 25 модулей
-    на 29, то есть с 2,8 точки принтера на модуль до 2,5, а 2,5 на практике
-    уже не считывалось. Маршруты без черты заведены в urls.py.
+    Адреса сервера здесь нет намеренно. Сканируют, когда программа уже
+    открыта, и адрес в коде не нужен ей ни для чего — зато он занимал
+    три четверти содержимого: `http://lifteam.taile9b605.ts.net/o/123` это
+    38 знаков против пяти. На этикетке заказа, где код всего 9,57 мм, это
+    разница между 29 модулями (2,6 точки принтера на модуль, впритык
+    к пределу читаемости) и 21 модулем (3,6 точки, спокойный запас).
+
+    Второе следствие важнее первого: внутренний адрес программы больше
+    не печатается на наклейках, которые уезжают к заказчику.
+
+    Разбор со сканера (`core/scanning.py`) принимает и то и другое, так
+    что наклейки, напечатанные раньше, читаются по-прежнему.
     """
-    return f'{base_url}/{prefix}/{pk}'
+    return f'{prefix}/{pk}'
 
 
-# Сколько символов помещается в QR, не переводя его на следующую версию.
-# Границы при уровне коррекции M: до 26 символов — 25 модулей, 27–42 —
-# 29 модулей, 43 и больше — 33. На этикетке заказа QR всего 9,57 мм, и
-# 33 модуля дают 2,3 точки принтера на модуль — меньше, чем 2,5, которые
-# на практике уже не считывались.
-QR_MAX_CHARS = 42
+def qr_link(base_url, prefix, pk):
+    """Полный адрес — для человека, а не для кода.
+
+    Показывается под кодом на странице печати, чтобы ошибку в адресе было
+    видно на экране, а не со сканером у стеллажа. В сам код не уходит.
+    """
+    return f'{base_url}/{qr_payload(prefix, pk)}'
 
 
-def qr_length_warning(urls):
-    """Предупреждение, если ссылка не помещается в QR нужного размера.
+# Сколько знаков помещается в QR, не переводя его на следующую версию.
+# Границы при уровне коррекции M: до 14 знаков — 21 модуль, 15–26 — 25,
+# 27–42 — 29. Содержимое теперь короткое (`u/123` — пять знаков), и в
+# 21 модуль оно укладывается с запасом на пятизначные номера. Проверка
+# оставлена сторожем на будущее: если в код когда-нибудь решат положить
+# что-то ещё, беда всплывёт до печати сотни наклеек, а не после.
+QR_MAX_CHARS = 14
 
-    Считается по факту, а не по одной настройке: длина складывается из
-    LABEL_BASE_URL и номера записи, и вторая половина растёт сама собой.
+
+def qr_length_warning(payloads):
+    """Предупреждение, если содержимое не помещается в QR нужного размера.
+
+    Считается по факту, а не по настройке: номер записи растёт сам собой.
     Сказать об этом надо до печати — после того как этикетки наклеены
     на сотню пакетов, чинить нечего.
     """
-    longest = max((str(url) for url in urls), key=len, default='')
+    longest = max((str(payload) for payload in payloads), key=len, default='')
     if len(longest) <= QR_MAX_CHARS:
         return ''
     return (
-        f'Ссылка в QR длиннее {QR_MAX_CHARS} символов ({len(longest)}): {longest}. '
+        f'Содержимое QR длиннее {QR_MAX_CHARS} знаков ({len(longest)}): {longest}. '
         'Код станет мельче и может не читаться сканером — особенно на этикетке '
-        'заказа, где он всего 9,6 мм. Укоротите LABEL_BASE_URL.'
+        'заказа, где он всего 9,6 мм.'
     )
 
 
@@ -4542,7 +4607,8 @@ def _part_label(part, base_url):
     Набор полей общий с этикеткой ячейки (`_cell_label`) — печатаются они
     одним шаблоном.
     """
-    link = qr_url(base_url, 'p', part.pk)
+    payload = qr_payload('p', part.pk)
+    link = qr_link(base_url, 'p', part.pk)
     cell = part.current_cell
     return {
         'part': part,
@@ -4554,7 +4620,8 @@ def _part_label(part, base_url):
         'application': part.application,
         'address': cell.address if cell else 'нет ячейки',
         'qr_url': link,
-        'qr_img': generate_qr_image(link),
+        'qr_payload': payload,
+        'qr_img': generate_qr_image(payload),
     }
 
 
@@ -4565,7 +4632,7 @@ def part_label(request, pk):
     base_url = label_base_url(request)
     context = _part_label(part, base_url)
     context['qr_base'] = base_url
-    context['qr_warning'] = qr_length_warning([context['qr_url']])
+    context['qr_warning'] = qr_length_warning([context['qr_payload']])
     return render(request, 'core/parts/label.html', context)
 
 
@@ -4604,7 +4671,7 @@ def part_labels_batch(request):
         'layout': _batch_layout(request),
         'limit': MAX_LABELS_PER_BATCH,
         'qr_base': base_url,
-        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+        'qr_warning': qr_length_warning(label['qr_payload'] for label in labels),
     })
 
 
@@ -4638,7 +4705,7 @@ def storage_cell_labels_batch(request):
     return render(request, 'core/storage_cells/labels_batch.html', {
         'labels': labels,
         'qr_base': base_url,
-        'qr_warning': qr_length_warning(label['qr_url'] for label in labels),
+        'qr_warning': qr_length_warning(label['qr_payload'] for label in labels),
         'layout': _batch_layout(request),
         'only_filled': only_filled,
         'cabinet': request.GET.get('cabinet', ''),

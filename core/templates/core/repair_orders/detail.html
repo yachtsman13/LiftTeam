@@ -1,6 +1,23 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.60.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.61.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Отсканировали наклейку — строка этой единицы видна сразу.
+       :target срабатывает от якоря в адресе, скрипт не нужен. Цвет задан
+       целиком, а не классом Bootstrap: он приходит из интернета, и когда
+       не приезжает, подсветки не было бы ровно тогда, когда мастер
+       со сканером стоит у стола. */
+    tr[id^="unit-"]:target > td {
+        background-color: #fff3cd;
+        box-shadow: inset 0 0 0 9999px rgba(255, 193, 7, 0.15);
+    }
+    tr[id^="unit-"]:target > td:first-child {
+        box-shadow: inset 4px 0 0 0 #ffc107, inset 0 0 0 9999px rgba(255, 193, 7, 0.15);
+    }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -104,7 +121,13 @@
                         </tr></thead>
                         <tbody>
                             {% for oe in order_equipments %}
-                            <tr>
+                            {% comment %}
+                                Якорь для скана наклейки: код на приборе —
+                                это /u/<номер строки>, и открывать он должен
+                                не заказ вообще, а вот эту единицу.
+                                Подсветку рисует :target, без скрипта.
+                            {% endcomment %}
+                            <tr id="unit-{{ oe.pk }}">
                                 <td class="col-check">
                                     <input type="checkbox" class="form-check-input equipment-check"
                                            form="equipmentLabelsForm" name="roe" value="{{ oe.pk }}"

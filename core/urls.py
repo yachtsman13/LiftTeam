@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.60.0
+v2.61.0
 """
 from django.urls import path
 from . import views
@@ -104,6 +104,7 @@ urlpatterns = [
     path('c/<int:pk>/', views.short_cell, name='short_cell'),
     path('e/<int:pk>/', views.short_equipment, name='short_equipment'),
     path('o/<int:pk>/', views.short_order, name='short_order'),
+    path('u/<int:pk>/', views.short_order_equipment, name='short_order_equipment'),
 
     # Те же адреса без косой черты на конце — именно они попадают в QR-коды.
     # Экономия ровно в один символ, но на этикетке заказа она решает: там
@@ -117,6 +118,7 @@ urlpatterns = [
     path('c/<int:pk>', views.short_cell),
     path('e/<int:pk>', views.short_equipment),
     path('o/<int:pk>', views.short_order),
+    path('u/<int:pk>', views.short_order_equipment),
 
     # Ячейки хранения
     path('storage-cells/', views.storage_cell_grid, name='storage_cell_grid'),

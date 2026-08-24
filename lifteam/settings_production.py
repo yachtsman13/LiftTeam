@@ -1,6 +1,6 @@
 """
 Django production settings for LiftTeam.
-v2.60.0 — Docker (PostgreSQL + Redis + Nginx)
+v2.61.0 — Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path

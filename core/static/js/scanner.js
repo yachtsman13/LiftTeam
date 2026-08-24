@@ -41,7 +41,7 @@
  * скан вместо перехода по ссылке:
  *
  *   var handle = LiftTeamScanner.register({
- *       kinds: ['part'],                  // виды: part, cell, equipment, order
+ *       kinds: ['part'],                  // part, cell, equipment, order, order_equipment
  *       name: 'Инвентаризация',           // как назвать экран в сообщении
  *       onScan: function (scan) {
  *           // scan = {kind, id, url, label, payload}
@@ -117,12 +117,16 @@
 
     var MUTE_KEY = 'lifteam.scanner.muted';
 
-    var KINDS = {p: 'part', c: 'cell', e: 'equipment', o: 'order'};
+    // Те же виды и в том же написании, что в core/scanning.py: разбор идёт
+    // и здесь, и на сервере, и расходиться им нельзя — за этим следит
+    // ScanLayerWiringTests.
+    var KINDS = {p: 'part', c: 'cell', e: 'equipment', o: 'order', u: 'order_equipment'};
     var KIND_LABELS = {
         part: 'Радиодеталь',
         cell: 'Ячейка хранения',
         equipment: 'Оборудование',
-        order: 'Заказ на ремонт'
+        order: 'Заказ на ремонт',
+        order_equipment: 'Оборудование в заказе'
     };
     var KIND_PREFIX = {part: 'p', cell: 'c', equipment: 'e', order: 'o'};
 
@@ -145,7 +149,7 @@
        с другой основы, и она обязана читаться. */
 
     var ORIGIN = /^[a-z][a-z0-9+.\-]*:\/\/[^/]*/i;
-    var PATH = /^\/?([pceoPCEO])\/(\d+)\/?$/;
+    var PATH = /^\/?([pceouPCEOU])\/(\d+)\/?$/;
 
     /* Пробелы и невидимое по краям: сканеры добавляют их сами, а на глаз
        строка выглядит обычной. Внутри строки не убираем ничего — там такой

@@ -812,16 +812,17 @@ class LabelTests(TestCase):
             f'/storage-cells/?cabinet={self.cell.cabinet.number}&open_cell={self.cell.pk}',
         )
 
-    def test_qr_links_carry_no_trailing_slash(self):
-        """Косая черта стоит ровно тот символ, который на этикетке заказа
-        переводит код с 25 модулей на 29."""
-        from core.views import qr_url
+    def test_the_code_carries_no_server_address(self):
+        """В коде — только вид и номер. Адрес сервера там не нужен: сканируют,
+        когда программа уже открыта, а места он занимал три четверти."""
+        from core.views import qr_link, qr_payload
 
-        self.assertEqual(qr_url('http://100.108.92.92', 'o', 123),
-                         'http://100.108.92.92/o/123')
+        self.assertEqual(qr_payload('u', 123), 'u/123')
+        self.assertEqual(qr_link('http://100.108.92.92', 'u', 123),
+                         'http://100.108.92.92/u/123')
 
     @override_settings(LABEL_BASE_URL='http://100.108.92.92')
-    def test_every_label_type_points_at_the_configured_address(self):
+    def test_every_label_type_keeps_the_address_out_of_the_code(self):
         """Все этикетки, а не только те, о которых вспомнили."""
         equipment_model = EquipmentModel.objects.create(name='БУАД-QR')
         equipment = Equipment.objects.create(model=equipment_model, serial_number='QR-1')
@@ -832,17 +833,22 @@ class LabelTests(TestCase):
         roe = RepairOrderEquipment.objects.create(repair_order=order, equipment=equipment)
 
         pages = {
-            f'/parts/{self.part.pk}/label/': f'http://100.108.92.92/p/{self.part.pk}',
-            f'/storage-cells/{self.cell.pk}/label/': f'http://100.108.92.92/c/{self.cell.pk}',
-            f'/repair-orders/{order.pk}/equipment/{roe.pk}/label/':
-                f'http://100.108.92.92/o/{order.pk}',
+            f'/parts/{self.part.pk}/label/': f'p/{self.part.pk}',
+            f'/storage-cells/{self.cell.pk}/label/': f'c/{self.cell.pk}',
+            f'/repair-orders/{order.pk}/equipment/{roe.pk}/label/': f'u/{roe.pk}',
         }
-        for page, expected in pages.items():
+        for page, payload in pages.items():
             with self.subTest(page=page):
                 with patch('core.views.generate_qr_image') as qr:
                     qr.return_value = 'data:image/png;base64,x'
-                    self.client_http.get(page)
-                self.assertEqual(qr.call_args[0][0], expected)
+                    response = self.client_http.get(page)
+
+                # В коде — только вид и номер, адреса там нет
+                self.assertEqual(qr.call_args[0][0], payload)
+                # А настроенный адрес показывается человеку на экране,
+                # чтобы ошибку в нём было видно до печати
+                self.assertEqual(response.context['qr_url'],
+                                 f'http://100.108.92.92/{payload}')
 
 
 class PiSettingsLabelTests(TestCase):
@@ -871,14 +877,16 @@ class PiSettingsLabelTests(TestCase):
         self.assertEqual(settings_pi.LABEL_BASE_URL,
                          'http://lifteam.taile9b605.ts.net')
 
-    def test_the_name_fits_the_qr_without_growing_it(self):
-        """Опасение, что имя длиннее адреса и код помельчает, не оправдалось:
-        27 и 39 символов дают одни и те же 29 модулей."""
-        settings_pi = self._load(ALLOWED_HOSTS='localhost')
-        link = f'{settings_pi.LABEL_BASE_URL}/o/1234'
+    def test_the_name_does_not_reach_the_code_at_all(self):
+        """Длина имени на размер кода больше не влияет: адреса в коде нет.
 
-        self.assertLessEqual(len(link), views.QR_MAX_CHARS)
-        self.assertEqual(views.qr_length_warning([link]), '')
+        Раньше она влияла напрямую, и опасение «имя длиннее адреса, код
+        помельчает» было осмысленным. Теперь в коде лежит `u/1234`,
+        и настройка на него не действует никак."""
+        settings_pi = self._load(ALLOWED_HOSTS='localhost')
+
+        self.assertTrue(settings_pi.LABEL_BASE_URL)
+        self.assertEqual(views.qr_length_warning([views.qr_payload('u', 1234)]), '')
 
     def test_the_scanned_address_is_allowed(self):
         """Иначе отсканированный код приводит на «400 Bad Request»."""
@@ -1840,24 +1848,55 @@ class OrderLabelLinkTests(TestCase):
     def test_short_url_404_for_missing_order(self):
         self.assertEqual(self.client_http.get('/o/999999/').status_code, 404)
 
-    def test_label_encodes_link_to_the_order(self):
+    def _encoded(self):
         with patch('core.views.generate_qr_image') as qr:
             qr.return_value = 'data:image/png;base64,x'
             self.client_http.get(self._label_url())
+        return qr.call_args[0][0]
 
-        encoded = qr.call_args[0][0]
-        self.assertTrue(encoded.endswith(f'/o/{self.order.pk}'), encoded)
-        # Прежнее содержимое кода — «LT-2026-08-001/1» — больше не годится:
-        # сканирование им ничего не открывало
+    def test_label_encodes_the_unit_not_the_whole_order(self):
+        """Наклейка на приборе — про этот прибор. Раньше она вела на заказ
+        целиком, и какая это единица, подсказывал только номер позиции:
+        в код помещался адрес сервера, и на позицию знаков не оставалось."""
+        encoded = self._encoded()
+
+        self.assertEqual(encoded, f'u/{self.roe.pk}')
+        # Прежнее содержимое — «LT-2026-08-001/1» — сканированием
+        # не открывало ничего
         self.assertNotIn(self.order.order_number, encoded)
 
     @override_settings(LABEL_BASE_URL='http://192.168.1.50')
-    def test_label_uses_configured_base_url(self):
-        with patch('core.views.generate_qr_image') as qr:
-            qr.return_value = 'data:image/png;base64,x'
-            self.client_http.get(self._label_url())
+    def test_the_configured_address_never_reaches_the_code(self):
+        """Внутренний адрес программы не печатается на наклейках, которые
+        уезжают к заказчику. И код от длины адреса больше не зависит."""
+        self.assertEqual(self._encoded(), f'u/{self.roe.pk}')
 
-        self.assertEqual(qr.call_args[0][0], f'http://192.168.1.50/o/{self.order.pk}')
+    def test_the_unit_code_opens_the_order_at_that_unit(self):
+        resp = self.client_http.get(f'/u/{self.roe.pk}/')
+
+        self.assertRedirects(
+            resp, f'/repair-orders/{self.order.pk}/#unit-{self.roe.pk}')
+
+    def test_the_unit_row_carries_the_anchor(self):
+        """Иначе переход приводит в начало страницы, и мастер ищет
+        свою строку глазами."""
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, f'id="unit-{self.roe.pk}"')
+
+    def test_the_history_of_that_unit_is_one_click_away(self):
+        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+
+        self.assertContains(resp, f'/equipment/{self.roe.equipment_id}/history/')
+
+    def test_the_unit_code_requires_login(self):
+        resp = TestClient().get(f'/u/{self.roe.pk}/')
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_the_unit_code_404_for_a_missing_unit(self):
+        self.assertEqual(self.client_http.get('/u/999999/').status_code, 404)
 
     def test_position_still_printed_on_the_label(self):
         """Позиция в ссылку не входит, поэтому она обязана остаться на бумаге —
@@ -6045,33 +6084,39 @@ class QrLinkLengthTests(TestCase):
         )
 
     def test_the_threshold_matches_the_qr_version_boundary(self):
-        """43-й символ переводит код на 33 модуля — 2,3 точки на модуль."""
-        self.assertEqual(views.QR_MAX_CHARS, 42)
+        """15-й знак переводит код с 21 модуля на 25.
 
-    def test_a_short_link_says_nothing(self):
-        self.assertEqual(views.qr_length_warning(['http://lifteam/p/1']), '')
+        Содержимое теперь короткое («u/123» — пять знаков), и в 21 модуль
+        оно укладывается с запасом даже на пятизначные номера. Проверка
+        оставлена сторожем: если в код когда-нибудь решат положить что-то
+        ещё, беда всплывёт до печати сотни наклеек, а не после.
+        """
+        self.assertEqual(views.QR_MAX_CHARS, 14)
 
-    def test_a_link_exactly_at_the_limit_is_still_fine(self):
-        self.assertEqual(views.qr_length_warning(['h' * 42]), '')
+    def test_a_short_payload_says_nothing(self):
+        self.assertEqual(views.qr_length_warning(['u/1']), '')
+
+    def test_a_payload_exactly_at_the_limit_is_still_fine(self):
+        self.assertEqual(views.qr_length_warning(['h' * 14]), '')
 
     def test_one_character_over_the_limit_warns(self):
-        warning = views.qr_length_warning(['h' * 43])
+        warning = views.qr_length_warning(['h' * 15])
 
-        self.assertIn('43', warning)
-        self.assertIn('LABEL_BASE_URL', warning)
+        self.assertIn('15', warning)
+        # Настройка адреса тут больше ни при чём: её в коде нет
+        self.assertNotIn('LABEL_BASE_URL', warning)
 
-    def test_the_longest_link_on_the_page_decides(self):
-        """Длина растёт с номером записи, а не только от настройки."""
+    def test_the_longest_payload_on_the_page_decides(self):
+        """Длина растёт с номером записи, а не от настройки."""
         warning = views.qr_length_warning(['короткая', 'h' * 50])
 
         self.assertIn('50', warning)
 
-    def test_no_links_at_all_is_not_a_problem(self):
+    def test_no_payloads_at_all_is_not_a_problem(self):
         self.assertEqual(views.qr_length_warning([]), '')
 
     @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
     def test_the_magic_dns_name_fits(self):
-        """Имя длиннее адреса 100.x, но код от этого не растёт."""
         for url in (f'/parts/{self.part.pk}/label/',
                     f'/storage-cells/{self.cell.pk}/label/',
                     f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/'):
@@ -6081,34 +6126,41 @@ class QrLinkLengthTests(TestCase):
             self.assertEqual(resp.context['qr_warning'], '', url)
 
     @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
-    def test_an_overlong_base_warns_before_printing_not_after(self):
-        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
-
-        self.assertNotEqual(resp.context['qr_warning'], '')
-
-    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
-    def test_batch_pages_warn_too(self):
-        for url in ('/parts/labels/?ids=%d' % self.part.pk,
+    def test_even_an_absurd_address_leaves_the_code_alone(self):
+        """Прежде длинная настройка делала код мельче и вызывала
+        предупреждение. Теперь адрес в код не попадает вовсе — и это
+        сильнее предупреждения: беды нет, а не о ней сообщают."""
+        for url in (f'/parts/{self.part.pk}/label/',
+                    '/parts/labels/?ids=%d' % self.part.pk,
                     '/storage-cells/labels/?cabinet=1'):
             resp = self.client_http.get(url)
 
             self.assertEqual(resp.status_code, 200, url)
-            self.assertNotEqual(resp.context['qr_warning'], '', url)
+            self.assertEqual(resp.context['qr_warning'], '', url)
+
+    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
+    def test_the_code_itself_stays_short(self):
+        with patch('core.views.generate_qr_image') as qr:
+            qr.return_value = 'data:image/png;base64,x'
+            self.client_http.get(f'/parts/{self.part.pk}/label/')
+
+        self.assertEqual(qr.call_args[0][0], f'p/{self.part.pk}')
 
     @override_settings(LABEL_BASE_URL='http://lifteam.taile9b605.ts.net')
-    def test_the_link_in_the_code_points_at_the_name_not_the_address(self):
+    def test_the_link_shown_to_a_human_still_carries_the_address(self):
+        """Ошибку в адресе иначе видно только со сканером у стеллажа."""
         resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
 
         self.assertEqual(
             resp.context['qr_url'],
             f'http://lifteam.taile9b605.ts.net/p/{self.part.pk}')
 
-    @override_settings(LABEL_BASE_URL='http://' + 'x' * 60 + '.example.org')
     def test_the_warning_is_not_printed_on_the_sticker(self):
-        resp = self.client_http.get(f'/parts/{self.part.pk}/label/')
+        """Печатать предупреждение на наклейку 43 мм незачем."""
+        base = (settings.BASE_DIR / 'core/templates/core/_qr_warning.html'
+                ).read_text(encoding='utf-8')
 
-        content = resp.content.decode()
-        self.assertIn('alert alert-warning no-print', content)
+        self.assertIn('no-print', base)
 
 
 class QrLinkVisibilityTests(TestCase):
@@ -6141,7 +6193,7 @@ class QrLinkVisibilityTests(TestCase):
             f'/storage-cells/{self.cell.pk}/label/':
                 f'http://lifteam.taile9b605.ts.net/c/{self.cell.pk}',
             f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/':
-                f'http://lifteam.taile9b605.ts.net/o/{self.order.pk}',
+                f'http://lifteam.taile9b605.ts.net/u/{self.roe.pk}',
         }
         for url, expected in pages.items():
             resp = self.client_http.get(url)
