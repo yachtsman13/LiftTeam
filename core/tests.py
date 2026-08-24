@@ -12025,13 +12025,37 @@ class ScanLayerWiringTests(SimpleTestCase):
         self.assertIn('LiftTeamWS.fetch', code)
         self.assertNotIn('window.fetch(', code)
 
-    def test_scanner_knows_the_same_four_kinds_as_the_server(self):
+    def test_scanner_knows_the_same_kinds_as_the_server(self):
         """Разбор в браузере и на сервере обязан совпадать: расхождение
         означало бы, что скан открывает не то, что показала страница."""
         code = self._code(self.STATIC / 'js' / 'scanner.js')
         for prefix, kind in scanning.KINDS.items():
             with self.subTest(prefix=prefix):
                 self.assertIn(f"{prefix}: '{kind}'", code)
+                self.assertIn(f"{kind}: '", code)   # и человеческое название
+
+    def test_the_letter_for_a_kind_is_derived_not_listed_twice(self):
+        """Приставка для перехода выводится из того же списка видов.
+
+        Пока она была отдельным списком, при добавлении вида его забыли
+        обновить: код `u/20` разбирался верно, а переход вёл
+        на /undefined/20/ — «страница не найдена» вместо принятой единицы.
+        Две таблицы одного и того же расходятся молча, и замечают это
+        со сканером в руках у стеллажа.
+        """
+        code = self._code(self.STATIC / 'js' / 'scanner.js')
+
+        self.assertIn('KIND_PREFIX[KINDS[letter]] = letter', code)
+        # именно выводится, а не записана вторым списком
+        self.assertNotRegex(code, r'KIND_PREFIX\s*=\s*\{\s*\w')
+
+    def test_every_kind_has_a_page_to_open(self):
+        """Приставка есть — значит и адрес по ней должен открываться.
+        Иначе скан приводит на «страница не найдена»."""
+        for prefix in scanning.KINDS:
+            with self.subTest(prefix=prefix):
+                match = resolve(f'/{prefix}/1/')
+                self.assertTrue(match.func)
 
     def test_repeat_and_speed_thresholds_are_stated(self):
         """Пороги — предмет этого слоя: скан узнаётся по средней скорости
