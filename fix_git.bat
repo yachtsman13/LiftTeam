@@ -16,7 +16,7 @@ git config --global --add safe.directory "%CD%"
 
 echo   [3/4] Сброс remote...
 git remote remove origin 2>nul
-git remote add origin https://github.com/yachtsman13/Lifteam.git
+git remote add origin https://github.com/yachtsman13/LiftTeam.git
 
 echo   [4/4] Проверка...
 git remote -v

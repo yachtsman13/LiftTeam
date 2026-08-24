@@ -3,7 +3,7 @@
 
 cd "$(dirname "$0")"
 
-REPO_URL="https://github.com/yachtsman13/Lifteam.git"
+REPO_URL="https://github.com/yachtsman13/LiftTeam.git"
 
 echo ""
 echo "  ================================================"

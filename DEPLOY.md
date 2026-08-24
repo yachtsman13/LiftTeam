@@ -77,7 +77,7 @@ sudo mkdir -p /opt/lifteam && sudo chown lifteam:lifteam /opt/lifteam
 ## 3. Установка приложения
 
 ```bash
-sudo -u lifteam git clone https://github.com/yachtsman13/Lifteam.git /opt/lifteam
+sudo -u lifteam git clone https://github.com/yachtsman13/LiftTeam.git /opt/lifteam
 ```
 
 ```bash

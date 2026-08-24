@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.59.0{% endblock %}
+{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.60.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
@@ -27,7 +27,7 @@
     <div class="act-subtitle">дефектации оборудования</div>
 
     <div class="act-parties">
-        <div><strong>Тип:</strong> {{ order_equipment.equipment.model.full_name }}{{ order_equipment.equipment.version_suffix }}</div>
+        <div><strong>Тип:</strong> {{ order_equipment.equipment.full_designation }}</div>
         <div><strong>Серийный номер:</strong> {{ order_equipment.equipment.serial_number }}</div>
     </div>
 

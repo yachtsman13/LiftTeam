@@ -10,7 +10,7 @@
 
 [Unit]
 Description=LiftTeam — учёт ремонта лифтового оборудования
-Documentation=https://github.com/yachtsman13/Lifteam
+Documentation=https://github.com/yachtsman13/LiftTeam
 After=network-online.target
 Wants=network-online.target
 

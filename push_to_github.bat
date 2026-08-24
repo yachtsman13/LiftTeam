@@ -4,11 +4,11 @@ cd /d "%%~dp0"
 
 echo.
 echo   ================================================
-echo    LiftTeam v2.59.0 — Push to GitHub
+echo    LiftTeam v2.60.0 — Push to GitHub
 echo   ================================================
 echo.
 
-set REPO_URL=https://github.com/yachtsman13/Lifteam.git
+set REPO_URL=https://github.com/yachtsman13/LiftTeam.git
 
 :: 1. Проверка Git
 where git >nul 2>nul
@@ -49,7 +49,7 @@ git status --short
 :: 6. Коммит
 echo   [4/5] Создание коммита...
 git add -A
-git commit -m "LiftTeam v2.59.0 update" 2>nul
+git commit -m "LiftTeam v2.60.0 update" 2>nul
 
 :: 7. Push
 echo   [5/5] Push на GitHub...
@@ -63,7 +63,7 @@ if errorlevel 1 (
 
 echo.
 echo   ================================================
-echo    [OK] LiftTeam v2.59.0 успешно отправлен на GitHub
+echo    [OK] LiftTeam v2.60.0 успешно отправлен на GitHub
 echo   ================================================
 echo.
 echo   URL: %%REPO_URL%%

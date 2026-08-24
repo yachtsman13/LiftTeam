@@ -8,7 +8,7 @@ echo    LiftTeam — Setup Git Repository
 echo   ================================================
 echo.
 
-set REPO_URL=https://github.com/yachtsman13/Lifteam.git
+set REPO_URL=https://github.com/yachtsman13/LiftTeam.git
 
 where git >nul 2>nul
 if errorlevel 1 (

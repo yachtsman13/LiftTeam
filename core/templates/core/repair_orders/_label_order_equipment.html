@@ -13,17 +13,14 @@
 
     <div class="label-body">
         <div class="label-info" data-fit="0.5">
-            <div class="label-model">{{ roe.equipment.model.name }}</div>
-            <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
             {% comment %}
-                Исполнение отдельной строкой, а не припиской к названию
-                модели: название и так переносится на две строки, и
-                приписка ушла бы в конец второй, где её не ищут.
-                В документах она идёт припиской — там строка одна.
+                Модель и исполнение — одной строкой и одним шрифтом:
+                «БУАД-7-31.4». Отдельной строки «Исп.» здесь была одна
+                версия, v2.58.0, и владелец её отменил: на изделии написано
+                слитно, значит и на наклейке должно быть слитно.
             {% endcomment %}
-            {% if roe.equipment.version %}
-            <div class="label-version">Исп. {{ roe.equipment.version.name }}</div>
-            {% endif %}
+            <div class="label-model">{{ roe.equipment.designation }}</div>
+            <div class="label-serial">SN {{ roe.equipment.serial_number }}</div>
             <div class="label-date">Принят {{ order.date_received|date:"d.m.Y" }}</div>
         </div>
 

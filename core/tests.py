@@ -135,7 +135,7 @@ class RepairOrderFormErrorTests(TestCase):
     и «Папка на Яндекс.Диске» не выводились нигде — страница перезагружалась
     без единого сообщения, и пользователь считал заказ созданным.
 
-    С v2.59.0 этих двух полей на приёме нет вовсе: стоимость считают после
+    С v2.57.0 этих двух полей на приёме нет вовсе: стоимость считают после
     диагностики, папку заводят по ходу работы. Проверка переехала туда, где
     поля теперь живут, — на страницу редактирования. Она и была про то, что
     ошибка поля видна, а не про то, на какой она странице.
@@ -9963,13 +9963,13 @@ class BrowserTabIconTests(SimpleTestCase):
 
 
 class EquipmentVersionInDocumentsTests(TestCase):
-    """Исполнение печатается и в документах, и на этикетке (с v2.59.0).
+    """Исполнение печатается слитно с названием модели: «БУАД-7-31.4».
 
-    Заводя версии, решили обратное: «ни обозначение, ни комментарий ни
-    в один документ не идут». Владелец решение изменил — одна и та же
-    модель в разных исполнениях это разное изделие, и в документе это
-    должно быть видно. Комментарий к версии по-прежнему не печатается
-    нигде: «алюминиевый корпус» — заметка мастеру, а не заказчику.
+    Заводя версии, решили, что в документы они не идут. Владелец решение
+    изменил (v2.58.0), а форму уточнил: не приписка «, исп. 1.1» отдельно,
+    а одно обозначение одной строкой — так, как написано на изделии.
+    Разделитель хранится внутри обозначения версии, потому что на изделиях
+    он произвольный: «БУАД-7-31.4», но «EcoDrive-2.3-1.1».
     """
 
     def setUp(self):
@@ -9980,10 +9980,10 @@ class EquipmentVersionInDocumentsTests(TestCase):
         self.http.force_login(self.admin)
 
         self.model = EquipmentModel.objects.create(
-            name='EkoDrive 2.0', kind='Преобразователь частоты'
+            name='БУАД-7-31', kind='Привод дверей'
         )
         self.version = EquipmentVersion.objects.create(
-            equipment_model=self.model, name='1.1', note='алюминиевый корпус'
+            equipment_model=self.model, name='.4', note='алюминиевый корпус'
         )
         self.equipment = Equipment.objects.create(
             model=self.model, serial_number='SN-VER-1', version=self.version
@@ -10006,35 +10006,64 @@ class EquipmentVersionInDocumentsTests(TestCase):
                 self.order.pk, self.roe.pk),
         }
 
-    def test_version_reaches_every_document_and_the_label(self):
+    def test_the_designation_is_one_string(self):
+        """Склейка без своих правил: что завели в справочнике,
+        то и печатается."""
+        self.assertEqual(self.equipment.version_suffix, '.4')
+        self.assertEqual(self.equipment.designation, 'БУАД-7-31.4')
+        self.assertEqual(self.equipment.full_designation, 'Привод дверей БУАД-7-31.4')
+
+    def test_every_document_and_the_label_show_it_joined(self):
         for name, url in self._pages().items():
             with self.subTest(документ=name):
                 body = self.http.get(url).content.decode()
-                self.assertIn('1.1', body, '%s: исполнения нет' % name)
+                self.assertIn('БУАД-7-31.4', body, '%s: обозначения нет' % name)
+                # именно слитно: прежней приписки «исп.» быть не должно
+                self.assertNotIn('исп.', body.lower())
+
+    def test_the_generic_word_only_reaches_the_defect_act(self):
+        """«Привод дверей» на наклейке 43 мм съел бы место, а короткое
+        обозначение и так узнают. Полностью изделие называют в акте
+        дефектации, и только там."""
+        bodies = {name: self.http.get(url).content.decode()
+                  for name, url in self._pages().items()}
+        self.assertIn('Привод дверей БУАД-7-31.4', bodies['акт дефектации'])
+        for name in ('акт приёма', 'акт выполненных работ', 'этикетка'):
+            with self.subTest(документ=name):
+                self.assertNotIn('Привод дверей', bodies[name])
 
     def test_the_note_stays_out_of_everything(self):
-        """«алюминиевый корпус» — заметка мастеру у стола. Заказчику
-        она ни в одном документе не нужна и не показывается."""
+        """«алюминиевый корпус» — заметка мастеру у стола, а не заказчику."""
         for name, url in self._pages().items():
             with self.subTest(документ=name):
-                body = self.http.get(url).content.decode()
-                self.assertNotIn('алюминиевый корпус', body)
+                self.assertNotIn('алюминиевый корпус', self.http.get(url).content.decode())
 
     def test_without_a_version_nothing_is_printed(self):
-        """Пусто — значит пусто: «исп. 1.0» вместо незаполненного поля
-        не выдумывается, и документ печатается как до v2.59.0."""
+        """Пусто — значит пусто: «.0» вместо незаполненного поля
+        не выдумывается."""
         self.equipment.version = None
         self.equipment.save(update_fields=['version'])
         self.assertEqual(self.equipment.version_suffix, '')
+        self.assertEqual(self.equipment.designation, 'БУАД-7-31')
         for name, url in self._pages().items():
             with self.subTest(документ=name):
-                body = self.http.get(url).content.decode()
-                self.assertNotIn('исп.', body.lower())
+                self.assertIn('БУАД-7-31', self.http.get(url).content.decode())
 
-    def test_one_place_assembles_the_suffix(self):
-        """Сборка одна на все документы: заказчик не должен получить
-        в акте приёма одно название изделия, а в акте дефектации другое."""
-        self.assertEqual(self.equipment.version_suffix, ', исп. 1.1')
+    def test_the_separator_comes_from_the_directory_not_from_a_rule(self):
+        """На изделиях разделители разные, и программа своего не добавляет."""
+        other_model = EquipmentModel.objects.create(name='EcoDrive-2.3')
+        other_version = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='-1.1'
+        )
+        other = Equipment.objects.create(
+            model=other_model, serial_number='SN-VER-2', version=other_version
+        )
+        self.assertEqual(other.designation, 'EcoDrive-2.3-1.1')
+
+    def test_lists_show_the_designation_too(self):
+        """Два одинаковых прибора разных исполнений должны различаться
+        в списке выбора, а не выглядеть одинаково."""
+        self.assertEqual(str(self.equipment), 'БУАД-7-31.4 — SN-VER-1')
 
 
 class EquipmentLabelPhonesTests(SimpleTestCase):
@@ -10056,6 +10085,9 @@ class EquipmentLabelPhonesTests(SimpleTestCase):
         company = re.search(r'\.label-company \{([^}]*)\}', self.styles).group(1)
         size = lambda rule: float(re.search(r'font-size: ([\d.]+)pt', rule).group(1))
         self.assertGreaterEqual(size(phones), 6.5)
+        # Название и сайт тоже подросли: строка освободилась там, где было
+        # отдельное «Исп.». Но телефоны остаются крупнее — по ним звонят.
+        self.assertGreaterEqual(size(company), 6)
         self.assertGreater(size(phones), size(company))
 
     def test_phones_stay_bold(self):
@@ -11017,7 +11049,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.59.0) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.56.0) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -11178,7 +11210,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.59.0).
+    """Кнопка меню — логотип на объёмной площадке (v2.56.0).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы

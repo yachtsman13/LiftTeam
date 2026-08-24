@@ -44,17 +44,75 @@ fi
 echo "  Замена: $OLD_VERSION -> $NEW_VERSION"
 echo ""
 
-# Точки в номере экранируются, иначе они значат «любой знак».
-OLD_PATTERN=$(printf '%s' "$OLD_VERSION" | sed 's/\./\\./g')
+# Замену делает Python, а не sed: правило требует посмотреть, что стоит
+# ПЕРЕД номером, а такого sed не умеет.
+#
+# Беда, ради которой это написано. Раньше здесь менялся каждый найденный
+# номер, и каждый выпуск переписывал заодно пояснения в тексте: «до v2.58.0
+# версия не шла в документы» превращалось в «до v2.59.0», то есть в неправду
+# ровно про то, что этот выпуск и сделал. За несколько выпусков так испортилось
+# семь мест, и все пришлось восстанавливать руками по CHANGELOG.
+#
+# Правило: пояснения написаны по-русски, метки версии — нет. Если прямо перед
+# номером (через пробел или скобку) стоит русская буква, это фраза о прошлом,
+# и трогать её нельзя. «LiftTeam v2.59.0», «Launcher v2.59.0», «>v2.59.0<»
+# и номер в начале строки — метки, их и меняем.
 
-for FILE in lifteam_launcher.py README.md PROMPT.md TZ.md start.bat start.sh \
-            push_to_github.bat push_to_github.sh; do
-    [ -f "$FILE" ] && sed -i "s/$OLD_PATTERN/$NEW_VERSION/g" "$FILE"
-done
+python3 - "$OLD_VERSION" "$NEW_VERSION" <<'PYEOF'
+import pathlib
+import re
+import sys
 
-# Версия в заголовках файлов в core/ и lifteam/
-find core lifteam -type f \( -name '*.py' -o -name '*.html' -o -name '*.css' -o -name '*.js' \) \
-    -exec sed -i "s/$OLD_PATTERN/$NEW_VERSION/g" {} +
+old, new = sys.argv[1], sys.argv[2]
+pattern = re.compile(r'(?<![\w.])' + re.escape(old) + r'(?![\w.])')
+cyrillic = re.compile(r'[а-яёА-ЯЁ]')
+
+FILES = ['lifteam_launcher.py', 'README.md', 'PROMPT.md', 'TZ.md', 'start.bat',
+         'start.sh', 'push_to_github.bat', 'push_to_github.sh']
+SUFFIXES = ('.py', '.html', '.css', '.js')
+
+def is_prose(line, at):
+    """Перед номером стоит русский текст — значит это фраза о прошлом."""
+    head = line[:at].rstrip('([«"\' ')
+    return bool(head) and bool(cyrillic.search(head[-1]))
+
+def convert(path):
+    text = path.read_text(encoding='utf-8')
+    if old not in text:
+        return 0
+    changed = 0
+    out = []
+    for line in text.split('\n'):
+        pieces, last = [], 0
+        for m in pattern.finditer(line):
+            if is_prose(line, m.start()):
+                continue
+            pieces.append(line[last:m.start()]); pieces.append(new)
+            last = m.end(); changed += 1
+        pieces.append(line[last:])
+        out.append(''.join(pieces))
+    if changed:
+        path.write_text('\n'.join(out), encoding='utf-8')
+    return changed
+
+targets = [pathlib.Path(name) for name in FILES]
+for root in ('core', 'lifteam'):
+    targets += [p for p in pathlib.Path(root).rglob('*') if p.suffix in SUFFIXES]
+
+total = kept = 0
+for path in targets:
+    if path.is_file():
+        total += convert(path)
+
+# Сколько упоминаний старого номера осталось — это пояснения, и так и надо
+for path in targets:
+    if path.is_file():
+        for line in path.read_text(encoding='utf-8').split('\n'):
+            for m in pattern.finditer(line):
+                kept += 1
+
+print(f'  Заменено меток: {total}. Оставлено пояснений о прошлом: {kept}.')
+PYEOF
 
 echo "  [OK] Версия обновлена до $NEW_VERSION."
 
