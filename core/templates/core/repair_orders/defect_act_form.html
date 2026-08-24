@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.63.0{% endblock %}
+{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.64.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -43,6 +43,39 @@
                             <label class="form-label">{{ form.estimated_cost.label }}, ₽</label>
                             {{ form.estimated_cost }}
                             <div class="form-text">{{ form.estimated_cost.help_text }}</div>
+                            {% comment %}
+                                Цена по прайсу — предложение, а не подстановка:
+                                акт подписывает мастер, и вписать за него
+                                программа не вправе. Кнопка ставит число
+                                в поле, дальше он его правит или оставляет.
+                            {% endcomment %}
+                            {% if price_line %}
+                            <div class="alert alert-light border py-2 px-3 mt-2 mb-0 small">
+                                <i class="bi bi-cash-coin me-1"></i>
+                                По прайсу: <strong>{{ price_line.price|floatformat:2 }} ₽</strong>
+                                <span class="text-muted">
+                                    ({{ price_source }}{% if price_line.complexity %}, {{ price_line.get_complexity_display|lower }}{% else %}, любая сложность{% endif %})
+                                </span>
+                                <button type="button" class="btn btn-sm btn-outline-success ms-2"
+                                        onclick="document.getElementById('{{ form.estimated_cost.id_for_label }}').value = '{{ price_line.price|stringformat:"s" }}';">
+                                    Подставить
+                                </button>
+                            </div>
+                            {% elif order_equipment.equipment.model.equipment_type %}
+                            <div class="form-text text-muted">
+                                В прайсе нет цены на «{{ order_equipment.equipment.model.equipment_type }}»
+                                {% if order_equipment.effective_complexity_display %}({{ order_equipment.effective_complexity_display|lower }}){% endif %}.
+                            </div>
+                            {% else %}
+                            <div class="form-text text-muted">
+                                У модели не указан тип оборудования — подставить цену из прайса не по чему.
+                            </div>
+                            {% endif %}
+                            {% if order_equipment.list_price is not None %}
+                            <div class="form-text">
+                                Цена прайса на момент назначения: {{ order_equipment.list_price|floatformat:2 }} ₽{% if order_equipment.price_differs_from_list %} — договорились о другой{% endif %}
+                            </div>
+                            {% endif %}
                             {% if form.estimated_cost.errors %}
                             <div class="text-danger small">{{ form.estimated_cost.errors.0 }}</div>
                             {% endif %}

@@ -10,6 +10,7 @@ from .models import (
     Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
+    PriceList, PriceListLine,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
 )
@@ -416,6 +417,51 @@ RepairOrderEquipmentIntakeFormSet = inlineformset_factory(
 DEFAULT_NON_WARRANTY_REASON = (
     'перепадами напряжения в питающей сети и(или) естественной деградацией '
     'электронных компонентов'
+)
+
+
+class PriceListForm(forms.ModelForm):
+    """Прайс: чей он и примечание. Строки — отдельным набором форм."""
+    class Meta:
+        model = PriceList
+        fields = ['client', 'note']
+        widgets = {
+            'client': forms.Select(attrs={'class': 'form-select'}),
+            'note': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {'client': 'Заказчик', 'note': 'Примечание'}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # У заказчика прайс один: занятых в списке быть не должно, иначе
+        # сохранение упрётся в ограничение уже после заполнения строк
+        taken = PriceList.objects.exclude(client__isnull=True)
+        if self.instance.pk:
+            taken = taken.exclude(pk=self.instance.pk)
+        self.fields['client'].queryset = Client.objects.exclude(
+            pk__in=taken.values('client_id')
+        ).order_by('name')
+        self.fields['client'].empty_label = 'Базовый прайс (для всех)'
+
+
+class PriceListLineForm(forms.ModelForm):
+    class Meta:
+        model = PriceListLine
+        fields = ['equipment_type', 'complexity', 'price']
+        widgets = {
+            'equipment_type': forms.Select(attrs={'class': 'form-select'}),
+            'complexity': forms.Select(attrs={'class': 'form-select'}),
+            'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+        }
+        labels = {
+            'equipment_type': 'Тип оборудования',
+            'complexity': 'Сложность',
+            'price': 'Цена, ₽',
+        }
+
+
+PriceListLineFormSet = inlineformset_factory(
+    PriceList, PriceListLine, form=PriceListLineForm, extra=1, can_delete=True
 )
 
 

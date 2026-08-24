@@ -18,6 +18,7 @@ from urllib import error as urllib_error
 import openpyxl
 from channels.db import database_sync_to_async
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
@@ -34,6 +35,7 @@ from . import invoicing, messengers, net, notifications, scanning, tbank, tochka
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
+    PriceList, PriceListLine,
     EquipmentType, EquipmentVersion,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
@@ -10012,6 +10014,261 @@ class BrowserTabIconTests(SimpleTestCase):
         self.assertTrue(icons)
         for tag in icons:
             self.assertNotIn('lift_team_logo.png', tag)
+
+
+class PriceListTests(TestCase):
+    """Прайсы: базовый и по заказчикам.
+
+    Базовый отвечает на вопрос «сколько это стоит вообще», прайс заказчика
+    уточняет его там, где договорились иначе. Внутри прайса строка
+    со сложностью вытесняет строку без неё — тот же приём, что и у рецепта
+    деталей: уточнение бьёт общее, но только там, где заведено.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_prices', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.drive = EquipmentType.objects.create(name='Привод дверей')
+        self.vfd = EquipmentType.objects.create(name='Преобразователь частоты')
+        self.client_obj = ClientModel.objects.create(name='МУП «Лифты»')
+        self.base = PriceList.base()
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.drive, price=Decimal('8000')
+        )
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.drive,
+            complexity='complex', price=Decimal('15000')
+        )
+
+    def test_the_base_price_answers_when_the_client_has_no_list(self):
+        line = PriceList.line_for(self.client_obj, self.drive, '')
+        self.assertEqual(line.price, Decimal('8000'))
+        self.assertTrue(line.price_list.is_base)
+
+    def test_complexity_beats_the_general_row(self):
+        line = PriceList.line_for(None, self.drive, 'complex')
+        self.assertEqual(line.price, Decimal('15000'))
+
+    def test_the_clients_own_list_beats_the_base_one(self):
+        own = PriceList.objects.create(client=self.client_obj)
+        PriceListLine.objects.create(
+            price_list=own, equipment_type=self.drive,
+            complexity='complex', price=Decimal('12000')
+        )
+
+        line = PriceList.line_for(self.client_obj, self.drive, 'complex')
+
+        self.assertEqual(line.price, Decimal('12000'))
+        self.assertEqual(line.price_list, own)
+
+    def test_the_client_list_need_not_repeat_the_base_one(self):
+        """Заказчику завели цену только на сложный ремонт. На простой она
+        должна прийти из базового, а не пропасть."""
+        own = PriceList.objects.create(client=self.client_obj)
+        PriceListLine.objects.create(
+            price_list=own, equipment_type=self.drive,
+            complexity='complex', price=Decimal('12000')
+        )
+
+        line = PriceList.line_for(self.client_obj, self.drive, 'simple')
+
+        self.assertEqual(line.price, Decimal('8000'))
+        self.assertTrue(line.price_list.is_base)
+
+    def test_a_type_without_a_price_gives_nothing(self):
+        """Пусто — значит пусто: выдумывать цену нельзя, по ней
+        разговаривают с заказчиком."""
+        self.assertIsNone(PriceList.line_for(None, self.vfd, ''))
+
+    def test_without_an_equipment_type_there_is_nothing_to_look_up(self):
+        self.assertIsNone(PriceList.line_for(None, None, 'complex'))
+
+    def test_the_base_price_list_is_the_only_one(self):
+        """Второй базовый превратил бы поиск цены в лотерею: какой из двух
+        подхватится, зависело бы от порядка записей."""
+        with self.assertRaises(ValidationError):
+            PriceList.objects.create()
+
+    def test_the_base_price_list_appears_when_first_needed(self):
+        PriceList.objects.all().delete()
+
+        created = PriceList.base()
+
+        self.assertTrue(created.is_base)
+        self.assertEqual(PriceList.objects.count(), 1)
+        self.assertEqual(PriceList.base(), created)
+
+
+class PriceInDefectActTests(TestCase):
+    """Цена предлагается мастеру после диагностики и замораживается в заказе."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_price_act', full_name='Мастер', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.type = EquipmentType.objects.create(name='Привод дверей')
+        self.model = EquipmentModel.objects.create(
+            name='БУАД-7-31', equipment_type=self.type
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-PRICE-1'
+            ),
+        )
+        base = PriceList.base()
+        PriceListLine.objects.create(
+            price_list=base, equipment_type=self.type, price=Decimal('8000')
+        )
+
+    def _act_url(self):
+        return '/repair-orders/%d/equipment/%d/defect/' % (self.order.pk, self.roe.pk)
+
+    def _save(self, cost):
+        return self.http.post(self._act_url(), {
+            'defect_act_date': '', 'diagnosis': 'вздулись конденсаторы',
+            'error_codes': '', 'non_warranty_reason': '', 'estimated_cost': cost,
+        })
+
+    def test_the_price_is_offered_not_filled_in(self):
+        """Акт подписывает мастер — вписать за него программа не вправе."""
+        page = self.http.get(self._act_url())
+
+        self.assertEqual(page.context['price_line'].price, Decimal('8000'))
+        self.assertContains(page, 'По прайсу')
+        self.assertContains(page, 'Подставить')
+        # но в поле по-прежнему пусто
+        self.assertIsNone(page.context['form'].initial.get('estimated_cost'))
+
+    def test_saving_freezes_the_price_of_the_day(self):
+        self._save('9500')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.estimated_cost, Decimal('9500'))
+        self.assertEqual(self.roe.list_price, Decimal('8000'))
+        self.assertTrue(self.roe.price_differs_from_list)
+
+    def test_a_later_change_of_the_price_list_leaves_the_order_alone(self):
+        """Иначе правка прайса задним числом меняла бы то, о чём
+        договорились."""
+        self._save('8000')
+        PriceListLine.objects.update(price=Decimal('11000'))
+
+        self._save('8000')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.list_price, Decimal('8000'))
+        self.assertFalse(self.roe.price_differs_from_list)
+
+    def test_no_price_in_the_list_freezes_nothing(self):
+        """Незаполненное поле честнее выдуманного нуля."""
+        PriceListLine.objects.all().delete()
+
+        self._save('7000')
+
+        self.roe.refresh_from_db()
+        self.assertIsNone(self.roe.list_price)
+        self.assertFalse(self.roe.price_differs_from_list)
+
+    def test_the_page_says_when_there_is_no_price_for_this_type(self):
+        PriceListLine.objects.all().delete()
+        page = self.http.get(self._act_url())
+
+        self.assertIsNone(page.context['price_line'])
+        self.assertContains(page, 'В прайсе нет цены')
+
+    def test_a_model_without_a_type_says_so(self):
+        self.model.equipment_type = None
+        self.model.save()
+
+        page = self.http.get(self._act_url())
+
+        self.assertIsNone(page.context['price_line'])
+        self.assertContains(page, 'не указан тип оборудования')
+
+
+class PriceListPagesTests(TestCase):
+    """Страницы прайсов: список, правка, копирование."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_price_pages', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.type = EquipmentType.objects.create(name='Привод дверей')
+        self.first = ClientModel.objects.create(name='МУП «Лифты»')
+        self.second = ClientModel.objects.create(name='ООО «Подъём»')
+        self.own = PriceList.objects.create(client=self.first)
+        PriceListLine.objects.create(
+            price_list=self.own, equipment_type=self.type,
+            complexity='complex', price=Decimal('12000')
+        )
+
+    def test_the_index_lists_the_base_and_the_client_lists(self):
+        base = PriceList.base()
+        page = self.http.get('/price-lists/')
+
+        self.assertEqual(page.context['base'], base)
+        self.assertIn(self.own, page.context['client_lists'])
+
+    def test_copying_fills_the_form_and_saves_nothing_yet(self):
+        """Тот же приём, что у типовых неисправностей и карточек деталей:
+        до нажатия «Сохранить» в базе не появляется ничего."""
+        before = PriceList.objects.count()
+        page = self.http.get('/price-lists/create/?copy_from=%d' % self.own.pk)
+
+        self.assertEqual(PriceList.objects.count(), before)
+        self.assertEqual(page.context['copy_source'], self.own)
+        # Набор форм модели кладёт переданное в initial_extra: initial
+        # у него занят данными уже сохранённых строк, а их тут нет
+        initial = page.context['formset'].initial_extra
+        self.assertEqual(len(initial), 1)
+        self.assertEqual(initial[0]['price'], Decimal('12000'))
+
+    def test_a_client_can_have_only_one_price_list(self):
+        """Второй прайс у того же заказчика — это две цены на одно и то же."""
+        page = self.http.get('/price-lists/create/')
+        offered = list(page.context['form'].fields['client'].queryset)
+
+        self.assertIn(self.second, offered)
+        self.assertNotIn(self.first, offered)
+
+    def test_the_client_card_leads_to_the_price_list(self):
+        page = self.http.get('/clients/%d/edit/' % self.first.pk)
+
+        self.assertContains(page, '/price-lists/%d/edit/' % self.own.pk)
+
+    def test_the_client_card_offers_to_start_one(self):
+        page = self.http.get('/clients/%d/edit/' % self.second.pk)
+
+        self.assertContains(page, 'Завести прайс')
+
+    def test_deleting_a_price_list_leaves_agreed_prices_alone(self):
+        """Цена заморожена в заказе, а не берётся из прайса каждый раз."""
+        model = EquipmentModel.objects.create(name='БУАД-7-31', equipment_type=self.type)
+        order = RepairOrder.objects.create(client=self.first)
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-DEL-1'),
+            estimated_cost=Decimal('12000'), list_price=Decimal('12000'),
+        )
+
+        self.http.post('/price-lists/%d/delete/' % self.own.pk)
+
+        roe.refresh_from_db()
+        self.assertEqual(roe.list_price, Decimal('12000'))
+        self.assertEqual(roe.estimated_cost, Decimal('12000'))
 
 
 class AddUnitToOrderTests(TestCase):

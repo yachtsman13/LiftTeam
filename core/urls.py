@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.63.0
+v2.64.0
 """
 from django.urls import path
 from . import views
@@ -16,6 +16,10 @@ urlpatterns = [
     path('', views.dashboard, name='dashboard'),
 
     # Клиенты
+    path('price-lists/', views.price_list_index, name='price_list_index'),
+    path('price-lists/create/', views.price_list_create, name='price_list_create'),
+    path('price-lists/<int:pk>/edit/', views.price_list_edit, name='price_list_edit'),
+    path('price-lists/<int:pk>/delete/', views.price_list_delete, name='price_list_delete'),
     path('clients/', views.client_list, name='client_list'),
     path('clients/export/', views.client_export, name='client_export'),
     path('clients/create/', views.client_create, name='client_create'),

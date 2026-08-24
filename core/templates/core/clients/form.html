@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.63.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.64.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -26,6 +26,22 @@
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
                 <a href="{% url 'client_list' %}" class="btn btn-outline-secondary">Отмена</a>
+                {% comment %}
+                    Прайс живёт своей страницей, а не полями в этой форме:
+                    строк в нём бывает десятки, и заводят их не тогда, когда
+                    правят телефон заказчика.
+                {% endcomment %}
+                {% if client %}
+                {% if client.price_list %}
+                <a href="{% url 'price_list_edit' client.price_list.pk %}" class="btn btn-outline-success">
+                    <i class="bi bi-cash-coin me-1"></i>Прайс ({{ client.price_list.lines.count }})
+                </a>
+                {% else %}
+                <a href="{% url 'price_list_create' %}?client={{ client.pk }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-cash-coin me-1"></i>Завести прайс
+                </a>
+                {% endif %}
+                {% endif %}
             </div>
         </form>
     </div>

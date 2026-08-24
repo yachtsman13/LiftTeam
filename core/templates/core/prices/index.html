@@ -1,0 +1,62 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Прайсы — LiftTeam v2.64.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-cash-coin me-2"></i>Прайсы на ремонт</h2>
+    <a href="{% url 'price_list_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Новый прайс</a>
+</div>
+
+{% comment %}
+    Базовый прайс идёт первым и отдельно: он отвечает на вопрос «сколько
+    это стоит вообще», а прайс заказчика лишь уточняет его там, где
+    договорились иначе.
+{% endcomment %}
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-star me-2"></i>Базовый прайс</div>
+    <div class="card-body">
+        {% if base %}
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div>
+                Строк: <strong>{{ base.lines_count }}</strong>
+                {% if base.note %}<div class="text-muted small">{{ base.note }}</div>{% endif %}
+            </div>
+            <a href="{% url 'price_list_edit' base.pk %}" class="btn btn-outline-primary btn-sm">Изменить</a>
+        </div>
+        {% else %}
+        <p class="text-muted mb-2">Базового прайса ещё нет. Без него цена подставляется только тем заказчикам, у кого свой прайс.</p>
+        <a href="{% url 'price_list_create' %}" class="btn btn-outline-primary btn-sm">Завести базовый</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-people me-2"></i>Прайсы заказчиков</div>
+    <div class="card-body">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover list-table">
+                <thead class="table-light">
+                    <tr><th>Заказчик</th><th>Строк</th><th>Изменён</th><th></th></tr>
+                </thead>
+                <tbody>
+                    {% for price_list in client_lists %}
+                    <tr>
+                        <td class="fw-bold" data-label="Заказчик">{{ price_list.client.name }}</td>
+                        <td data-label="Строк">{{ price_list.lines_count }}</td>
+                        <td data-label="Изменён">{{ price_list.updated_at|date:"d.m.Y" }}</td>
+                        <td class="text-end col-actions">
+                            <a href="{% url 'price_list_edit' price_list.pk %}" class="btn btn-sm btn-outline-primary" title="Изменить"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'price_list_create' %}?copy_from={{ price_list.pk }}" class="btn btn-sm btn-outline-secondary" title="Сделать копию для другого заказчика"><i class="bi bi-files"></i></a>
+                            <a href="{% url 'price_list_delete' price_list.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-center text-muted py-4">Своих прайсов ни у кого нет — всем считается по базовому</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

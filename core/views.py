@@ -14,6 +14,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db.models import (
     Count, DecimalField, F, Max, OuterRef, Prefetch, Q, Subquery, Sum, Value,
 )
@@ -30,6 +31,7 @@ from channels.layers import get_channel_layer
 
 from .models import (
     Client, EquipmentModel, EquipmentType, EquipmentVersion, Equipment,
+    PriceList, PriceListLine,
     FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
@@ -42,6 +44,7 @@ from .forms import (
     EquipmentVersionForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
+    PriceListForm, PriceListLineFormSet,
     RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
@@ -3946,16 +3949,25 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
     if request.method == 'POST':
         form = DefectActForm(request.POST, instance=order_equipment)
         if form.is_valid():
-            form.save()
+            saved = form.save()
+            # Цену прайса запоминаем здесь: назначают её на этой странице,
+            # и только тут известно, от чего мастер отступил. Уже
+            # замороженную не переписываем.
+            saved.freeze_list_price()
             messages.success(request, 'Акт дефектации сохранён')
             return redirect('repair_order_act_defect', order_pk=order_pk, roe_pk=roe_pk)
         messages.error(request, 'Акт не сохранён: проверьте отмеченные поля')
     else:
         form = DefectActForm(instance=order_equipment)
+    # Цена по прайсу — предложение, а не подстановка: мастер видит её рядом
+    # с полем и решает сам. Молча вписывать нельзя — он подписывает акт.
+    line = order_equipment.price_list_line
     return render(request, 'core/repair_orders/defect_act_form.html', {
         'form': form,
         'order': order_equipment.repair_order,
         'order_equipment': order_equipment,
+        'price_line': line,
+        'price_source': str(line.price_list) if line else '',
     })
 
 
@@ -4404,6 +4416,108 @@ def short_equipment(request, pk):
     """
     get_object_or_404(Equipment, pk=pk)
     return redirect('equipment_history', pk=pk)
+
+
+# ==================== ПРАЙСЫ ====================
+
+
+@login_required
+def price_list_index(request):
+    """Все прайсы: базовый и по заказчикам."""
+    lists = (
+        PriceList.objects.select_related('client')
+        .annotate(lines_count=Count('lines'))
+        .order_by('client__name')
+    )
+    base = next((p for p in lists if p.is_base), None)
+    return render(request, 'core/prices/index.html', {
+        'base': base,
+        'client_lists': [p for p in lists if not p.is_base],
+        'clients_without_price': Client.objects.filter(price_list__isnull=True).order_by('name'),
+    })
+
+
+def _price_list_copy_source(request):
+    """Прайс-образец для `?copy_from=<номер>` — или None.
+
+    Тот же приём, что у типовых неисправностей и карточек деталей:
+    образец только заполняет форму, и до нажатия «Сохранить» в базе
+    не появляется ничего.
+    """
+    copy_from = request.GET.get('copy_from')
+    if not copy_from:
+        return None
+    return PriceList.objects.filter(pk=copy_from).first()
+
+
+@login_required
+def price_list_create(request):
+    if request.method == 'POST':
+        form = PriceListForm(request.POST)
+        formset = PriceListLineFormSet(request.POST, prefix='lines')
+        if form.is_valid() and formset.is_valid():
+            try:
+                price_list = form.save()
+            except ValidationError as error:
+                messages.error(request, '; '.join(error.messages))
+            else:
+                formset.instance = price_list
+                formset.save()
+                messages.success(request, f'{price_list} сохранён')
+                return redirect('price_list_edit', pk=price_list.pk)
+        else:
+            messages.error(request, 'Прайс не сохранён: проверьте отмеченные поля')
+    else:
+        source = _price_list_copy_source(request)
+        initial_client = request.GET.get('client') or None
+        form = PriceListForm(initial={'client': initial_client,
+                                      'note': source.note if source else ''})
+        lines = [
+            {'equipment_type': line.equipment_type_id,
+             'complexity': line.complexity,
+             'price': line.price}
+            for line in source.lines.all()
+        ] if source else []
+        formset = PriceListLineFormSet(
+            prefix='lines', queryset=PriceListLine.objects.none(), initial=lines
+        )
+        formset.extra = len(lines) + 1
+    return render(request, 'core/prices/form.html', {
+        'form': form, 'formset': formset, 'title': 'Новый прайс',
+        'copy_source': _price_list_copy_source(request),
+    })
+
+
+@login_required
+def price_list_edit(request, pk):
+    price_list = get_object_or_404(PriceList.objects.select_related('client'), pk=pk)
+    if request.method == 'POST':
+        form = PriceListForm(request.POST, instance=price_list)
+        formset = PriceListLineFormSet(request.POST, instance=price_list, prefix='lines')
+        if form.is_valid() and formset.is_valid():
+            form.save()
+            formset.save()
+            messages.success(request, f'{price_list} сохранён')
+            return redirect('price_list_edit', pk=price_list.pk)
+        messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
+    else:
+        form = PriceListForm(instance=price_list)
+        formset = PriceListLineFormSet(instance=price_list, prefix='lines')
+    return render(request, 'core/prices/form.html', {
+        'form': form, 'formset': formset, 'price_list': price_list,
+        'title': str(price_list),
+    })
+
+
+@login_required
+def price_list_delete(request, pk):
+    price_list = get_object_or_404(PriceList, pk=pk)
+    if request.method == 'POST':
+        name = str(price_list)
+        price_list.delete()
+        messages.success(request, f'{name} удалён')
+        return redirect('price_list_index')
+    return render(request, 'core/prices/delete.html', {'price_list': price_list})
 
 
 # ==================== СКАНИРОВАНИЕ ====================

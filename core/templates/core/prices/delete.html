@@ -1,0 +1,29 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление прайса — LiftTeam v2.64.0{% endblock %}
+
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-trash me-2"></i>Удалить прайс</h2>
+
+<div class="card">
+    <div class="card-body">
+        <p>Удалить <strong>{{ price_list }}</strong> вместе со всеми его строками ({{ price_list.lines.count }})?</p>
+        {% if price_list.is_base %}
+        <div class="alert alert-warning">
+            Это базовый прайс. Без него цена будет подставляться только тем
+            заказчикам, у кого заведён свой.
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            Заказы, где цена уже назначена, не изменятся: она заморожена в самом заказе.
+            Новым ремонтам этого заказчика цена пойдёт из базового прайса.
+        </div>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Удалить</button>
+            <a href="{% url 'price_list_index' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -12,7 +12,8 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models, transaction
-from django.db.models import DecimalField, F, OuterRef, Subquery, Sum, Value
+from django.core.exceptions import ValidationError
+from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
@@ -481,6 +482,132 @@ class EquipmentType(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class PriceList(models.Model):
+    """Прайс на ремонт: базовый или для одного заказчика.
+
+    Базовый — ровно один, у него не заполнен заказчик. Он и есть ответ
+    на вопрос «сколько это стоит вообще»; прайс заказчика лишь уточняет
+    его там, где с этим заказчиком договорились иначе. Поэтому строк
+    в прайсе заказчика обычно немного, а не полная копия базового.
+
+    Отдельной истории цен нет намеренно: цена, о которой договорились
+    по конкретному ремонту, замораживается в самом заказе
+    (`RepairOrderEquipment.list_price`). Прайс — это «сколько стоит
+    сегодня», а не «сколько стоило в марте»: второе нужно ровно там,
+    где уже записано.
+    """
+    client = models.OneToOneField(
+        'Client', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='price_list', verbose_name='Заказчик',
+        help_text='Пусто — это базовый прайс, один на всю программу.'
+    )
+    note = models.TextField('Примечание', blank=True)
+    updated_at = models.DateTimeField('Изменён', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Прайс'
+        verbose_name_plural = 'Прайсы'
+        ordering = ['client__name']
+
+    def __str__(self):
+        return f'Прайс {self.client.name}' if self.client_id else 'Базовый прайс'
+
+    @property
+    def is_base(self):
+        return self.client_id is None
+
+    def save(self, *args, **kwargs):
+        # Базовый ровно один: второй такой же превратил бы поиск цены
+        # в лотерею — какой из двух подхватится, зависело бы от порядка
+        # записей. Проверка здесь, а не ограничением в базе: SQLite
+        # считает все NULL разными, и обычная уникальность тут не работает.
+        if self.client_id is None:
+            twin = PriceList.objects.filter(client__isnull=True)
+            if self.pk:
+                twin = twin.exclude(pk=self.pk)
+            if twin.exists():
+                raise ValidationError('Базовый прайс уже есть, он один на всю программу')
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def base(cls):
+        """Базовый прайс; заводится сам при первом обращении."""
+        found = cls.objects.filter(client__isnull=True).first()
+        return found or cls.objects.create()
+
+    @classmethod
+    def line_for(cls, client, equipment_type, complexity=''):
+        """Строка прайса под этот тип и сложность — или None.
+
+        Порядок: сначала прайс заказчика, потом базовый; внутри прайса —
+        строка ровно под эту сложность, а если её нет, строка без
+        сложности (общая для всех). Тот же приём, что и у рецепта
+        деталей: уточнение вытесняет общее, но только там, где заведено.
+
+        Возвращается строка, а не число: мастеру надо видеть, откуда
+        цена — из его прайса или из базового.
+        """
+        if equipment_type is None:
+            return None
+
+        orders = [Q(price_list__client=client)] if client is not None else []
+        orders.append(Q(price_list__client__isnull=True))
+        for scope in orders:
+            lines = PriceListLine.objects.filter(
+                scope, equipment_type=equipment_type
+            ).select_related('price_list__client')
+            exact = lines.filter(complexity=complexity).first() if complexity else None
+            if exact:
+                return exact
+            general = lines.filter(complexity='').first()
+            if general:
+                return general
+        return None
+
+
+class PriceListLine(models.Model):
+    """Строка прайса: тип оборудования, сложность и цена.
+
+    Сложность пустая — цена на любой ремонт этого типа. Заполненная —
+    уточнение, которое вытесняет общую строку. Пустую заводить не
+    обязательно: у типа может быть цена только на сложный ремонт,
+    а на простой — из базового прайса.
+    """
+    price_list = models.ForeignKey(
+        PriceList, on_delete=models.CASCADE, related_name='lines',
+        verbose_name='Прайс'
+    )
+    equipment_type = models.ForeignKey(
+        EquipmentType, on_delete=models.CASCADE, related_name='price_lines',
+        verbose_name='Тип оборудования'
+    )
+    complexity = models.CharField(
+        'Сложность', max_length=20, blank=True,
+        choices=[('simple', 'Простой'), ('medium', 'Средний'), ('complex', 'Сложный')],
+        help_text='Пусто — цена на любой ремонт этого типа.'
+    )
+    price = models.DecimalField(
+        'Цена', max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))]
+    )
+
+    class Meta:
+        verbose_name = 'Строка прайса'
+        verbose_name_plural = 'Строки прайса'
+        ordering = ['equipment_type__name', 'complexity']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['price_list', 'equipment_type', 'complexity'],
+                name='unique_price_per_type_and_complexity',
+            )
+        ]
+
+    def __str__(self):
+        if self.complexity:
+            return f'{self.equipment_type} ({self.get_complexity_display().lower()}): {self.price}'
+        return f'{self.equipment_type}: {self.price}'
 
 
 class EquipmentModel(models.Model):
@@ -1517,6 +1644,15 @@ class RepairOrderEquipment(models.Model):
         'Сложность ремонта', max_length=20, blank=True,
         choices=[('simple', 'Простой'), ('medium', 'Средний'), ('complex', 'Сложный')]
     )
+    # Цена, которую предложил прайс в тот момент, когда назначали
+    # стоимость. Хранится отдельно от согласованной (`estimated_cost`),
+    # потому что мастер вправе её поправить, а знать потом надо обе:
+    # по одной видно, о чём договорились, по другой — от чего отступили
+    # и насколько. Отдельной истории цен при этом не заводится: цена
+    # заморожена здесь, в самом заказе.
+    list_price = models.DecimalField(
+        'Цена по прайсу', max_digits=12, decimal_places=2, null=True, blank=True
+    )
 
     class Meta:
         verbose_name = 'Оборудование в заказе'
@@ -1622,6 +1758,51 @@ class RepairOrderEquipment(models.Model):
         if self.estimated_cost is None:
             return None
         return format_amount(self.estimated_cost)
+
+    @property
+    def price_list_line(self):
+        """Строка прайса под эту единицу — или None.
+
+        Считается на лету: это «сколько стоит сегодня». То, о чём
+        договорились по этому ремонту, лежит рядом в `list_price`
+        и не меняется, сколько бы прайс потом ни правили.
+        """
+        return PriceList.line_for(
+            self.repair_order.client,
+            self.equipment.model.equipment_type,
+            self.effective_complexity,
+        )
+
+    @property
+    def suggested_price(self):
+        """Что прайс предлагает за этот ремонт сейчас, или None."""
+        line = self.price_list_line
+        return line.price if line else None
+
+    def freeze_list_price(self):
+        """Запомнить цену прайса на момент назначения стоимости.
+
+        Вызывается при сохранении дефектации: там назначают цену, и
+        только там известно, от чего мастер отступил. Уже замороженную
+        не переписываем — иначе правка прайса задним числом меняла бы
+        то, о чём договорились.
+        """
+        if self.list_price is not None:
+            return False
+        price = self.suggested_price
+        if price is None:
+            return False
+        self.list_price = price
+        self.save(update_fields=['list_price'])
+        return True
+
+    @property
+    def price_differs_from_list(self):
+        """Согласованная цена отличается от прайсовой. Пусто у любой
+        из двух означает «не с чем сравнивать», а не «совпадает»."""
+        if self.list_price is None or self.estimated_cost is None:
+            return False
+        return self.estimated_cost != self.list_price
 
     @property
     def quote_price(self):
