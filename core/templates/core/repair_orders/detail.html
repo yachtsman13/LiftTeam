@@ -1,6 +1,52 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.62.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.63.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Скан наклейки прямо на карточке заказа: подносят коробку — единица
+ * встаёт в форму приёма, остаётся описать неисправность и нажать
+ * «Принять и печатать».
+ *
+ * Виды те же два, что и на форме заказа: наклейка бывает и на самом
+ * приборе (`e`), и от прошлого заказа (`u`), а ведут они к одной железке.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var select = document.getElementById('addUnitEquipment');
+    if (!select || typeof LiftTeamScanner === 'undefined') return;
+
+    LiftTeamScanner.register({
+        kinds: ['equipment', 'order_equipment'],
+        name: 'Карточка заказа',
+        onScan: function (scan) {
+            // LiftTeamWS.fetch, а не голый fetch: обрыв связи должен поднять
+            // общую полосу вверху страницы, а не выглядеть как «не найдено»
+            return LiftTeamWS.fetch('{% url "scan_resolve" %}?code=' + encodeURIComponent(scan.payload))
+                .then(function (response) {
+                    return response.ok ? response.json() : Promise.reject(response.status);
+                })
+                .then(function (data) {
+                    if (!data.found) return {ok: false, text: data.message};
+                    var id = String(data.equipment_id || '');
+                    var known = Array.from(select.options).some(function (opt) {
+                        return opt.value === id;
+                    });
+                    // Единицы нет в списке — значит она уже в этом заказе.
+                    // Молчать нельзя: человек решит, что не сработал сканер.
+                    if (!known) {
+                        return {ok: false, text: data.title + ' уже в этом заказе'};
+                    }
+                    select.value = id;
+                    select.scrollIntoView({block: 'center', behavior: 'smooth'});
+                    document.getElementById('addUnitFault').focus();
+                    return data.title + ' — опишите неисправность и нажмите «Принять»';
+                });
+        }
+    });
+});
+</script>
+{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -171,6 +217,55 @@
                         </tbody>
                     </table>
                 </div>
+
+                {% comment %}
+                    Приём по одной единице. Так это и происходит у стола:
+                    коробку поставили, описали, наклеили ярлык, взяли
+                    следующую. Пока заказ сохранялся целиком, ярлыки
+                    печатались пачкой в конце, и их раскладывали
+                    по коробкам, сверяя номер позиции.
+
+                    Сохранение уводит прямо на страницу наклейки — оттуда
+                    «Печать» и «Назад» возвращают сюда же, к следующей
+                    коробке.
+                {% endcomment %}
+                <form method="post" action="{% url 'repair_order_add_unit' order.pk %}"
+                      class="border-top pt-3 mt-3" id="addUnitForm">
+                    {% csrf_token %}
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1" for="addUnitEquipment">
+                                Принять ещё единицу
+                            </label>
+                            <select name="equipment" id="addUnitEquipment" class="form-select form-select-sm" required>
+                                <option value="">Выберите или отсканируйте наклейку…</option>
+                                {% for eq in available_equipment %}
+                                <option value="{{ eq.pk }}">{{ eq }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" for="addUnitFault">Неисправность</label>
+                            <input type="text" name="fault_description" id="addUnitFault"
+                                   class="form-control form-control-sm" placeholder="Со слов заказчика">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" for="addUnitCondition">Начальное состояние</label>
+                            <input type="text" name="initial_condition" id="addUnitCondition"
+                                   class="form-control form-control-sm" placeholder="Комплектность, повреждения">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-success btn-sm w-100">
+                                <i class="bi bi-printer me-1"></i>Принять и печатать
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text">
+                        Нового оборудования тут нет — его заводят при
+                        <a href="{% url 'repair_order_edit' order.pk %}">редактировании заказа</a>.
+                        Приезжавшее раньше проще отсканировать.
+                    </div>
+                </form>
             </div>
         </div>
 

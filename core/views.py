@@ -982,6 +982,53 @@ def repair_order_create(request):
 
 
 @login_required
+@require_POST
+def repair_order_add_unit(request, pk):
+    """Принять в уже существующий заказ ещё одну единицу — и сразу
+    напечатать на неё наклейку.
+
+    Так устроен приём: коробку поставили на стол, описали, наклеили ярлык,
+    взяли следующую. Пока заказ сохранялся целиком, ярлыки печатались
+    пачкой в конце, и их приходилось раскладывать по коробкам, сверяя
+    номер позиции. Теперь заказ растёт по одной единице, и каждая уходит
+    с наклейкой сразу.
+
+    Отвечаем переходом на страницу наклейки, а не открытием окна из
+    скрипта: окно, открытое не по щелчку человека, браузер часто
+    не показывает вовсе — и наклейка молча не печаталась бы.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    equipment_id = request.POST.get('equipment')
+
+    equipment = Equipment.objects.filter(pk=equipment_id).first() if equipment_id else None
+    if equipment is None:
+        messages.error(request, 'Единица не принята: выберите оборудование')
+        return redirect('repair_order_detail', pk=order.pk)
+
+    # Молчать нельзя: человек решит, что не сработало, и нажмёт ещё раз
+    existing = order.order_equipments.filter(equipment=equipment).first()
+    if existing:
+        position = list(order.order_equipments.order_by('id')).index(existing) + 1
+        messages.error(
+            request,
+            f'{equipment} уже в этом заказе, позиция {position} — второй раз не добавлено'
+        )
+        return redirect('repair_order_detail', pk=order.pk)
+
+    roe = RepairOrderEquipment.objects.create(
+        repair_order=order,
+        equipment=equipment,
+        fault_description=(request.POST.get('fault_description') or '').strip(),
+        initial_condition=(request.POST.get('initial_condition') or '').strip(),
+    )
+    # Заказчик заказа — владелец привезённого прибора, если владельца ещё нет
+    order.assign_equipment_owners()
+
+    messages.success(request, f'{equipment} принята — печатайте наклейку')
+    return redirect('repair_order_equipment_label', order_pk=order.pk, roe_pk=roe.pk)
+
+
+@login_required
 def repair_order_detail(request, pk):
     order = get_object_or_404(
         RepairOrder.objects.prefetch_related('order_equipments__equipment__model', 'client'),
@@ -1001,6 +1048,12 @@ def repair_order_detail(request, pk):
 
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
+    # Для формы «принять ещё единицу»: то, чего в этом заказе ещё нет
+    available_equipment = (
+        Equipment.objects.select_related('model', 'version')
+        .exclude(pk__in=[oe.equipment_id for oe in order_equipments])
+        .order_by('model__name', 'serial_number')
+    )
     # Себестоимость деталей: детали без цены в сумму не входят, поэтому
     # складываем то, что известно, а не подставляем ноль
     details_cost = sum(
@@ -1015,6 +1068,7 @@ def repair_order_detail(request, pk):
         'payments': order.payments.select_related('created_by'),
         'payment_form': PaymentForm(),
         'detail_form': detail_form,
+        'available_equipment': available_equipment,
         'status_form': status_form,
     })
 

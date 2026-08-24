@@ -10014,6 +10014,115 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class AddUnitToOrderTests(TestCase):
+    """Приём по одной единице с печатью наклейки сразу.
+
+    Так это и происходит у стола: коробку поставили, описали, наклеили
+    ярлык, взяли следующую. Пока заказ сохранялся целиком, ярлыки
+    печатались пачкой в конце, и их раскладывали по коробкам, сверяя
+    номер позиции.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_add_unit', full_name='Приёмщик', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.client_obj = ClientModel.objects.create(name='МУП «Лифты»')
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.first = Equipment.objects.create(model=self.model, serial_number='SN-ADD-1')
+        self.second = Equipment.objects.create(model=self.model, serial_number='SN-ADD-2')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.first
+        )
+
+    def _add(self, equipment, **extra):
+        data = {'equipment': equipment.pk if equipment else ''}
+        data.update(extra)
+        return self.http.post('/repair-orders/%d/add-unit/' % self.order.pk, data)
+
+    def test_the_unit_is_added_and_the_label_opens(self):
+        """Переход на наклейку, а не открытие окна из скрипта: окно,
+        открытое не по щелчку человека, браузер часто не показывает."""
+        response = self._add(self.second, fault_description='не открывает двери',
+                             initial_condition='корпус целый')
+
+        added = self.order.order_equipments.get(equipment=self.second)
+        self.assertRedirects(
+            response,
+            '/repair-orders/%d/equipment/%d/label/' % (self.order.pk, added.pk)
+        )
+        self.assertEqual(added.fault_description, 'не открывает двери')
+        self.assertEqual(added.initial_condition, 'корпус целый')
+
+    def test_the_owner_is_filled_in_on_the_way(self):
+        self._add(self.second)
+
+        self.second.refresh_from_db()
+        self.assertEqual(self.second.current_client, self.client_obj)
+
+    def test_the_same_unit_twice_is_refused_out_loud(self):
+        """Молчание человек примет за несработавшую кнопку и нажмёт ещё раз."""
+        response = self._add(self.first, fault_description='повтор')
+
+        self.assertEqual(self.order.order_equipments.count(), 1)
+        self.assertRedirects(response, '/repair-orders/%d/' % self.order.pk)
+        messages = [str(m) for m in response.wsgi_request._messages]
+        self.assertTrue(any('уже в этом заказе' in m for m in messages), messages)
+
+    def test_nothing_chosen_adds_nothing(self):
+        response = self._add(None)
+
+        self.assertEqual(self.order.order_equipments.count(), 1)
+        self.assertRedirects(response, '/repair-orders/%d/' % self.order.pk)
+
+    def test_a_missing_equipment_adds_nothing(self):
+        """Номер из чужой базы не должен молча создавать пустую строку."""
+        response = self.http.post(
+            '/repair-orders/%d/add-unit/' % self.order.pk, {'equipment': '999999'}
+        )
+
+        self.assertEqual(self.order.order_equipments.count(), 1)
+        self.assertRedirects(response, '/repair-orders/%d/' % self.order.pk)
+
+    def test_adding_is_not_a_get(self):
+        """Переход по ссылке или перезагрузка страницы не должны заводить
+        оборудование в заказ."""
+        response = self.http.get('/repair-orders/%d/add-unit/' % self.order.pk)
+
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(self.order.order_equipments.count(), 1)
+
+    def test_adding_requires_login(self):
+        response = TestClient().post(
+            '/repair-orders/%d/add-unit/' % self.order.pk, {'equipment': self.second.pk}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response['Location'])
+        self.assertEqual(self.order.order_equipments.count(), 1)
+
+    def test_the_list_offers_only_what_is_not_in_the_order(self):
+        """Иначе первым делом предлагается то, что уже принято."""
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+        available = list(page.context['available_equipment'])
+
+        self.assertIn(self.second, available)
+        self.assertNotIn(self.first, available)
+
+    def test_the_card_carries_the_intake_form_and_the_scanner(self):
+        page = self.http.get('/repair-orders/%d/' % self.order.pk).content.decode()
+
+        self.assertIn('id="addUnitForm"', page)
+        self.assertIn("kinds: ['equipment', 'order_equipment']", page)
+        self.assertIn("name: 'Карточка заказа'", page)
+        # обрыв связи должен подниматься общей полосой, а не молчать
+        self.assertIn('LiftTeamWS.fetch', page)
+
+
 class IntakeScanTests(TestCase):
     """Скан наклейки, уже наклеенной на приборе, при приёме заказа.
 
