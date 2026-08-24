@@ -2249,6 +2249,14 @@ class RepairOrderDetail(models.Model):
         'StockMovement', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='order_details', verbose_name='Расход со склада'
     )
+    # Деталь нужна по ремонту, но со склада ещё не взята: в приборе её нет,
+    # и трогать остаток рано. Так записывают то, чего на полке не оказалось,
+    # и то, что мастер наметил по рецепту, ещё не вскрыв прибор.
+    #
+    # False по умолчанию — значит все записи, сделанные раньше, остаются
+    # списанными, как оно и было. Запланированная деталь ничего не стоит
+    # заказу, пока её не списали: в себестоимость она не входит.
+    is_planned = models.BooleanField('Только запланирована', default=False)
 
     class Meta:
         verbose_name = 'Деталь в заказе'
@@ -2259,6 +2267,8 @@ class RepairOrderDetail(models.Model):
 
     @property
     def returnable(self):
+        # Запланированную возвращать нечего: со склада её не брали.
+        # Её просто убирают из плана.
         """Можно ли вернуть эту деталь в её партию.
 
         Нельзя, если расход не записан: у списаний до v2.66.0 связи
@@ -2266,7 +2276,7 @@ class RepairOrderDetail(models.Model):
         Возвращать «куда-нибудь» нельзя: это разъедет себестоимость
         по FIFO, а заметят это через полгода в отчёте о прибыли.
         """
-        return self.movement_id is not None
+        return self.movement_id is not None and not self.is_planned
 
     def return_to_stock(self, quantity, employee=None, notes=''):
         """Вернуть `quantity` штук этой детали на склад — в те самые партии,
@@ -2379,14 +2389,23 @@ class RepairOrderDetail(models.Model):
 
     @property
     def cost(self):
-        """Во что обошлись эти детали. None — цена детали не заполнена.
+        """Во что обошлись эти детали. None — цена детали не заполнена
+        или деталь только запланирована.
+
+        Запланированная заказу ещё ничего не стоила: со склада её не брали.
+        Ноль тут был бы не лучше — он попал бы в сумму как настоящая цифра.
 
         Это себестоимость, внутренняя цифра: в акт заказчику она
         не попадает, там только стоимость работ.
         """
-        if self.part.price is None:
+        if self.is_planned or self.part.price is None:
             return None
         return self.part.price * self.quantity_used
+
+    @property
+    def enough_in_stock(self):
+        """Хватает ли остатка, чтобы списать запланированное."""
+        return self.part.current_stock >= self.quantity_used
 
 
 class Notification(models.Model):

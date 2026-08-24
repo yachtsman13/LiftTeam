@@ -1250,6 +1250,19 @@ def repair_order_add_detail(request, pk):
         # проставится сама (см. _use_repair_order_part).
         unit_id = request.POST.get('order_equipment')
         unit = order.order_equipments.filter(pk=unit_id).first() if unit_id else None
+        # «Запланировать» вместо «Добавить»: деталь нужна, но со склада
+        # ещё не взята — остаток трогать рано.
+        if request.POST.get('plan'):
+            if unit is None:
+                unit = order.sole_equipment
+            RepairOrderDetail.objects.create(
+                repair_order=order, order_equipment=unit,
+                part=part, quantity_used=quantity, is_planned=True
+            )
+            messages.success(
+                request, f'{part.name} x{quantity} запланирована — склад не тронут'
+            )
+            return redirect('repair_order_detail', pk=pk)
 
         if part.current_stock < quantity:
             messages.warning(request,
@@ -1271,6 +1284,61 @@ def repair_order_add_detail(request, pk):
 
 @login_required
 @require_POST
+def repair_order_write_off_detail(request, pk, detail_pk):
+    """Списать запланированную деталь: теперь она действительно ушла
+    в прибор.
+
+    Списание идёт ровно тем же путём, что и обычное (`_use_repair_order_part`):
+    распределение по партиям FIFO, затрата по заказу, запись в истории.
+    Отличается только тем, что строка в заказе уже есть — её и обновляем,
+    а не заводим вторую.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    detail = get_object_or_404(
+        RepairOrderDetail, pk=detail_pk, repair_order=order, is_planned=True
+    )
+    part = detail.part
+    quantity = detail.quantity_used
+
+    if part.current_stock < quantity:
+        messages.warning(
+            request,
+            f'Внимание: недостаточно {part.name} на складе! Текущий остаток: '
+            f'{part.current_stock}. Будет списано с отрицательным остатком.'
+        )
+
+    with transaction.atomic():
+        # Запланированную строку убираем и заводим настоящее списание одним
+        # общим путём: иначе распределение по партиям и затрата считались бы
+        # здесь во второй раз, своим кодом, и однажды разошлись бы с тем.
+        unit = detail.order_equipment
+        detail.delete()
+        _use_repair_order_part(
+            order, part, quantity, request.user,
+            f'Списана запланированная деталь {part.name} x{quantity}',
+            order_equipment=unit
+        )
+
+    messages.success(request, f'{part.name} x{quantity} списана со склада')
+    return redirect('repair_order_detail', pk=order.pk)
+
+
+@login_required
+@require_POST
+def repair_order_cancel_planned_detail(request, pk, detail_pk):
+    """Убрать деталь из плана. Со склада её не брали — возвращать нечего."""
+    order = get_object_or_404(RepairOrder, pk=pk)
+    detail = get_object_or_404(
+        RepairOrderDetail, pk=detail_pk, repair_order=order, is_planned=True
+    )
+    name = detail.part.name
+    detail.delete()
+    messages.success(request, f'{name} убрана из плана')
+    return redirect('repair_order_detail', pk=order.pk)
+
+
+@login_required
+@require_POST
 def repair_order_return_detail(request, pk, detail_pk):
     """Вернуть деталь из заказа на склад — в те партии, из которых брали.
 
@@ -1279,7 +1347,9 @@ def repair_order_return_detail(request, pk, detail_pk):
     и себестоимость заказа уменьшается на стоимость возвращённого.
     """
     order = get_object_or_404(RepairOrder, pk=pk)
-    detail = get_object_or_404(RepairOrderDetail, pk=detail_pk, repair_order=order)
+    detail = get_object_or_404(
+        RepairOrderDetail, pk=detail_pk, repair_order=order, is_planned=False
+    )
 
     raw = request.POST.get('quantity', '')
     if not str(raw).isdigit():

@@ -1,5 +1,5 @@
 """
-REST API для LiftTeam v2.66.0 (Django REST Framework).
+REST API для LiftTeam v2.66.1 (Django REST Framework).
 """
 from django.db.models import Q
 from django.utils import timezone

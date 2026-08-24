@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.66.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.66.1{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -336,9 +336,15 @@ document.addEventListener('DOMContentLoaded', function () {
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="col-md-2"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                    <div class="col-md-2 d-flex gap-1">
+                        <button type="submit" class="btn btn-primary flex-fill" title="Взять со склада сейчас"><i class="bi bi-plus-lg"></i></button>
+                        <button type="submit" name="plan" value="1" class="btn btn-outline-primary flex-fill" title="Нужна, но со склада ещё не берём"><i class="bi bi-clock"></i></button>
+                    </div>
                     {% else %}
-                    <div class="col-md-5"><button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-2"></i>Добавить</button></div>
+                    <div class="col-md-5 d-flex gap-2">
+                        <button type="submit" class="btn btn-primary flex-fill"><i class="bi bi-plus-lg me-2"></i>Добавить</button>
+                        <button type="submit" name="plan" value="1" class="btn btn-outline-primary flex-fill" title="Нужна, но со склада ещё не берём"><i class="bi bi-clock me-2"></i>Запланировать</button>
+                    </div>
                     {% endif %}
                 </form>
                 <div class="table-responsive table-scroll">
@@ -346,8 +352,13 @@ document.addEventListener('DOMContentLoaded', function () {
                         <thead><tr><th>Деталь</th><th>Кол-во</th><th>Куда ушла</th><th class="text-end">Себестоимость</th><th style="width:1%"></th></tr></thead>
                         <tbody>
                             {% for detail in details %}
-                            <tr>
-                                <td data-label="Деталь">{{ detail.part.name }}</td>
+                            <tr{% if detail.is_planned %} class="table-warning"{% endif %}>
+                                <td data-label="Деталь">
+                                    {{ detail.part.name }}
+                                    {% if detail.is_planned %}
+                                    <span class="badge bg-warning text-dark">запланирована</span>
+                                    {% endif %}
+                                </td>
                                 <td data-label="Кол-во">{{ detail.quantity_used }}</td>
                                 <td data-label="Куда ушла">
                                     {% if detail.order_equipment %}
@@ -367,6 +378,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                                 <td class="text-end text-nowrap" data-label="Себестоимость">
                                     {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }} ₽
+                                    {% elif detail.is_planned %}<span class="text-muted" title="Со склада не брали — заказу пока ничего не стоила">не списана</span>
                                     {% else %}<span class="text-muted" title="Цена детали не заполнена">—</span>{% endif %}
                                 </td>
                                 {% comment %}
@@ -377,7 +389,27 @@ document.addEventListener('DOMContentLoaded', function () {
                                     говорит об этом, а не догадывается.
                                 {% endcomment %}
                                 <td class="col-actions text-nowrap">
-                                    {% if detail.returnable %}
+                                    {% if detail.is_planned %}
+                                    {% comment %}
+                                        Запланированную либо списывают, когда
+                                        деталь действительно ушла в прибор,
+                                        либо убирают из плана. Возвращать
+                                        нечего: со склада её не брали.
+                                    {% endcomment %}
+                                    <form method="post" action="{% url 'repair_order_write_off_detail' order.pk detail.pk %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-success"
+                                                title="{% if detail.enough_in_stock %}Списать со склада{% else %}На складе только {{ detail.part.current_stock }} — спишется в минус{% endif %}">
+                                            <i class="bi bi-box-arrow-down"></i>
+                                        </button>
+                                    </form>
+                                    <form method="post" action="{% url 'repair_order_cancel_planned_detail' order.pk detail.pk %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary" title="Убрать из плана">
+                                            <i class="bi bi-x-lg"></i>
+                                        </button>
+                                    </form>
+                                    {% elif detail.returnable %}
                                     <form method="post" action="{% url 'repair_order_return_detail' order.pk detail.pk %}" class="d-inline-flex gap-1">
                                         {% csrf_token %}
                                         <input type="number" name="quantity" value="{{ detail.quantity_used }}"

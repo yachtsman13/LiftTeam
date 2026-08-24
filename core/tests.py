@@ -10016,6 +10016,165 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class PlannedPartTests(TestCase):
+    """Отложенное списание: деталь нужна, но со склада ещё не взята.
+
+    Так записывают то, чего на полке не оказалось, и то, что мастер наметил,
+    ещё не вскрыв прибор. Пока деталь не списана, остаток она не трогает
+    и заказу ничего не стоит.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='admin_planned', full_name='Мастер', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.part = SparePart.objects.create(
+            part_number='R-10', name='Резистор', current_stock=0,
+            price=Decimal('15.00')
+        )
+        StockMovement.objects.create(
+            part=self.part, quantity=10, movement_type='incoming',
+            unit_price=Decimal('12.00')
+        )
+        self.part.current_stock = 10
+        self.part.save(update_fields=['current_stock'])
+
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.unit = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=EquipmentModel.objects.create(name='БУАД-7-31'),
+                serial_number='SN-PLAN-1',
+            ),
+        )
+
+    def _plan(self, quantity=3):
+        return self.http.post('/repair-orders/%d/add-detail/' % self.order.pk, {
+            'part': self.part.pk, 'quantity_used': quantity, 'plan': '1',
+        })
+
+    def test_planning_does_not_touch_the_stock(self):
+        self._plan()
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 10)
+        self.assertFalse(StockMovement.objects.filter(movement_type='outgoing').exists())
+        detail = self.order.details.get()
+        self.assertTrue(detail.is_planned)
+
+    def test_a_planned_part_costs_the_order_nothing_yet(self):
+        """Ноль тут был бы не лучше: он попал бы в сумму как настоящая
+        цифра, хотя со склада деталь не брали."""
+        self._plan()
+
+        detail = self.order.details.get()
+        self.assertIsNone(detail.cost)
+        self.assertFalse(self.order.costs.exists())
+
+    def test_planning_keeps_the_unit_it_belongs_to(self):
+        """В заказе одна единица — привязка очевидна и проставляется сама,
+        как и при обычном списании."""
+        self._plan()
+
+        self.assertEqual(self.order.details.get().order_equipment, self.unit)
+
+    def test_writing_it_off_goes_the_usual_way(self):
+        """Тот же путь, что у обычного списания: партии, затрата, история.
+        Второго кода для этого заводить нельзя — однажды разойдётся."""
+        self._plan()
+        detail = self.order.details.get()
+
+        self.http.post('/repair-orders/%d/details/%d/write-off/' % (
+            self.order.pk, detail.pk))
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 7)
+        written = self.order.details.get()
+        self.assertFalse(written.is_planned)
+        self.assertEqual(written.quantity_used, 3)
+        self.assertEqual(written.order_equipment, self.unit)
+        self.assertIsNotNone(written.movement)
+        self.assertEqual(self.order.costs.get().amount, Decimal('36.00'))
+
+    def test_the_written_off_line_replaces_the_planned_one(self):
+        """Не вторая строка рядом с первой: деталь одна."""
+        self._plan()
+        detail = self.order.details.get()
+
+        self.http.post('/repair-orders/%d/details/%d/write-off/' % (
+            self.order.pk, detail.pk))
+
+        self.assertEqual(self.order.details.count(), 1)
+
+    def test_cancelling_leaves_no_trace_on_the_stock(self):
+        """Со склада деталь не брали — и возвращать нечего."""
+        self._plan()
+        detail = self.order.details.get()
+
+        self.http.post('/repair-orders/%d/details/%d/cancel/' % (
+            self.order.pk, detail.pk))
+
+        self.assertFalse(self.order.details.exists())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 10)
+        self.assertFalse(StockMovement.objects.filter(movement_type='outgoing').exists())
+
+    def test_a_planned_part_is_not_returnable(self):
+        self._plan()
+        detail = self.order.details.get()
+
+        self.assertFalse(detail.returnable)
+        response = self.http.post(
+            '/repair-orders/%d/details/%d/return/' % (self.order.pk, detail.pk),
+            {'quantity': '1'}
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.order.details.get().quantity_used, 3)
+
+    def test_a_written_off_part_is_not_written_off_twice(self):
+        self.http.post('/repair-orders/%d/add-detail/' % self.order.pk, {
+            'part': self.part.pk, 'quantity_used': 2,
+        })
+        detail = self.order.details.get()
+
+        response = self.http.post('/repair-orders/%d/details/%d/write-off/' % (
+            self.order.pk, detail.pk))
+
+        self.assertEqual(response.status_code, 404)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 8)
+
+    def test_planning_more_than_the_shelf_holds_is_allowed(self):
+        """Именно для этого случая отложенное списание и нужно: детали нет,
+        а записать её надо, чтобы не забыть заказать."""
+        self._plan(25)
+
+        detail = self.order.details.get()
+        self.assertTrue(detail.is_planned)
+        self.assertFalse(detail.enough_in_stock)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 10)
+
+    def test_the_card_shows_the_planned_line_apart(self):
+        self._plan()
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+
+        self.assertContains(page, 'запланирована')
+        self.assertContains(page, 'не списана')
+        self.assertEqual(page.context['details_cost'], 0)
+
+    def test_the_card_offers_planning_next_to_adding(self):
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+
+        self.assertContains(page, 'name="plan"')
+
+
 class ReturnPartToBatchTests(TestCase):
     """Возврат детали из заказа — в те самые партии, из которых её брали.
 
