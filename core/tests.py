@@ -135,7 +135,7 @@ class RepairOrderFormErrorTests(TestCase):
     и «Папка на Яндекс.Диске» не выводились нигде — страница перезагружалась
     без единого сообщения, и пользователь считал заказ созданным.
 
-    С v2.58.0 этих двух полей на приёме нет вовсе: стоимость считают после
+    С v2.59.0 этих двух полей на приёме нет вовсе: стоимость считают после
     диагностики, папку заводят по ходу работы. Проверка переехала туда, где
     поля теперь живут, — на страницу редактирования. Она и была про то, что
     ошибка поля видна, а не про то, на какой она странице.
@@ -9802,8 +9802,168 @@ class WebhookUrlIsolationTests(TestCase):
         self.assertEqual(TestClient().get('/webhooks/').status_code, 404)
 
 
+class EquipmentOwnerFromOrderTests(TestCase):
+    """Оборудование, заведённое из заказа, получает владельца.
+
+    Оборудование почти всегда заводят прямо из формы заказа, где заказчик
+    уже выбран, — а владелец при этом не проставлялся вовсе. Поле
+    `current_client` заполнялось только через отдельную форму
+    редактирования оборудования, куда почти никто не заходит.
+    """
+
+    def setUp(self):
+        self.user = Employee.objects.create_superuser(
+            username='owner_test', full_name='Приёмщик', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.user)
+        self.client_obj = ClientModel.objects.create(name='МУП «Городские лифты»')
+        self.other = ClientModel.objects.create(name='ООО «Лифтсервис»')
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+
+    def _create_equipment(self, serial, client=None):
+        data = {'model_id': self.model.pk, 'serial_number': serial, 'confirmed': '1'}
+        if client is not None:
+            data['client_id'] = client.pk
+        return self.http.post('/ajax/equipment/create/', data)
+
+    def test_equipment_created_from_an_order_gets_its_client(self):
+        response = self._create_equipment('SN-OWN-1', self.client_obj)
+        self.assertTrue(response.json()['success'])
+        self.assertEqual(
+            Equipment.objects.get(serial_number='SN-OWN-1').current_client,
+            self.client_obj,
+        )
+
+    def test_without_a_chosen_client_nothing_is_invented(self):
+        """Заказчика ещё не выбрали — владелец остаётся пустым.
+
+        Подставить сюда «какого-нибудь» заказчика хуже, чем оставить
+        пусто: пустое поле видно, а неверное — нет.
+        """
+        self._create_equipment('SN-OWN-2')
+        self.assertIsNone(
+            Equipment.objects.get(serial_number='SN-OWN-2').current_client
+        )
+
+    def test_saving_the_order_fills_owners_left_empty(self):
+        """Единицу могли завести до того, как выбрали заказчика, или взять
+        из справочника, где владельца никогда не было."""
+        equipment = Equipment.objects.create(model=self.model, serial_number='SN-OWN-3')
+        order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(repair_order=order, equipment=equipment)
+
+        self.assertEqual(order.assign_equipment_owners(), 1)
+        equipment.refresh_from_db()
+        self.assertEqual(equipment.current_client, self.client_obj)
+
+    def test_an_existing_owner_is_never_overwritten(self):
+        """Прибор может приехать от другого предприятия. Менять ли владельца
+        в этом случае — вопрос к владельцу программы (PLAN.md), и пока он
+        не решён, молча переписывать чужую запись нельзя."""
+        equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-OWN-4', current_client=self.other
+        )
+        order = RepairOrder.objects.create(client=self.client_obj)
+        RepairOrderEquipment.objects.create(repair_order=order, equipment=equipment)
+
+        self.assertEqual(order.assign_equipment_owners(), 0)
+        equipment.refresh_from_db()
+        self.assertEqual(equipment.current_client, self.other)
+
+    def test_an_order_without_a_client_touches_nothing(self):
+        """Заказчик у заказа обязателен, так что в жизни этого не случается.
+        Но подстраховка на месте: без заказчика проставлять нечего,
+        и в базу за этим ходить незачем."""
+        self.assertEqual(RepairOrder(client=None).assign_equipment_owners(), 0)
+
+    def test_the_whole_way_through_the_intake_form(self):
+        """Тот же путь, которым пользуются: приём заказа целиком."""
+        equipment = Equipment.objects.create(model=self.model, serial_number='SN-OWN-6')
+        response = self.http.post('/repair-orders/create/', {
+            'client': self.client_obj.pk,
+            'fault_description': '',
+            'equipments-TOTAL_FORMS': '1',
+            'equipments-INITIAL_FORMS': '0',
+            'equipments-MIN_NUM_FORMS': '0',
+            'equipments-MAX_NUM_FORMS': '1000',
+            'equipments-0-equipment': equipment.pk,
+            'equipments-0-fault_description': 'не открывает двери',
+            'equipments-0-initial_condition': '',
+        })
+        self.assertEqual(response.status_code, 302)
+        equipment.refresh_from_db()
+        self.assertEqual(equipment.current_client, self.client_obj)
+
+
+class MobileMenuSingleColumnTests(SimpleTestCase):
+    """Меню — один столбец, прокрутка вверх-вниз.
+
+    Регрессия v2.56.1: `.nav` от Bootstrap даёт flex-wrap: wrap, класс
+    `flex-column` — направление в столбец, а прокрутка тогда же ограничила
+    меню по высоте. Колонка плюс перенос плюс предел по высоте = нижние
+    разделы уезжают во второй столбец, и меню двигается вбок.
+    """
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+        self.nav = re.search(r'\.sidebar-nav \{([^}]*)\}', self.base).group(1)
+
+    def test_sections_never_wrap_into_a_second_column(self):
+        self.assertIn('flex-wrap: nowrap', self.nav)
+
+    def test_the_column_is_our_own_rule_not_bootstrap(self):
+        """Bootstrap приходит из интернета: без него `flex-column`
+        не значит ничего, и меню рассыпалось бы в строку."""
+        self.assertIn('flex-direction: column', self.nav)
+        self.assertIn('display: flex', self.nav)
+
+    def test_there_is_room_below_for_the_address_bar(self):
+        """На телефоне снизу всплывает строка адреса и накрывает
+        последний раздел."""
+        gap = int(re.search(r'padding-bottom: (\d+)px', self.nav).group(1))
+        self.assertGreaterEqual(gap, 20)
+
+    def test_the_list_looks_like_a_list_without_bootstrap(self):
+        self.assertIn('list-style: none', self.nav)
+        self.assertIn('padding-left: 0', self.nav)
+
+
+class BrowserTabIconTests(SimpleTestCase):
+    """Значок вкладки — логотип компании."""
+
+    def setUp(self):
+        self.base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+
+    def test_the_tab_shows_the_logo(self):
+        self.assertIn("img/favicon-32.png", self.base)
+        self.assertIn('rel="icon"', self.base)
+
+    def test_the_phone_home_screen_gets_a_proper_icon(self):
+        self.assertIn('rel="apple-touch-icon"', self.base)
+        self.assertIn("img/favicon-180.png", self.base)
+
+    def test_the_browser_bar_takes_the_brand_colour(self):
+        self.assertIn('name="theme-color"', self.base)
+
+    def test_the_icons_exist_and_are_small(self):
+        """Уменьшены заранее: сам логотип 1168x1168 и весит 28 КБ —
+        возить его на каждой странице ради значка незачем."""
+        for name, limit in (('favicon-32.png', 10_000), ('favicon-180.png', 60_000)):
+            with self.subTest(файл=name):
+                path = settings.BASE_DIR / 'core/static/img' / name
+                self.assertTrue(path.exists(), '%s не найден' % name)
+                self.assertLess(path.stat().st_size, limit)
+
+    def test_the_original_logo_is_not_used_as_the_icon(self):
+        icons = re.findall(r'<link rel="(?:icon|apple-touch-icon)"[^>]*>', self.base)
+        self.assertTrue(icons)
+        for tag in icons:
+            self.assertNotIn('lift_team_logo.png', tag)
+
+
 class EquipmentVersionInDocumentsTests(TestCase):
-    """Исполнение печатается и в документах, и на этикетке (с v2.58.0).
+    """Исполнение печатается и в документах, и на этикетке (с v2.59.0).
 
     Заводя версии, решили обратное: «ни обозначение, ни комментарий ни
     в один документ не идут». Владелец решение изменил — одна и та же
@@ -9862,7 +10022,7 @@ class EquipmentVersionInDocumentsTests(TestCase):
 
     def test_without_a_version_nothing_is_printed(self):
         """Пусто — значит пусто: «исп. 1.0» вместо незаполненного поля
-        не выдумывается, и документ печатается как до v2.58.0."""
+        не выдумывается, и документ печатается как до v2.59.0."""
         self.equipment.version = None
         self.equipment.save(update_fields=['version'])
         self.assertEqual(self.equipment.version_suffix, '')
@@ -10857,7 +11017,7 @@ class LeaveDialogWithoutBootstrapTests(TestCase):
         self.assertNotIn('bootstrap.Modal.getInstance(modalEl).hide()', self.base)
 
 
-# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.58.0) ====================
+# ==================== СПИСКИ И МЕНЮ НА ТЕЛЕФОНЕ (v2.59.0) ====================
 
 
 class MobileListTableTests(SimpleTestCase):
@@ -11018,7 +11178,7 @@ class MobileListTableRenderTests(TestCase):
 
 
 class MobileMenuButtonTests(SimpleTestCase):
-    """Кнопка меню — логотип на объёмной площадке (v2.58.0).
+    """Кнопка меню — логотип на объёмной площадке (v2.59.0).
 
     Имя класса .sidebar-toggle прежнее: на него ссылаются правила печати
     в base.html и в шаблонах этикеток и актов. Переименование оставило бы

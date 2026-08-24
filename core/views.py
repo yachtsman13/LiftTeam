@@ -1,5 +1,5 @@
 """
-Views для LiftTeam v2.58.0.
+Views для LiftTeam v2.59.0.
 CRUD операции, дашборд, отчёты, визуальная сетка кассетниц, печать этикеток,
 импорт радиодеталей из Excel.
 """
@@ -961,6 +961,7 @@ def repair_order_create(request):
             order = form.save()
             formset.instance = order
             formset.save()
+            order.assign_equipment_owners()
             messages.success(request, f'Заказ {order.order_number} создан')
             return redirect('repair_order_detail', pk=order.pk)
         # Без этого сообщения неудачное сохранение выглядело как успешное:
@@ -1028,6 +1029,7 @@ def repair_order_edit(request, pk):
         if form.is_valid() and formset.is_valid():
             saved_order = form.save()
             formset.save()
+            saved_order.assign_equipment_owners()
             # Логируем изменение статуса оплаты, если он изменился
             if saved_order.payment_status != old_payment_status:
                 OrderStatusHistory.objects.create(
@@ -3557,7 +3559,17 @@ def ajax_equipment_create(request):
                 ],
             })
 
-    equipment = Equipment.objects.create(model=model, serial_number=serial_number)
+    # Заказчик приходит из формы заказа, где он уже выбран. Если ещё
+    # не выбран — оставляем пустым и проставим при сохранении заказа
+    # (RepairOrder.assign_equipment_owners); выдумывать владельца нельзя.
+    client = None
+    client_id = request.POST.get('client_id')
+    if client_id:
+        client = Client.objects.filter(pk=client_id).first()
+
+    equipment = Equipment.objects.create(
+        model=model, serial_number=serial_number, current_client=client
+    )
 
     return JsonResponse({
         'success': True,

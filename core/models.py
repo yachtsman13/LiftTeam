@@ -1,5 +1,5 @@
 """
-Модели данных для LiftTeam v2.58.0.
+Модели данных для LiftTeam v2.59.0.
 Сущности: Client, EquipmentModel, Equipment, FaultType, FaultTypePart, RepairOrder,
           RepairOrderEquipment, RepairOrderDetail, SparePart, StorageCell, StockMovement,
           StockAllocation, OrderCost, InventorySession, InventorySessionLine, Payment,
@@ -587,7 +587,7 @@ class Equipment(models.Model):
         а в акте дефектации другое. Версии нет — не печатается ничего,
         и выдумывать «исп. 1.0» вместо пустого поля нельзя.
 
-        До v2.58.0 версия не шла ни в один документ — так было решено,
+        До v2.59.0 версия не шла ни в один документ — так было решено,
         когда её заводили. Владелец решение изменил: одна и та же модель
         в разных исполнениях — разное изделие, и в документе это должно
         быть видно.
@@ -1127,6 +1127,28 @@ class RepairOrder(models.Model):
         if parts_cost is None:
             return None
         return self.paid_amount - parts_cost
+
+    def assign_equipment_owners(self):
+        """Проставить заказчика этого заказа владельцем его оборудования.
+
+        Только тем единицам, у которых владельца ещё нет. **Непустого
+        владельца не перезаписываем**: прибор может приехать от другого
+        обслуживающего предприятия, и надо ли тогда менять владельца —
+        вопрос к владельцу программы, он записан открытым в PLAN.md.
+        Пока он не решён, молча менять чужую запись нельзя.
+
+        Вызывается после сохранения состава заказа: оборудование заводят
+        прямо из формы заказа, и там заказчик уже выбран — но выбран он
+        может быть и позже, чем создана единица.
+
+        Возвращает число проставленных.
+        """
+        if not self.client_id:
+            return 0
+        return Equipment.objects.filter(
+            repairorderequipment__repair_order=self,
+            current_client__isnull=True,
+        ).update(current_client_id=self.client_id)
 
     def quote_rows(self):
         """Строки коммерческого предложения — по единице оборудования.
