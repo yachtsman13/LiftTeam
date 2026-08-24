@@ -36,7 +36,7 @@ from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
-    EquipmentType, EquipmentVersion,
+    EquipmentMaterial, EquipmentType, EquipmentVersion,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
@@ -12852,3 +12852,232 @@ class WarehouseScanScreensTests(TestCase):
         self.assertIn('select.value = id;', code)
         self.assertNotIn('.submit()', code)
         self.assertIn('нажмите «Назначить»', code)
+
+
+# ==================== МАТЕРИАЛЫ МОДЕЛИ (v2.68.0) ====================
+
+
+class EquipmentMaterialTests(TestCase):
+    """Схемы, инструкции и методики — ссылками у модели.
+
+    Ссылка, а не файл: материалы правят на Диске, и копия в программе
+    разошлась бы с оригиналом молча, а схема в приличном разрешении весит
+    десятки мегабайт — программа живёт на карте памяти Raspberry Pi.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='materials_admin', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.other_version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.7'
+        )
+
+        self.common = EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='manual',
+            title='Инструкция по настройке',
+            url='https://disk.yandex.ru/d/manual',
+        )
+        self.for_version = EquipmentMaterial.objects.create(
+            equipment_model=self.model, version=self.version, kind='scheme',
+            title='Схема исполнения .4',
+            url='https://disk.yandex.ru/d/scheme-4',
+        )
+
+    def test_a_version_gets_the_common_material_too(self):
+        """Вытеснения нет, и это отличие от рецепта деталей намеренное:
+        общая инструкция нужна и тогда, когда у исполнения своя схема."""
+        materials = set(self.model.materials_for(self.version))
+
+        self.assertEqual(materials, {self.common, self.for_version})
+
+    def test_another_version_does_not_see_a_foreign_scheme(self):
+        materials = list(self.model.materials_for(self.other_version))
+
+        self.assertEqual(materials, [self.common])
+
+    def test_a_unit_without_a_version_sees_only_the_common_ones(self):
+        """Исполнение не указано — уточнений не показываем: схема
+        не того исполнения хуже, чем её отсутствие."""
+        materials = list(self.model.materials_for(None))
+
+        self.assertEqual(materials, [self.common])
+
+    def test_a_version_of_another_model_is_refused(self):
+        """Материал с чужим исполнением не показался бы никогда: отбор
+        идёт от модели той единицы, что лежит на столе."""
+        other_model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='-1.1'
+        )
+        material = EquipmentMaterial(
+            equipment_model=self.model, version=alien,
+            title='Чужая схема', url='https://example.com/x',
+        )
+
+        with self.assertRaises(ValidationError) as caught:
+            material.full_clean()
+
+        self.assertIn('version', caught.exception.error_dict)
+
+
+class EquipmentMaterialScreensTests(TestCase):
+    """Где материалы заводят и где их видят."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='materials_screens', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.equipment = Equipment.objects.create(
+            model=self.model, version=self.version, serial_number='SN-MAT-1',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+
+    def _edit_url(self):
+        return reverse('equipment_model_edit', args=[self.model.pk])
+
+    def _defect_url(self):
+        return reverse('repair_order_defect_act_edit',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_the_new_model_page_has_no_materials(self):
+        """Пока модели нет, вешать ссылки не на что — и страница так
+        и говорит, вместо пустой таблицы, которая ничего не сохранит."""
+        html = self.http.get(reverse('equipment_model_create')).content.decode()
+
+        self.assertNotIn('name="materials-TOTAL_FORMS"', html)
+        self.assertIn('добавляются после сохранения', html)
+
+    def test_a_material_is_added_from_the_model_card(self):
+        response = self.http.post(self._edit_url(), {
+            'name': self.model.name, 'kind': '', 'equipment_type': '',
+            'materials-TOTAL_FORMS': '1', 'materials-INITIAL_FORMS': '0',
+            'materials-MIN_NUM_FORMS': '0', 'materials-MAX_NUM_FORMS': '1000',
+            'materials-0-kind': 'scheme',
+            'materials-0-title': 'Схема принципиальная',
+            'materials-0-url': 'https://disk.yandex.ru/d/scheme',
+            'materials-0-version': str(self.version.pk),
+            'materials-0-note': 'лист 2 — блок питания',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        material = self.model.materials.get()
+        self.assertEqual(material.title, 'Схема принципиальная')
+        self.assertEqual(material.version, self.version)
+
+    def test_a_broken_link_saves_nothing(self):
+        """Не ссылка — не материал: «схема на диске» словами открывать
+        нечем, а молча сохранённая строка выглядит как рабочая кнопка."""
+        response = self.http.post(self._edit_url(), {
+            'name': self.model.name, 'kind': '', 'equipment_type': '',
+            'materials-TOTAL_FORMS': '1', 'materials-INITIAL_FORMS': '0',
+            'materials-MIN_NUM_FORMS': '0', 'materials-MAX_NUM_FORMS': '1000',
+            'materials-0-kind': 'scheme',
+            'materials-0-title': 'Схема',
+            'materials-0-url': 'схема лежит у Николая',
+            'materials-0-version': '',
+            'materials-0-note': '',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.model.materials.exists())
+
+    def test_only_this_models_versions_are_offered(self):
+        """Чужое исполнение в выборе означало бы материал, который
+        не покажется никогда."""
+        other_model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='-1.1'
+        )
+
+        html = self.http.get(self._edit_url()).content.decode()
+
+        self.assertIn('>%s</option>' % self.version, html)
+        self.assertNotIn(str(alien), html)
+
+    def test_the_diagnostics_page_shows_the_materials(self):
+        """То, ради чего всё и заводилось: мастер сидит с прибором
+        и актом, и схема нужна ему ровно в эту минуту."""
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, version=self.version, kind='scheme',
+            title='Схема исполнения .4', url='https://disk.yandex.ru/d/s4',
+        )
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='manual',
+            title='Инструкция', url='https://disk.yandex.ru/d/manual',
+        )
+
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertIn('Схема исполнения .4', html)
+        self.assertIn('Инструкция', html)
+        self.assertIn('https://disk.yandex.ru/d/s4', html)
+
+    def test_materials_of_another_version_stay_away(self):
+        other = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.7'
+        )
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, version=other, kind='scheme',
+            title='Схема исполнения .7', url='https://disk.yandex.ru/d/s7',
+        )
+
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertNotIn('Схема исполнения .7', html)
+
+    def test_no_materials_says_where_to_add_them(self):
+        """Пустая карточка без объяснения выглядит как поломка."""
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertIn('материалов пока нет', html)
+        self.assertIn(self._edit_url(), html)
+
+    def test_the_scheme_comes_first(self):
+        """По алфавиту кода схема оказывалась последней, а за столом
+        её открывают первой."""
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='other',
+            title='Прочее', url='https://example.com/o',
+        )
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='manual',
+            title='Инструкция', url='https://example.com/m',
+        )
+        scheme = EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='scheme',
+            title='Схема', url='https://example.com/s',
+        )
+
+        self.assertEqual(self.model.materials_for(None).first(), scheme)
+
+    def test_links_open_in_a_new_tab(self):
+        """Акт заполнен наполовину — уводить с него страницу нельзя."""
+        EquipmentMaterial.objects.create(
+            equipment_model=self.model, kind='manual',
+            title='Инструкция', url='https://disk.yandex.ru/d/manual',
+        )
+
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertIn('target="_blank"', html)
+        self.assertIn('rel="noopener"', html)

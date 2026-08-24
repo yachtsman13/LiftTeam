@@ -674,6 +674,22 @@ class EquipmentModel(models.Model):
             return f'{self.kind} {self.name}'
         return self.name
 
+    def materials_for(self, version=None):
+        """Материалы модели для этого исполнения: схемы, инструкции, методики.
+
+        Общие (без версии) **плюс** помеченные этим исполнением. Вытеснения
+        здесь нет — и это намеренное отличие от рецепта деталей, где строка
+        с версией заменяет общую. Там вытесняется строка **по той же
+        детали**: два разных конденсатора на одно место — это ошибка.
+        Здесь вытеснять нечего: схема исполнения и общая инструкция
+        по настройке нужны обе, и спрятать вторую значило бы отправить
+        мастера искать её мимо программы.
+        """
+        materials = self.materials.all()
+        if version is None:
+            return materials.filter(version__isnull=True)
+        return materials.filter(Q(version__isnull=True) | Q(version=version))
+
 
 class EquipmentVersion(models.Model):
     """Версия модели оборудования: EkoDrive 2.0-1.1 и EkoDrive 2.0-0.7.
@@ -720,6 +736,83 @@ class EquipmentVersion(models.Model):
         # добавлялся ещё один из обозначения, и в списке выбора получалось
         # «БУАД-7-31-.4».
         return f'{self.equipment_model.name}{self.name}'
+
+
+# Виды материалов — списком на уровне модуля, а не только внутри модели:
+# по этому же порядку они и сортируются, а тело `class Meta` имён своего
+# класса не видит. Порядок значимый: за столом первой открывают схему.
+EQUIPMENT_MATERIAL_KINDS = [
+    ('scheme', 'Схема'),
+    ('manual', 'Инструкция'),
+    ('method', 'Методика проверки'),
+    ('other', 'Прочее'),
+]
+
+
+class EquipmentMaterial(models.Model):
+    """Ссылка на материал по модели: схема, инструкция, методика проверки.
+
+    Хранится **ссылка, а не файл**. Материалы лежат на Яндекс.Диске, где
+    их и правят: схему подрисовывают, инструкцию дополняют, — и копия
+    в программе разошлась бы с оригиналом молча. Плюс к тому схема
+    в приличном разрешении весит десятки мегабайт, а программа живёт
+    на Raspberry Pi с картой памяти.
+
+    Ссылка любая, не только на Диск: попадаются и страницы производителя,
+    и файлы в общей папке. Проверяется только то, что это ссылка.
+
+    Материал висит на **модели**, потому что описывает прибор. Версия —
+    уточнение: схема бывает своя у исполнения, а инструкция по настройке
+    общая. Пусто — годится для всех исполнений.
+    """
+    KIND_CHOICES = EQUIPMENT_MATERIAL_KINDS
+
+    equipment_model = models.ForeignKey(
+        EquipmentModel, on_delete=models.CASCADE, related_name='materials',
+        verbose_name='Модель оборудования'
+    )
+    # Пусто — материал общий для всех исполнений; указано — только для этого.
+    # CASCADE: исполнение удалили — уточняющий его материал больше не о чем
+    version = models.ForeignKey(
+        EquipmentVersion, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='materials', verbose_name='Только для исполнения'
+    )
+    kind = models.CharField(
+        'Что это', max_length=20, choices=KIND_CHOICES, default='other'
+    )
+    title = models.CharField('Название', max_length=255)
+    url = models.URLField('Ссылка', max_length=500)
+    note = models.CharField('Примечание', max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = 'Материал по модели'
+        verbose_name_plural = 'Материалы по моделям'
+        # По виду в том порядке, в каком он объявлен, а не по алфавиту кода:
+        # по алфавиту схема оказывалась последней, а за столом её открывают
+        # первой. Порядок берётся из самого списка видов — второй такой
+        # список рядом однажды разошёлся бы с ним.
+        ordering = [
+            models.Case(
+                *[models.When(kind=code, then=models.Value(position))
+                  for position, (code, _) in enumerate(EQUIPMENT_MATERIAL_KINDS)],
+                default=models.Value(len(EQUIPMENT_MATERIAL_KINDS)),
+                output_field=models.IntegerField(),
+            ),
+            'title',
+        ]
+
+    def __str__(self):
+        if self.version_id:
+            return f'{self.title} ({self.version.name})'
+        return self.title
+
+    def clean(self):
+        # Исполнение чужой модели означало бы материал, который не покажется
+        # никогда: отбор идёт от модели единицы
+        if self.version_id and self.version.equipment_model_id != self.equipment_model_id:
+            raise ValidationError({
+                'version': 'Это исполнение другой модели.'
+            })
 
 
 class Equipment(models.Model):

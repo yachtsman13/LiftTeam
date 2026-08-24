@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.67.0{% endblock %}
+{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.68.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -137,6 +137,48 @@
                     неисправность: заказчик пишет, как прибор себя вёл, а в акте
                     стоит, что нашли внутри.
                 </p>
+            </div>
+        </div>
+
+        {% comment %}
+            Материалы модели — здесь, а не «где-то на Диске»: мастер сидит
+            с прибором и актом, и схема нужна ему ровно в эту минуту.
+            Показаны общие плюс помеченные исполнением этой единицы;
+            вытеснения нет — общая инструкция по настройке нужна и тогда,
+            когда у исполнения своя схема.
+
+            Ссылки открываются в новой вкладке: акт заполнен наполовину,
+            и уводить с него страницу нельзя.
+        {% endcomment %}
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-paperclip me-2"></i>Материалы модели</h5>
+            </div>
+            <div class="card-body">
+                {% if materials %}
+                <div class="d-grid gap-2">
+                    {% for material in materials %}
+                    <a href="{{ material.url }}" target="_blank" rel="noopener"
+                       class="btn btn-outline-primary text-start">
+                        <i class="bi bi-box-arrow-up-right me-2"></i>
+                        <strong>{{ material.title }}</strong>
+                        <span class="text-muted small">
+                            — {{ material.get_kind_display|lower }}{% if material.version %}, только для {{ material.version }}{% endif %}
+                        </span>
+                        {% if material.note %}
+                        <div class="small text-muted ms-4">{{ material.note }}</div>
+                        {% endif %}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-muted small mb-0">
+                    У модели «{{ order_equipment.equipment.model.name }}» материалов пока нет.
+                    Схемы и инструкции добавляются
+                    <a href="{% url 'equipment_model_edit' order_equipment.equipment.model.pk %}">в карточке модели</a>
+                    ссылками на Яндекс.Диск.
+                </p>
+                {% endif %}
             </div>
         </div>
     </div>

@@ -10,7 +10,7 @@ from .models import (
     Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
-    PriceList, PriceListLine, available_equipment_for_order,
+    PriceList, PriceListLine, EquipmentMaterial, available_equipment_for_order,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
 )
@@ -478,6 +478,46 @@ class PriceListLineForm(forms.ModelForm):
 
 PriceListLineFormSet = inlineformset_factory(
     PriceList, PriceListLine, form=PriceListLineForm, extra=1, can_delete=True
+)
+
+
+class EquipmentMaterialForm(forms.ModelForm):
+    """Одна ссылка на материал модели."""
+
+    class Meta:
+        model = EquipmentMaterial
+        fields = ['kind', 'title', 'url', 'version', 'note']
+        widgets = {
+            'kind': forms.Select(attrs={'class': 'form-select'}),
+            'title': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Схема принципиальная'
+            }),
+            'url': forms.URLInput(attrs={
+                'class': 'form-control', 'placeholder': 'https://disk.yandex.ru/...'
+            }),
+            'version': forms.Select(attrs={'class': 'form-select'}),
+            'note': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+    def __init__(self, *args, equipment_model=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Только исполнения этой же модели. Модель приходит извне — так же,
+        # как заказ приходит в форму единицы: у пустой строки набора связь
+        # с моделью проставляется уже после того, как форма собрана,
+        # и спрашивать её у instance тут рано.
+        #
+        # Чужое исполнение означало бы материал, который не покажется
+        # никогда: отбор идёт от модели той единицы, что лежит на столе.
+        self.fields['version'].queryset = (
+            EquipmentVersion.objects.filter(equipment_model=equipment_model)
+            if equipment_model is not None else EquipmentVersion.objects.none()
+        )
+        self.fields['version'].empty_label = 'Для всех исполнений'
+
+
+EquipmentMaterialFormSet = inlineformset_factory(
+    EquipmentModel, EquipmentMaterial, form=EquipmentMaterialForm,
+    extra=1, can_delete=True
 )
 
 

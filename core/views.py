@@ -44,7 +44,7 @@ from .forms import (
     EquipmentVersionForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
-    PriceListForm, PriceListLineFormSet,
+    PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
     RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
@@ -574,17 +574,33 @@ def equipment_model_create(request):
 
 @login_required
 def equipment_model_edit(request, pk):
+    """Правка модели вместе с её материалами — схемами и инструкциями.
+
+    Материалы только здесь, на странице создания их нет: пока модель
+    не сохранена, вешать ссылки не на что. Набор форм создаётся
+    с `form_kwargs={'equipment_model': model}` — иначе в выборе исполнения
+    оказались бы исполнения всех моделей разом.
+    """
     model = get_object_or_404(EquipmentModel, pk=pk)
     if request.method == 'POST':
         form = EquipmentModelForm(request.POST, instance=model)
-        if form.is_valid():
+        formset = EquipmentMaterialFormSet(
+            request.POST, instance=model, form_kwargs={'equipment_model': model}
+        )
+        if form.is_valid() and formset.is_valid():
             form.save()
+            formset.save()
             messages.success(request, 'Модель обновлена')
             return redirect('equipment_model_list')
+        messages.error(request, 'Модель не сохранена: проверьте отмеченные поля')
     else:
         form = EquipmentModelForm(instance=model)
+        formset = EquipmentMaterialFormSet(
+            instance=model, form_kwargs={'equipment_model': model}
+        )
     return render(request, 'core/equipment/model_form.html', {
-        'form': form, 'title': 'Редактирование модели', 'model': model,
+        'form': form, 'formset': formset,
+        'title': 'Редактирование модели', 'model': model,
         'kinds': _equipment_kinds(),
     })
 
@@ -4171,12 +4187,17 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
     # Цена по прайсу — предложение, а не подстановка: мастер видит её рядом
     # с полем и решает сам. Молча вписывать нельзя — он подписывает акт.
     line = order_equipment.price_list_line
+    # Материалы модели — рядом, а не «где-то на Диске»: мастер сидит
+    # с прибором и актом, и схему он ищет ровно в эту минуту. Отбор идёт
+    # по исполнению единицы: у неё бывает своя схема
+    equipment = order_equipment.equipment
     return render(request, 'core/repair_orders/defect_act_form.html', {
         'form': form,
         'order': order_equipment.repair_order,
         'order_equipment': order_equipment,
         'price_line': line,
         'price_source': str(line.price_list) if line else '',
+        'materials': equipment.model.materials_for(equipment.version),
     })
 
 
