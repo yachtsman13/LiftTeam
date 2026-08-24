@@ -31,7 +31,7 @@ from channels.layers import get_channel_layer
 
 from .models import (
     Client, EquipmentModel, EquipmentType, EquipmentVersion, Equipment,
-    PriceList, PriceListLine,
+    PriceList, PriceListLine, available_equipment_for_order,
     FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
@@ -1043,6 +1043,23 @@ def repair_order_add_unit(request, pk):
         )
         return redirect('repair_order_detail', pk=order.pk)
 
+    # Прибор не может одновременно лежать на двух верстаках. Называем заказ,
+    # в котором он сейчас: без этого непонятно, где его искать.
+    busy = (
+        RepairOrderEquipment.objects
+        .filter(equipment=equipment, repair_order__status__in=RepairOrder.OPEN_STATUSES)
+        .exclude(repair_order=order)
+        .select_related('repair_order')
+        .first()
+    )
+    if busy:
+        messages.error(
+            request,
+            f'{equipment} сейчас в заказе {busy.repair_order.order_number} '
+            f'({busy.repair_order.get_status_display().lower()}) — принять второй раз нельзя'
+        )
+        return redirect('repair_order_detail', pk=order.pk)
+
     roe = RepairOrderEquipment.objects.create(
         repair_order=order,
         equipment=equipment,
@@ -1077,8 +1094,10 @@ def repair_order_detail(request, pk):
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
     # Для формы «принять ещё единицу»: то, чего в этом заказе ещё нет
+    # и что не лежит в другом незакрытом заказе
     available_equipment = (
-        Equipment.objects.select_related('model', 'version')
+        available_equipment_for_order(order)
+        .select_related('model', 'version')
         .exclude(pk__in=[oe.equipment_id for oe in order_equipments])
         .order_by('model__name', 'serial_number')
     )
@@ -1107,7 +1126,10 @@ def repair_order_edit(request, pk):
     old_payment_status = order.payment_status
     if request.method == 'POST':
         form = RepairOrderForm(request.POST, instance=order)
-        formset = RepairOrderEquipmentFormSet(request.POST, instance=order, prefix='equipments')
+        formset = RepairOrderEquipmentFormSet(
+            request.POST, instance=order, prefix='equipments',
+            form_kwargs={'order': order}
+        )
         if form.is_valid() and formset.is_valid():
             saved_order = form.save()
             formset.save()
@@ -1125,7 +1147,9 @@ def repair_order_edit(request, pk):
         messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
     else:
         form = RepairOrderForm(instance=order)
-        formset = RepairOrderEquipmentFormSet(instance=order, prefix='equipments')
+        formset = RepairOrderEquipmentFormSet(
+            instance=order, prefix='equipments', form_kwargs={'order': order}
+        )
     return render(request, 'core/repair_orders/form.html', {
         'form': form,
         'formset': formset,

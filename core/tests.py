@@ -35,7 +35,7 @@ from . import invoicing, messengers, net, notifications, scanning, tbank, tochka
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
-    PriceList, PriceListLine,
+    PriceList, PriceListLine, available_equipment_for_order,
     EquipmentType, EquipmentVersion,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
@@ -7376,7 +7376,9 @@ class FaultTemplateApplyTests(TestCase):
         self.assertEqual(names, {self.fault1.name, self.fault2.name})
 
     def test_the_equipment_form_rejects_a_fault_from_another_model(self):
-        form = RepairOrderEquipmentForm(data={
+        # order= обязателен: без него единицы этого же заказа считаются
+        # занятыми в другом и в список выбора не попадают
+        form = RepairOrderEquipmentForm(order=self.order, data={
             'equipment': self.equipment.pk,
             'fault_description': '',
             'faults': [self.fault_other_model.pk],
@@ -7390,7 +7392,7 @@ class FaultTemplateApplyTests(TestCase):
     def test_the_other_option_is_not_a_database_choice(self):
         """«Другое» в списке — сигнал для интерфейса, а не id неисправности:
         его выбор не должен ронять валидацию формы."""
-        form = RepairOrderEquipmentForm(data={
+        form = RepairOrderEquipmentForm(order=self.order, data={
             'equipment': self.equipment.pk,
             'fault_description': 'своими словами, чего в справочнике ещё нет',
             'faults': ['other'],
@@ -10014,6 +10016,141 @@ class BrowserTabIconTests(SimpleTestCase):
         self.assertTrue(icons)
         for tag in icons:
             self.assertNotIn('lift_team_logo.png', tag)
+
+
+class BusyEquipmentTests(TestCase):
+    """Прибор, лежащий в другом незакрытом заказе, к приёму не предлагается.
+
+    Одна и та же железка не может одновременно стоять на двух верстаках.
+    А вот отремонтированный и отгруженный в списке остаётся: он у заказчика
+    и приехать снова может — ради этого история ремонтов и ведётся
+    по единице.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_busy', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.client_obj = ClientModel.objects.create(name='МУП «Лифты»')
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.busy = Equipment.objects.create(model=self.model, serial_number='SN-BUSY')
+        self.free = Equipment.objects.create(model=self.model, serial_number='SN-FREE')
+        self.returned = Equipment.objects.create(model=self.model, serial_number='SN-BACK')
+
+        self.other_order = RepairOrder.objects.create(
+            client=self.client_obj, status='repair'
+        )
+        RepairOrderEquipment.objects.create(
+            repair_order=self.other_order, equipment=self.busy
+        )
+        shipped = RepairOrder.objects.create(client=self.client_obj, status='shipped')
+        RepairOrderEquipment.objects.create(repair_order=shipped, equipment=self.returned)
+
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+
+    def test_equipment_in_an_open_order_is_not_offered(self):
+        available = list(available_equipment_for_order())
+
+        self.assertIn(self.free, available)
+        self.assertNotIn(self.busy, available)
+
+    def test_a_shipped_order_releases_the_equipment(self):
+        """Прибор вернулся к заказчику и может приехать снова — иначе
+        историю ремонтов по единице вести было бы не на чем."""
+        self.assertIn(self.returned, available_equipment_for_order())
+
+    def test_the_order_being_edited_keeps_its_own_equipment(self):
+        """Иначе форма правки потеряла бы то, что в ней уже выбрано."""
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.free
+        )
+        self.order.status = 'repair'
+        self.order.save(update_fields=['status'])
+
+        available = list(available_equipment_for_order(self.order))
+
+        self.assertIn(self.free, available)
+        self.assertNotIn(self.busy, available)
+
+    def test_the_order_form_offers_only_free_equipment(self):
+        page = self.http.get('/repair-orders/create/')
+        choices = list(page.context['formset'].empty_form.fields['equipment'].queryset)
+
+        self.assertIn(self.free, choices)
+        self.assertNotIn(self.busy, choices)
+
+    def test_editing_keeps_the_equipment_of_this_order(self):
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.free
+        )
+        self.order.status = 'diagnostic'
+        self.order.save(update_fields=['status'])
+
+        page = self.http.get('/repair-orders/%d/edit/' % self.order.pk)
+        choices = list(page.context['formset'].forms[0].fields['equipment'].queryset)
+
+        self.assertIn(self.free, choices)
+
+    def test_the_order_card_offers_only_free_equipment(self):
+        page = self.http.get('/repair-orders/%d/' % self.order.pk)
+        available = list(page.context['available_equipment'])
+
+        self.assertIn(self.free, available)
+        self.assertNotIn(self.busy, available)
+
+    def test_accepting_a_busy_unit_is_refused_and_names_the_order(self):
+        """Без названия заказа непонятно, где прибор искать."""
+        response = self.http.post('/repair-orders/%d/add-unit/' % self.order.pk, {
+            'equipment': self.busy.pk,
+        })
+
+        self.assertEqual(self.order.order_equipments.count(), 0)
+        messages = [str(m) for m in response.wsgi_request._messages]
+        self.assertTrue(
+            any(self.other_order.order_number in m for m in messages), messages
+        )
+
+
+class VersionDesignationJoinTests(TestCase):
+    """Обозначение исполнения складывается без своего разделителя.
+
+    Разделитель хранится внутри самого обозначения («.4», «-1.1»), потому
+    что на изделиях он произвольный. Пока дефис был прошит в сборке, к нему
+    добавлялся ещё один из обозначения — в списке выбора выходило
+    «БУАД-7-31-.4».
+    """
+
+    def setUp(self):
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+
+    def test_a_dash_is_not_added_in_front(self):
+        version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+
+        self.assertEqual(str(version), 'БУАД-7-31.4')
+
+    def test_the_separator_from_the_directory_is_kept_as_is(self):
+        version = EquipmentVersion.objects.create(
+            equipment_model=EquipmentModel.objects.create(name='EcoDrive-2.3'),
+            name='-1.1',
+        )
+
+        self.assertEqual(str(version), 'EcoDrive-2.3-1.1')
+
+    def test_the_list_and_the_documents_agree(self):
+        """В списке выбора и в акте должно стоять одно и то же обозначение."""
+        version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-JOIN-1', version=version
+        )
+
+        self.assertEqual(str(version), equipment.designation)
 
 
 class EquipmentVersionOnQuickCreateTests(TestCase):

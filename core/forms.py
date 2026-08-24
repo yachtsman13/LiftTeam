@@ -10,7 +10,7 @@ from .models import (
     Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
-    PriceList, PriceListLine,
+    PriceList, PriceListLine, available_equipment_for_order,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
 )
@@ -321,6 +321,22 @@ class FaultSelectMultiple(forms.SelectMultiple):
 
 
 class RepairOrderEquipmentForm(forms.ModelForm):
+    """Единица оборудования в заказе.
+
+    В списке — только свободное оборудование: то, что сейчас лежит
+    в другом незакрытом заказе, не предлагается (см.
+    `available_equipment_for_order`). Единицы самого правимого заказа
+    в списке остаются, иначе форма потеряла бы уже выбранное.
+    """
+
+    def __init__(self, *args, order=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['equipment'].queryset = (
+            available_equipment_for_order(order)
+            .select_related('model', 'version')
+            .order_by('model__name', 'serial_number')
+        )
+
     class Meta:
         model = RepairOrderEquipment
         fields = ['equipment', 'fault_description', 'faults', 'work_performed', 'seal_numbers', 'initial_condition', 'repair_cost', 'yandex_disk_folder']

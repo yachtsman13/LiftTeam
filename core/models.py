@@ -484,6 +484,30 @@ class EquipmentType(models.Model):
         return self.name
 
 
+def available_equipment_for_order(exclude_order=None):
+    """Оборудование, которое можно принять в заказ.
+
+    Убрано то, что сейчас лежит в другом незакрытом заказе: один и тот же
+    прибор не может одновременно стоять на двух верстаках, и предлагать
+    его к приёму — значит звать завести путаницу.
+
+    Отремонтированное и отгруженное в списке остаётся: оно у заказчика
+    и приехать снова может. Именно ради этого история ремонтов и ведётся
+    по единице — вернувшийся прибор надо выбрать из справочника, а не
+    заводить заново.
+
+    `exclude_order` — заказ, который сейчас правят: его собственные
+    единицы обязаны остаться в списке, иначе форма потеряла бы то,
+    что в ней уже выбрано.
+    """
+    busy = RepairOrderEquipment.objects.filter(
+        repair_order__status__in=RepairOrder.OPEN_STATUSES
+    )
+    if exclude_order is not None:
+        busy = busy.exclude(repair_order=exclude_order)
+    return Equipment.objects.exclude(pk__in=busy.values('equipment_id'))
+
+
 class PriceList(models.Model):
     """Прайс на ремонт: базовый или для одного заказчика.
 
@@ -691,7 +715,11 @@ class EquipmentVersion(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.equipment_model.name}-{self.name}'
+        # Простое сложение, без своего разделителя: он хранится внутри
+        # самого обозначения («.4», «-1.1»). Пока дефис стоял здесь, к нему
+        # добавлялся ещё один из обозначения, и в списке выбора получалось
+        # «БУАД-7-31-.4».
+        return f'{self.equipment_model.name}{self.name}'
 
 
 class Equipment(models.Model):
