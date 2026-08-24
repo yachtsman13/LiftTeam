@@ -4416,6 +4416,10 @@ def _scan_cell(cell):
 
 def _scan_equipment(equipment):
     return {
+        # Номер самой единицы: по нему экран приёма заказа ставит
+        # отсканированное в строку. У кода вида `e` он совпадает с номером
+        # в коде, у `u` — нет, поэтому поле есть у обоих.
+        'equipment_id': equipment.pk,
         'title': equipment.serial_number,
         'subtitle': equipment.model.full_name,
         'lines': [
@@ -4452,6 +4456,7 @@ def _scan_order_equipment(roe):
     """Единица в заказе: что это за прибор и что с ним в этой работе."""
     order = roe.repair_order
     return {
+        'equipment_id': roe.equipment_id,
         'title': roe.equipment.designation,
         'subtitle': f'{order.order_number} — {order.client.name}',
         'lines': [

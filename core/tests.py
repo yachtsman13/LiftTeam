@@ -10014,6 +10014,111 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class IntakeScanTests(TestCase):
+    """Скан наклейки, уже наклеенной на приборе, при приёме заказа.
+
+    То, ради чего коды и заводились: прибор приезжает второй раз, на нём
+    наклейка с прошлого ремонта — вместо того чтобы искать серийник глазами
+    и набирать руками, кладовщик подносит сканер.
+    """
+
+    FORM = 'core/templates/core/repair_orders/form.html'
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_intake_scan', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-SCAN-1'
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+        self.form = (settings.BASE_DIR / self.FORM).read_text(encoding='utf-8')
+
+    def _function(self, name):
+        """Тело одной функции из скрипта страницы.
+
+        Именно одной: срез «от имени и до конца файла» захватывал соседние
+        функции, и проверка «здесь нет d-none» ловила чужой код.
+        """
+        body = self.form.split('function %s' % name)[1]
+        return body.split('\n}')[0]
+
+    def _resolve(self, code):
+        return self.http.get('/scan/resolve/?code=%s' % code).json()
+
+    def test_the_equipment_label_says_which_unit_it_is(self):
+        data = self._resolve('e/%d' % self.equipment.pk)
+
+        self.assertTrue(data['found'])
+        self.assertEqual(data['equipment_id'], self.equipment.pk)
+
+    def test_an_old_order_label_leads_to_the_same_equipment(self):
+        """Наклейка прошлого заказа — про ту же железку.
+
+        Номер в коде там свой (строка заказа), поэтому одного `id` мало:
+        без отдельного поля экран приёма поставил бы в заказ не то.
+        """
+        # Номера должны заведомо разойтись, иначе проверка ничего не значит:
+        # без этих записей счётчики единиц и строк заказа идут вровень
+        for n in range(3):
+            Equipment.objects.create(model=self.model, serial_number='SN-GAP-%d' % n)
+        other = Equipment.objects.create(model=self.model, serial_number='SN-SCAN-2')
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=other
+        )
+
+        data = self._resolve('u/%d' % roe.pk)
+
+        self.assertTrue(data['found'])
+        self.assertEqual(data['equipment_id'], other.pk)
+        self.assertNotEqual(roe.pk, other.pk)
+        self.assertEqual(data['id'], roe.pk)
+
+    def test_both_kinds_are_accepted_on_the_order_page(self):
+        """Наклейка бывает и на самом приборе, и от прошлого заказа —
+        экран обязан принимать обе, иначе одна из них молча не сработает."""
+        self.assertIn("kinds: ['equipment', 'order_equipment']", self.form)
+        self.assertIn("name: 'Заказ на ремонт'", self.form)
+
+    def test_the_scan_goes_through_the_connection_layer(self):
+        """Голый fetch показал бы обрыв связи как «не найдено» вместо общей
+        полосы вверху страницы."""
+        handler = self._function('registerIntakeScanner')
+        self.assertIn('LiftTeamWS.fetch', handler)
+
+    def test_the_highlight_does_not_depend_on_bootstrap(self):
+        """Bootstrap приходит из интернета: подсветки не было бы ровно
+        тогда, когда со сканером стоят у стола."""
+        placing = self._function('placeScannedEquipment')
+        self.assertNotIn('d-none', placing)
+        self.assertNotIn('data-bs-', placing)
+        self.assertIn('is-scanned', self.form)
+        self.assertIn('.equipment-row.is-scanned', self.form)
+
+    def test_a_repeat_scan_is_refused_out_loud(self):
+        """Молчаливого бездействия быть не должно: человек решит,
+        что не сработал сканер, и поднесёт код ещё раз."""
+        placing = self._function('placeScannedEquipment')
+        self.assertIn('уже в заказе', placing)
+        self.assertIn('ok: false', placing)
+
+    def test_the_choice_is_applied_through_an_event(self):
+        """На событии висят подсказка о прошлых ремонтах, список типовых
+        неисправностей и пересчёт занятых вариантов. Прямое присваивание
+        значения ничего из этого не запустило бы."""
+        placing = self._function('placeScannedEquipment')
+        self.assertIn("dispatchEvent(new Event('change'", placing)
+
+
 class EquipmentVersionInDocumentsTests(TestCase):
     """Исполнение печатается слитно с названием модели: «БУАД-7-31.4».
 

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.61.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.62.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -78,6 +78,12 @@
                    и при неполадках со связью не приезжает — тогда от рамки
                    не осталось бы ничего. */
                 .equipment-row { border: 2px solid #495057 !important; }
+                /* Куда встала отсканированная единица — видно сразу */
+                .equipment-row.is-scanned {
+                    border-color: #198754 !important;
+                    background-color: #d1e7dd;
+                    transition: background-color 0.3s ease-out;
+                }
                 .equipment-row + .equipment-row { margin-top: 1rem !important; }
             </style>
             <div class="mt-4">
@@ -333,7 +339,102 @@ document.addEventListener('DOMContentLoaded', function () {
     updateEquipmentOptions();
     document.querySelectorAll('select[name*="-equipment"]').forEach(showEquipmentHistory);
     document.querySelectorAll('.fault-select').forEach(updateApplyButtonState);
+    registerIntakeScanner();
 });
+
+/*
+ * Скан наклейки, уже наклеенной на приборе.
+ *
+ * Это то, ради чего коды и заводились. Прибор приезжает второй раз, на нём
+ * с прошлого ремонта наклейка — вместо того чтобы искать серийник глазами
+ * и набирать его руками, кладовщик подносит сканер, и единица встаёт
+ * в заказ сама. Заодно сразу видно, что она уже была в ремонте и на какой
+ * заказ действует гарантия: подсказку рисует тот же обработчик, что
+ * и при выборе руками.
+ *
+ * Принимаем два вида: `e` — наклейка на самом оборудовании, `u` — наклейка
+ * заказа, в котором эта единица была. Оба ведут к одной и той же железке,
+ * поэтому и обрабатываются одинаково.
+ */
+function registerIntakeScanner() {
+    if (typeof LiftTeamScanner === 'undefined') return;
+    LiftTeamScanner.register({
+        kinds: ['equipment', 'order_equipment'],
+        name: 'Заказ на ремонт',
+        onScan: function (scan) {
+            // LiftTeamWS.fetch, а не голый fetch: обрыв связи должен поднять
+            // общую полосу вверху страницы, а не выглядеть как «не найдено»
+            return LiftTeamWS.fetch('{% url "scan_resolve" %}?code=' + encodeURIComponent(scan.payload))
+                .then(function (response) {
+                    return response.ok ? response.json() : Promise.reject(response.status);
+                })
+                .then(function (data) {
+                    if (!data.found) return {ok: false, text: data.message};
+                    return placeScannedEquipment(data);
+                });
+        }
+    });
+}
+
+/*
+ * Поставить отсканированную единицу в заказ.
+ *
+ * В первую свободную строку, а если свободных нет — в новую. Так работает
+ * приём: поднёс коробку, поднёс следующую, и каждая встаёт на своё место
+ * без единого щелчка мышью.
+ */
+function placeScannedEquipment(data) {
+    const id = String(data.equipment_id || '');
+    if (!id) return {ok: false, text: 'В коде нет оборудования'};
+
+    const selects = Array.from(document.querySelectorAll('select[name*="-equipment"]'));
+
+    // Уже в этом заказе — молчать нельзя: человек решит, что не сработал
+    // сканер, и поднесёт код ещё раз
+    const taken = selects.findIndex(sel => sel.value === id);
+    if (taken >= 0) {
+        highlightRow(selects[taken]);
+        return {ok: false, text: data.title + ' уже в заказе, позиция ' + (taken + 1)};
+    }
+
+    let target = selects.find(sel => !sel.value);
+    if (!target) {
+        addEquipmentRow();
+        const grown = document.querySelectorAll('select[name*="-equipment"]');
+        target = grown[grown.length - 1];
+    }
+    if (!target) return {ok: false, text: 'Некуда поставить: строка не добавилась'};
+
+    // Оборудование могли завести после того, как страница открылась
+    if (!Array.from(target.options).some(opt => opt.value === id)) {
+        document.querySelectorAll('select[name*="-equipment"]').forEach(function (sel) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = data.title;
+            sel.appendChild(opt);
+        });
+    }
+
+    target.value = id;
+    // Через событие, а не вызовом напрямую: на нём висят и подсказка
+    // о прошлых ремонтах, и список типовых неисправностей, и пересчёт
+    // занятых вариантов
+    target.dispatchEvent(new Event('change', {bubbles: true}));
+    highlightRow(target);
+
+    const position = Array.from(document.querySelectorAll('select[name*="-equipment"]')).indexOf(target) + 1;
+    return data.title + ' — позиция ' + position;
+}
+
+function highlightRow(select) {
+    const row = select.closest('.equipment-row');
+    if (!row) return;
+    row.scrollIntoView({block: 'center', behavior: 'smooth'});
+    // Своим классом, а не классом Bootstrap: он приходит из интернета,
+    // и подсветки не было бы ровно тогда, когда со сканером стоят у стола
+    row.classList.add('is-scanned');
+    setTimeout(function () { row.classList.remove('is-scanned'); }, 2000);
+}
 
 /*
  * Новая строка берётся из заготовки `formset.empty_form`, а не копируется
