@@ -10016,6 +10016,135 @@ class BrowserTabIconTests(SimpleTestCase):
             self.assertNotIn('lift_team_logo.png', tag)
 
 
+class EquipmentVersionOnQuickCreateTests(TestCase):
+    """Исполнение указывается сразу при заведении оборудования из заказа.
+
+    Раньше окно спрашивало только модель и серийный номер, и обозначение
+    приходилось дописывать потом в карточке — а печатается оно в актах
+    и на наклейке, то есть уезжает к заказчику неполным.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_qc_version', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.other_model = EquipmentModel.objects.create(name='EcoDrive-2.3')
+        self.alien = EquipmentVersion.objects.create(
+            equipment_model=self.other_model, name='-1.1'
+        )
+
+    def _create(self, **extra):
+        data = {'model_id': self.model.pk, 'serial_number': 'SN-QC-1', 'confirmed': '1'}
+        data.update(extra)
+        return self.http.post('/ajax/equipment/create/', data)
+
+    def test_the_model_list_carries_the_versions(self):
+        """Исполнения приезжают вместе с моделями: лишний поход на сервер
+        при каждом выборе модели — это ещё одна вещь, которая не придёт,
+        когда со связью плохо."""
+        data = self.http.get('/ajax/equipment-model/list/').json()
+
+        by_name = {m['name']: m for m in data['models']}
+        self.assertEqual([v['name'] for v in by_name['БУАД-7-31']['versions']], ['.4'])
+        self.assertEqual([v['name'] for v in by_name['EcoDrive-2.3']['versions']], ['-1.1'])
+
+    def test_the_version_is_saved_with_the_equipment(self):
+        response = self._create(version_id=self.version.pk)
+
+        self.assertTrue(response.json()['success'])
+        equipment = Equipment.objects.get(serial_number='SN-QC-1')
+        self.assertEqual(equipment.version, self.version)
+        self.assertEqual(equipment.designation, 'БУАД-7-31.4')
+
+    def test_without_a_version_nothing_is_invented(self):
+        self._create()
+
+        self.assertIsNone(Equipment.objects.get(serial_number='SN-QC-1').version)
+
+    def test_a_version_of_another_model_is_refused(self):
+        """Иначе у прибора оказалось бы обозначение от чужой модели."""
+        self._create(version_id=self.alien.pk)
+
+        self.assertIsNone(Equipment.objects.get(serial_number='SN-QC-1').version)
+
+    def test_the_modal_asks_for_it(self):
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        page = self.http.get('/repair-orders/%d/edit/' % order.pk).content.decode()
+
+        self.assertIn('id="ceVersionSelect"', page)
+        # прячется атрибутом, а не классом Bootstrap: он приходит из интернета
+        self.assertIn('id="ceVersionRow" hidden', page)
+        self.assertIn('row.hidden = versions.length === 0', page)
+
+
+class ListFiltersSurviveBackTests(TestCase):
+    """«Назад» с карточки возвращает к списку вместе с отбором.
+
+    «Назад» в программе — обычная ссылка, а не кнопка браузера: она вела
+    на список без параметров, и отбор терялся. Искали «BAV», открыли
+    деталь, вернулись — и снова весь каталог, ищи заново.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_back', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.part = SparePart.objects.create(part_number='BAV70', name='Диод')
+        self.equipment = Equipment.objects.create(
+            model=EquipmentModel.objects.create(name='БУАД-7-31'),
+            serial_number='SN-BACK-1',
+        )
+
+    def test_the_part_card_remembers_the_search(self):
+        self.http.get('/parts/?search=BAV')
+
+        page = self.http.get('/parts/%d/' % self.part.pk)
+
+        self.assertEqual(page.context['back_url'], '/parts/?search=BAV')
+
+    def test_the_equipment_card_remembers_the_search(self):
+        self.http.get('/equipment/?search=%D0%91%D0%A3%D0%90%D0%94')
+
+        page = self.http.get('/equipment/%d/edit/' % self.equipment.pk)
+
+        self.assertIn('search=', page.context['back_url'])
+
+    def test_the_repair_history_remembers_it_too(self):
+        """На историю попадают и сканером, и из заказа — «Назад» обязан
+        вести туда же, куда и обычно."""
+        self.http.get('/equipment/?search=SN-BACK')
+
+        page = self.http.get('/equipment/%d/history/' % self.equipment.pk)
+
+        self.assertIn('search=SN-BACK', page.context['back_url'])
+
+    def test_without_a_search_the_link_is_plain(self):
+        self.http.get('/parts/')
+
+        page = self.http.get('/parts/%d/' % self.part.pk)
+
+        self.assertEqual(page.context['back_url'], '/parts/')
+
+    def test_the_card_opened_first_still_has_a_way_back(self):
+        """На карточку попадают и по ссылке из письма, и сканером —
+        списка до этого могло не быть вовсе."""
+        page = self.http.get('/parts/%d/' % self.part.pk)
+
+        self.assertEqual(page.context['back_url'], '/parts/')
+        self.assertContains(page, 'Назад')
+
+
 class PlannedPartTests(TestCase):
     """Отложенное списание: деталь нужна, но со склада ещё не взята.
 

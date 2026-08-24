@@ -335,6 +335,26 @@ def _filter_equipment(request):
     }
 
 
+def remember_list_query(request, key):
+    """Запомнить отбор списка, чтобы «Назад» с карточки вернул к нему.
+
+    «Назад» в программе — это обычная ссылка, а не кнопка браузера: она
+    ведёт на список без параметров, и отбор терялся. Искали «BAV», открыли
+    деталь, вернулись — и снова весь каталог, ищи заново.
+
+    Хранится в сессии, а не передаётся в адресе: на карточку попадают
+    не только из списка — ещё сканером, из заказа, по ссылке из письма, —
+    и во всех этих случаях «Назад» обязан вести туда же, куда и обычно.
+    """
+    request.session['list_query:%s' % key] = request.GET.urlencode()
+
+
+def list_back_url(request, key, url_name):
+    """Адрес списка вместе с последним отбором."""
+    query = request.session.get('list_query:%s' % key, '')
+    return f'{reverse(url_name)}?{query}' if query else reverse(url_name)
+
+
 @login_required
 def equipment_list(request):
     equipment, filter_context = _filter_equipment(request)
@@ -348,6 +368,7 @@ def equipment_list(request):
     for item in page_obj:
         item.warranty = warranty_map.get(item.pk)
 
+    remember_list_query(request, 'equipment')
     return render(request, 'core/equipment/list.html', {
         'equipment': page_obj,
         'found_count': paginator.count,
@@ -417,7 +438,10 @@ def equipment_edit(request, pk):
             return redirect('equipment_list')
     else:
         form = EquipmentForm(instance=eq)
-    return render(request, 'core/equipment/form.html', {'form': form, 'title': 'Редактирование оборудования', 'equipment': eq})
+    return render(request, 'core/equipment/form.html', {
+        'form': form, 'title': 'Редактирование оборудования', 'equipment': eq,
+        'back_url': list_back_url(request, 'equipment', 'equipment_list'),
+    })
 
 
 @login_required
@@ -452,6 +476,7 @@ def equipment_history(request, pk):
 
     return render(request, 'core/equipment/history.html', {
         'equipment': equipment,
+        'back_url': list_back_url(request, 'equipment', 'equipment_list'),
         'visit_rows': visit_rows,
         'visits_count': len(visit_rows),
         'similar': similar,
@@ -1760,6 +1785,7 @@ def part_list(request):
 
     paginator = Paginator(parts.order_by('part_number'), 25)
     page = request.GET.get('page')
+    remember_list_query(request, 'parts')
     return render(request, 'core/parts/list.html', {
         'parts': paginator.get_page(page),
         **_part_choices(),
@@ -1879,6 +1905,7 @@ def part_detail(request, pk):
         'movements': movements,
         'available_cells': available_cells,
         'stock_form': stock_form,
+        'back_url': list_back_url(request, 'parts', 'part_list'),
     })
 
 
@@ -3684,9 +3711,25 @@ def report_profit_export(request):
 
 @login_required
 def ajax_equipment_model_list(request):
-    """AJAX-получение списка моделей оборудования (JSON)."""
-    models = EquipmentModel.objects.all().order_by('name').values('id', 'name')
-    return JsonResponse({'success': True, 'models': list(models)})
+    """AJAX-получение списка моделей оборудования вместе с их исполнениями.
+
+    Исполнения идут здесь же, а не отдельным запросом: моделей в справочнике
+    десятки, ответ и так небольшой, а лишний поход на сервер при каждом
+    выборе модели — это ещё одна вещь, которая не придёт, когда со связью
+    плохо.
+    """
+    models = EquipmentModel.objects.prefetch_related('versions').order_by('name')
+    return JsonResponse({'success': True, 'models': [
+        {
+            'id': model.pk,
+            'name': model.name,
+            'versions': [
+                {'id': version.pk, 'name': version.name}
+                for version in model.versions.all()
+            ],
+        }
+        for model in models
+    ]})
 
 
 @login_required
@@ -3758,8 +3801,16 @@ def ajax_equipment_create(request):
     if client_id:
         client = Client.objects.filter(pk=client_id).first()
 
+    # Исполнение — только своё у этой модели: чужое означало бы, что
+    # у прибора обозначение от другой модели.
+    version = None
+    version_id = request.POST.get('version_id')
+    if version_id:
+        version = model.versions.filter(pk=version_id).first()
+
     equipment = Equipment.objects.create(
-        model=model, serial_number=serial_number, current_client=client
+        model=model, serial_number=serial_number,
+        version=version, current_client=client
     )
 
     return JsonResponse({

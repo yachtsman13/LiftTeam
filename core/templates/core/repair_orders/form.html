@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.66.2{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.66.3{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -516,13 +516,38 @@ function openCreateEquipmentModal(btn) {
     loadModelSelect(document.getElementById('ceModelSelect'));
 }
 
+// Исполнения приезжают вместе с моделями и лежат здесь, чтобы при выборе
+// модели не ходить на сервер второй раз.
+let equipmentVersions = {};
+
+/*
+ * Исполнения выбранной модели. У модели их может не быть вовсе — тогда
+ * поле не показывается: пустой список выбора только сбивает с толку.
+ */
+function fillVersionSelect() {
+    const modelSelect = document.getElementById('ceModelSelect');
+    const versionSelect = document.getElementById('ceVersionSelect');
+    const row = document.getElementById('ceVersionRow');
+    if (!modelSelect || !versionSelect || !row) return;
+
+    const versions = equipmentVersions[modelSelect.value] || [];
+    versionSelect.innerHTML = '<option value="">Не указано</option>' +
+        versions.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+    // Прячем атрибутом, а не классом Bootstrap: он приходит из интернета
+    row.hidden = versions.length === 0;
+}
+
 function loadModelSelect(selectEl) {
     LiftTeamWS.fetch('{% url "ajax_equipment_model_list" %}')
         .then(r => r.json())
         .then(data => {
             if (data.success && data.models) {
+                equipmentVersions = {};
+                data.models.forEach(m => { equipmentVersions[m.id] = m.versions || []; });
                 selectEl.innerHTML = '<option value="">Выберите модель...</option>' + 
                     data.models.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+                selectEl.onchange = fillVersionSelect;
+                fillVersionSelect();
             } else {
                 selectEl.innerHTML = '<option value="">Нет моделей</option>';
             }
@@ -618,6 +643,10 @@ function createEquipment(confirmed) {
     let body = 'model_id=' + encodeURIComponent(modelId) +
                '&serial_number=' + encodeURIComponent(serial);
     if (confirmed) body += '&confirmed=1';
+    const versionSel = document.getElementById('ceVersionSelect');
+    if (versionSel && versionSel.value) {
+        body += '&version_id=' + encodeURIComponent(versionSel.value);
+    }
     // Заказчик из формы заказа: он и есть владелец привезённого прибора.
     // Не выбран — уйдёт пустым, и владелец проставится при сохранении.
     const clientSel = document.querySelector('select[name="client"]');
@@ -824,6 +853,19 @@ function createClient() {
                             <i class="bi bi-plus-lg"></i>
                         </button>
                     </div>
+                </div>
+                {% comment %}
+                    Исполнение заполняется от выбранной модели: у каждой
+                    модели свои. Пусто — значит у прибора его не разобрали
+                    или у модели исполнений не заведено; выдумывать нельзя,
+                    обозначение печатается в актах и на наклейке.
+                {% endcomment %}
+                <div class="mb-3" id="ceVersionRow" hidden>
+                    <label class="form-label">Исполнение</label>
+                    <select id="ceVersionSelect" class="form-select">
+                        <option value="">Не указано</option>
+                    </select>
+                    <div class="form-text">Приписка к названию модели: БУАД-7-31<strong>.4</strong></div>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Серийный номер <span class="text-danger">*</span></label>
