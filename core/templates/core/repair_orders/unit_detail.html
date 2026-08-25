@@ -1,0 +1,339 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.76.0{% endblock %}
+
+{% block content %}
+{% comment %}
+    Всё про один прибор в одной работе. Раньше это лежало в трёх местах:
+    часть в строке карточки заказа, часть в форме правки заказа, часть
+    на дефектации — и мастер с платой в руках ходил между ними.
+{% endcomment %}
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1">
+            <i class="bi bi-cpu me-2"></i>{{ equipment.full_designation }}
+        </h2>
+        <div class="text-muted">
+            Серийный номер <strong>{{ equipment.serial_number }}</strong> ·
+            позиция {{ position }} в заказе
+            <a href="{% url 'repair_order_detail' order.pk %}">{{ order.order_number }}</a> ·
+            {{ order.client.name }}
+        </div>
+    </div>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К заказу
+    </a>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+
+        {% comment %}
+            Готовность — первым делом: это ответ на вопрос «что с ней
+            ещё не сделано», с которым сюда чаще всего и приходят.
+            Список проверок общий на всю программу (READINESS_CHECKS).
+        {% endcomment %}
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-check2-square me-2"></i>Готовность</h5>
+                <span class="badge bg-{% if order_equipment.is_ready %}success{% else %}warning text-dark{% endif %}">
+                    {{ order_equipment.readiness_label }}
+                </span>
+            </div>
+            <div class="card-body">
+                <ul class="mb-0 list-unstyled">
+                    {% for check in order_equipment.readiness %}
+                    <li class="mb-1">
+                        {% if check.done %}
+                        <i class="bi bi-check-lg text-success me-1"></i>{{ check.label }}
+                        {% else %}
+                        <i class="bi bi-dash-lg text-warning me-1"></i>
+                        <strong>{{ check.label }}</strong>
+                        <span class="text-muted small">— {{ check.hint }}</span>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-box-arrow-in-down me-2"></i>Приём</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Со слов заказчика:</strong><br>
+                    {{ order_equipment.fault_description|default:"—"|linebreaksbr }}
+                </p>
+                <p class="mb-0">
+                    <strong>Начальное состояние:</strong><br>
+                    {{ order_equipment.initial_condition|default:"—"|linebreaksbr }}
+                </p>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-clipboard2-pulse me-2"></i>Диагностика</h5>
+                <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}"
+                   class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-pencil me-1"></i>Заполнить
+                </a>
+            </div>
+            <div class="card-body">
+                {% if order_equipment.has_defect_act %}
+                <p class="mb-2">
+                    <strong>Что нашли:</strong><br>
+                    {{ order_equipment.diagnosis_document_text|default:"—"|linebreaksbr }}
+                </p>
+                {% if order_equipment.error_codes %}
+                <p class="mb-2"><strong>Коды ошибок:</strong> {{ order_equipment.error_codes }}</p>
+                {% endif %}
+                <div class="row">
+                    <div class="col-sm-4"><strong>Гарантийный случай:</strong>
+                        {{ order_equipment.get_warranty_case_display|default:"не указан" }}</div>
+                    <div class="col-sm-4"><strong>Сложность:</strong>
+                        {{ order_equipment.effective_complexity_display|default:"—" }}
+                        {% if order_equipment.complexity_is_derived %}
+                        <span class="text-muted small">(по неисправностям)</span>
+                        {% endif %}
+                    </div>
+                    <div class="col-sm-4"><strong>Оценка:</strong>
+                        {% if order_equipment.estimated_cost is not None %}{{ order_equipment.estimated_cost|floatformat:2 }} ₽{% else %}—{% endif %}
+                    </div>
+                </div>
+                {% if order_equipment.non_warranty_reason %}
+                <p class="mb-0 mt-2 text-muted small">
+                    Не гарантийный, потому что неисправность вызвана
+                    {{ order_equipment.non_warranty_reason }}
+                </p>
+                {% endif %}
+                {% else %}
+                <p class="text-muted mb-0">
+                    Дефектация не заполнена. Пока её нет, ни акт, ни коммерческое
+                    предложение по этой единице напечатать нечем.
+                </p>
+                {% endif %}
+
+                {% comment %}
+                    Типовые неисправности показываем полными описаниями —
+                    теми, что идут в документы. Короткое название
+                    (FaultType.name) в документы не попадает никогда,
+                    но здесь мы не документ, а рабочий экран, поэтому
+                    показываем и его: по нему их выбирают.
+                {% endcomment %}
+                {% if faults %}
+                <hr>
+                <strong>Типовые неисправности:</strong>
+                <ul class="mb-0 mt-1">
+                    {% for fault in faults %}
+                    <li>
+                        {{ fault.name }}
+                        <span class="badge bg-{% if fault.complexity == 'complex' %}warning text-dark{% else %}secondary{% endif %}">
+                            {{ fault.get_complexity_display|lower }}
+                        </span>
+                        {% if fault.description %}
+                        <div class="small text-muted">{{ fault.description }}</div>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-tools me-2"></i>Ремонт</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Выполненные работы:</strong><br>
+                    {{ order_equipment.work_performed|default:"—"|linebreaksbr }}
+                </p>
+                <div class="row">
+                    <div class="col-sm-6"><strong>Пломбы:</strong>
+                        {{ order_equipment.seal_numbers|default:"—" }}</div>
+                    <div class="col-sm-6"><strong>Стоимость ремонта:</strong>
+                        {% if order_equipment.repair_cost is not None %}{{ order_equipment.repair_cost|floatformat:2 }} ₽{% else %}—{% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% comment %}
+            Детали именно этой единицы. Списанные «на заказ целиком»
+            сюда не попадают: программа не знает, в какую железку они
+            ушли, и приписывать их наугад нельзя — по этой записи потом
+            считают, во сколько обошёлся ремонт.
+        {% endcomment %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Детали на эту единицу</h5>
+            </div>
+            <div class="card-body">
+                {% if details %}
+                <div class="table-responsive table-scroll">
+                    <table class="table table-sm list-table align-middle">
+                        <thead class="table-light">
+                            <tr><th>Артикул</th><th>Название</th><th class="text-end">Кол-во</th><th class="text-end">Себестоимость</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for detail in details %}
+                            <tr>
+                                <td data-label="Артикул">
+                                    <a href="{% url 'part_detail' detail.part.pk %}">{{ detail.part.part_number }}</a>
+                                    {% if detail.is_planned %}
+                                    <span class="badge bg-secondary">запланирована</span>
+                                    {% endif %}
+                                </td>
+                                <td data-label="Название">{{ detail.part.name }}</td>
+                                <td class="text-end" data-label="Кол-во">{{ detail.quantity_used }}</td>
+                                <td class="text-end" data-label="Себестоимость">
+                                    {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }}{% else %}—{% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="form-text">
+                    Детали, списанные на заказ целиком, здесь не показаны —
+                    они в <a href="{% url 'repair_order_detail' order.pk %}">карточке заказа</a>.
+                </div>
+                {% else %}
+                <p class="text-muted mb-0">
+                    На эту единицу деталей не списано.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-file-earmark-text me-2"></i>Документы и папка</h5>
+            </div>
+            <div class="card-body d-grid gap-2">
+                {% if order_equipment.has_defect_act %}
+                <a href="{% url 'repair_order_act_defect' order.pk order_equipment.pk %}"
+                   class="btn btn-outline-success" target="_blank">
+                    <i class="bi bi-clipboard2-pulse me-2"></i>Акт дефектации
+                </a>
+                {% else %}
+                <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}"
+                   class="btn btn-outline-secondary">
+                    <i class="bi bi-clipboard2-plus me-2"></i>Заполнить дефектацию
+                </a>
+                {% endif %}
+                <a href="{% url 'repair_order_equipment_label' order.pk order_equipment.pk %}"
+                   class="btn btn-outline-dark" target="_blank">
+                    <i class="bi bi-printer me-2"></i>Этикетка
+                </a>
+                {% if order_equipment.yandex_disk_folder %}
+                <a href="{{ order_equipment.yandex_disk_folder }}" target="_blank" rel="noopener"
+                   class="btn btn-outline-info">
+                    <i class="bi bi-folder2-open me-2"></i>Снимки на Яндекс.Диске
+                </a>
+                {% else %}
+                <form method="post" action="{% url 'repair_order_unit_disk_folder' order.pk order_equipment.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-secondary w-100">
+                        <i class="bi bi-folder-plus me-2"></i>Завести папку на Диске
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Об изделии</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-1"><strong>Модель:</strong>
+                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}">{{ equipment.model.name }}</a></div>
+                <div class="mb-1"><strong>Исполнение:</strong>
+                    {{ equipment.version.name|default:"не указано" }}
+                    {% if equipment.version.note %}
+                    <div class="small text-muted">{{ equipment.version.note }}</div>
+                    {% endif %}
+                </div>
+                <div class="mb-1"><strong>Тип:</strong>
+                    {{ equipment.model.equipment_type|default:"не указан" }}</div>
+                <div class="mb-1"><strong>Владелец:</strong>
+                    {{ equipment.current_client.name|default:"не указан" }}</div>
+                <div class="mb-2"><strong>Ремонтов всего:</strong> {{ repairs_count }}</div>
+
+                {% comment %}
+                    Гарантия: своя по этому ремонту и чужая по прошлому.
+                    Вторая важнее — это повод не брать денег, и увидеть
+                    её надо до того, как назначена цена.
+                {% endcomment %}
+                {% if previous_warranty %}
+                <div class="alert alert-warning py-2 mb-2">
+                    Повторное обращение: гарантия по заказу
+                    <a href="{% url 'repair_order_detail' previous_warranty.repair_order.pk %}">{{ previous_warranty.repair_order.order_number }}</a>
+                    действует до {{ previous_warranty.warranty_until|date:"d.m.Y" }}.
+                </div>
+                {% endif %}
+                {% if order_equipment.warranty_until %}
+                <div class="mb-2"><strong>Гарантия по этому ремонту:</strong>
+                    до {{ order_equipment.warranty_until|date:"d.m.Y" }}
+                    {% if not order_equipment.is_under_warranty %}<span class="text-muted">(истекла)</span>{% endif %}
+                </div>
+                {% endif %}
+
+                <a href="{% url 'equipment_history' equipment.pk %}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-clock-history me-1"></i>История ремонтов
+                </a>
+                <a href="{% url 'equipment_edit' equipment.pk %}" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-pencil me-1"></i>Карточка
+                </a>
+            </div>
+        </div>
+
+        {% comment %}
+            Техкарты и материалы — те же, что на дефектации, и ссылка
+            несёт исполнение единицы: без него мастер увидел бы половину
+            карты и не понял, что половины нет.
+        {% endcomment %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-card-checklist me-2"></i>Как это чинят</h5>
+            </div>
+            <div class="card-body">
+                {% if tech_cards %}
+                <div class="d-grid gap-2 mb-3">
+                    {% for card in tech_cards %}
+                    <a href="{% url 'tech_card_detail' card.pk %}{% if equipment.version_id %}?version={{ equipment.version_id }}{% endif %}"
+                       target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary text-start">
+                        <i class="bi bi-list-ol me-1"></i>{{ card.title }}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                {% if materials %}
+                <div class="d-grid gap-2">
+                    {% for material in materials %}
+                    <a href="{{ material.url }}" target="_blank" rel="noopener"
+                       class="btn btn-sm btn-outline-primary text-start">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>{{ material.title }}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                {% if not tech_cards and not materials %}
+                <p class="text-muted small mb-0">
+                    У модели «{{ equipment.model.name }}» нет ни карт, ни материалов.
+                    Их заводят <a href="{% url 'equipment_model_edit' equipment.model.pk %}">в карточке модели</a>
+                    и в разделе <a href="{% url 'tech_card_list' %}">техкарт</a>.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

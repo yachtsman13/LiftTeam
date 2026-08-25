@@ -4330,6 +4330,54 @@ def _order_equipment(order_pk, roe_pk):
 
 
 @login_required
+def repair_order_unit_detail(request, order_pk, roe_pk):
+    """Страница одной единицы оборудования в заказе.
+
+    Всё об этом приборе в этой работе, в одном месте: что привезли, что
+    нашли при диагностике, что сделали, какие детали ушли, какие пломбы
+    стоят, где документы и папка со снимками.
+
+    Страница, а не окно. Окна в программе рисует Bootstrap, а он приходит
+    из интернета и регулярно не приезжает; сюда же ведёт наклейка
+    с прибора, ссылку на страницу можно дать в переписке и открыть
+    в соседней вкладке. Всё это окно не умеет.
+
+    Пока только показывает и уводит к правке в те места, где она уже
+    есть: быстрые действия и правка полей прямо здесь — следующий этап.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    order = order_equipment.repair_order
+    equipment = order_equipment.equipment
+
+    # Позиция в заказе печатается на наклейке, и человек с коробкой
+    # в руках ищет по ней. Считаем по тому же порядку, что и в списке
+    # единиц на карточке заказа
+    position = list(
+        order.order_equipments.order_by('id').values_list('pk', flat=True)
+    ).index(order_equipment.pk) + 1
+
+    # Гарантия по прошлым ремонтам этой же железки: текущий заказ
+    # исключён, иначе он сам попадал бы в «повторное обращение»
+    previous = Equipment.warranty_map([equipment], exclude_order_id=order.pk)
+
+    return render(request, 'core/repair_orders/unit_detail.html', {
+        'order': order,
+        'order_equipment': order_equipment,
+        'equipment': equipment,
+        'position': position,
+        'previous_warranty': previous.get(equipment.pk),
+        'faults': order_equipment.faults.all(),
+        # Детали, списанные именно на эту единицу. Списанные «на заказ
+        # целиком» сюда не попадают намеренно: программа не знает,
+        # в какую железку они ушли, и приписывать их наугад нельзя
+        'details': order_equipment.details.select_related('part').order_by('id'),
+        'materials': equipment.model.materials_for(equipment.version),
+        'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
+        'repairs_count': equipment.repair_orders.count(),
+    })
+
+
+@login_required
 def repair_order_defect_act_edit(request, order_pk, roe_pk):
     """Заполнение акта дефектации по одной единице оборудования."""
     order_equipment = _order_equipment(order_pk, roe_pk)
@@ -4828,22 +4876,21 @@ def short_order(request, pk):
 def short_order_equipment(request, pk):
     """Короткий адрес единицы оборудования в заказе: /u/<id>/
 
-    Это код с наклейки на самом приборе. Ведёт в карточку заказа и сразу
-    к нужной строке: у мастера в руках плата, и ему нужно, что с ней
-    в этой работе — заявленная неисправность, что уже сделано, гарантия.
-    История ремонтов этой единицы вообще — ссылкой оттуда же, отдельной
-    кнопкой в строке.
+    Это код с наклейки на самом приборе, и ведёт он на страницу этой
+    единицы: у мастера в руках плата, и ему нужно всё про неё — что
+    привезли, что нашли, что сделано, какие детали ушли, где документы.
 
     До v2.61.0 наклейка вела на заказ целиком, а какая это единица,
-    подсказывал только номер позиции, напечатанный рядом. Так было
-    не от хорошей жизни: в код помещался адрес сервера, и на номер
-    позиции знаков уже не оставалось.
+    подсказывал только номер позиции рядом: в код помещался адрес
+    сервера, и на позицию знаков не оставалось. С v2.61.0 она вела
+    в карточку заказа к нужной строке — тоже не от хорошей жизни:
+    страницы единицы тогда просто не было.
     """
     roe = get_object_or_404(
         RepairOrderEquipment.objects.select_related('repair_order'), pk=pk
     )
-    url = reverse('repair_order_detail', args=[roe.repair_order_id])
-    return redirect(f'{url}#unit-{roe.pk}')
+    return redirect('repair_order_unit_detail',
+                    order_pk=roe.repair_order_id, roe_pk=roe.pk)
 
 
 @login_required

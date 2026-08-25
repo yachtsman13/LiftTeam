@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.75.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.76.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -174,7 +174,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <input type="checkbox" class="form-check-input" id="equipmentCheckAll"
                                        title="Отметить всё" aria-label="Отметить всё оборудование">
                             </th>
-                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Готовность</th><th>Гарантия</th><th class="text-end">Действия</th>
+                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Готовность</th><th class="text-end">Действия</th>
                         </tr></thead>
                         <tbody>
                             {% for oe in order_equipments %}
@@ -184,17 +184,45 @@ document.addEventListener('DOMContentLoaded', function () {
                                 не заказ вообще, а вот эту единицу.
                                 Подсветку рисует :target, без скрипта.
                             {% endcomment %}
-                            <tr id="unit-{{ oe.pk }}">
+                            <tr id="unit-{{ oe.pk }}" class="unit-row"
+                                data-href="{% url 'repair_order_unit_detail' order.pk oe.pk %}">
                                 <td class="col-check">
                                     <input type="checkbox" class="form-check-input equipment-check"
                                            form="equipmentLabelsForm" name="roe" value="{{ oe.pk }}"
                                            aria-label="Этикетка на позицию {{ forloop.counter }}">
                                 </td>
                                 <td data-label="№"><span class="badge bg-primary">{{ forloop.counter }}</span></td>
-                                <td data-label="Модель">{{ oe.equipment.model.name }}</td>
-                                <td class="fw-bold" data-label="Серийный номер">{{ oe.equipment.serial_number }}</td>
-                                <td data-label="Неисправность">{{ oe.fault_description|default:"—"|linebreaksbr }}</td>
-                                <td data-label="Выполнено">{{ oe.work_performed|default:"—"|linebreaksbr }}</td>
+                                <td data-label="Модель">{{ oe.equipment.designation }}</td>
+                                {% comment %}
+                                    Серийный номер — настоящая ссылка, а не
+                                    только кликабельная строка: так работает
+                                    и без скриптов, и средней кнопкой мыши
+                                    в новой вкладке.
+
+                                    Гарантия отсюда убрана: столбец почти
+                                    всегда пустой, а место занимал всегда.
+                                    Всё про гарантию — на странице единицы,
+                                    а повторное обращение по чужой гарантии
+                                    помечено значком прямо здесь: это повод
+                                    не брать денег, и увидеть его надо сразу.
+                                {% endcomment %}
+                                <td class="fw-bold" data-label="Серийный номер">
+                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}"
+                                       class="text-decoration-none">{{ oe.equipment.serial_number }}</a>
+                                    {% if oe.previous_warranty %}
+                                    <span class="badge bg-warning text-dark"
+                                          title="Повторное обращение: гарантия по заказу {{ oe.previous_warranty.repair_order.order_number }} действует до {{ oe.previous_warranty.warranty_until|date:'d.m.Y' }}">по гарантии</span>
+                                    {% endif %}
+                                </td>
+                                {% comment %}
+                                    Тексты обрезаются до одной строки: раньше
+                                    в ячейку шёл весь абзац, и строка вырастала
+                                    на полэкрана — из-за этого таблица
+                                    и выглядела тяжёлой. Целиком читается
+                                    на странице единицы.
+                                {% endcomment %}
+                                <td data-label="Неисправность">{{ oe.fault_description|default:"—"|truncatechars:60 }}</td>
+                                <td data-label="Выполнено">{{ oe.work_performed|default:"—"|truncatechars:60 }}</td>
                                 {% comment %}
                                     Отметка короткая: что именно осталось,
                                     перечислено ниже отдельной карточкой —
@@ -210,19 +238,8 @@ document.addEventListener('DOMContentLoaded', function () {
                                        title="Что осталось — в чек-листе ниже">{{ oe.readiness_label }}</a>
                                     {% endif %}
                                 </td>
-                                <td data-label="Гарантия">
-                                    {% if oe.previous_warranty %}
-                                    <a href="{% url 'repair_order_detail' oe.previous_warranty.repair_order.pk %}" class="badge bg-warning text-dark text-decoration-none" title="Единица уже ремонтировалась, и гарантия по тому заказу ещё действует">
-                                        по {{ oe.previous_warranty.repair_order.order_number }} до {{ oe.previous_warranty.warranty_until|date:"d.m.Y" }}
-                                    </a>
-                                    {% elif oe.warranty_until %}
-                                    <span class="badge bg-{% if oe.is_under_warranty %}success{% else %}secondary{% endif %}">до {{ oe.warranty_until|date:"d.m.Y" }}</span>
-                                    {% else %}
-                                    <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
                                 <td class="text-end col-actions">
-                                    <a href="{% url 'equipment_history' oe.equipment.pk %}" class="btn btn-sm btn-outline-primary" title="История этой единицы"><i class="bi bi-clock-history"></i></a>
+                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}" class="btn btn-sm btn-outline-primary" title="Всё об этой единице"><i class="bi bi-box-arrow-in-right"></i></a>
                                     {% comment %}
                                         Пока дефектации нет — ведём на заполнение,
                                         потом на сам акт: печатать пустой бланк
@@ -250,7 +267,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="9" class="text-center text-muted">Оборудование не добавлено</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted">Оборудование не добавлено</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -322,8 +339,39 @@ document.addEventListener('DOMContentLoaded', function () {
         .equipment-table > tbody > tr + tr > td { border-top: 2px solid #495057; }
         .equipment-table > tbody > tr > td { padding-top: 0.6rem; padding-bottom: 0.6rem; }
     }
+
+    /* Строка ведёт на страницу единицы. Курсор — единственный намёк
+       на то, что по ней можно щёлкнуть, и он свой, не бутстраповский:
+       Bootstrap приходит из интернета. */
+    .unit-row { cursor: pointer; }
+    .unit-row:hover > td { background-color: #f1f5f9; }
 </style>
 <script>
+/*
+ * Клик по строке единицы ведёт на её страницу.
+ *
+ * Серийный номер в строке — настоящая ссылка, и этого хватило бы;
+ * но мимо неё попадают чаще, чем хотелось бы, а строка широкая.
+ *
+ * Щелчки по галочке, кнопкам и ссылкам сюда не доходят: галочка
+ * отмечает единицу для печати этикеток пачкой, кнопки ведут каждая
+ * в своё место, и увести их всех на страницу единицы означало бы
+ * сломать и то, и другое. Выделение текста мышью тоже не переход:
+ * серийные номера отсюда копируют.
+ */
+(function () {
+    'use strict';
+    document.addEventListener('click', function (event) {
+        var row = event.target.closest('.unit-row');
+        if (!row) return;
+        if (event.target.closest('a, button, input, label, select, textarea')) return;
+        // Тянули мышью — выделяли текст, а не нажимали строку
+        var selection = window.getSelection();
+        if (selection && String(selection).length) return;
+        window.location.href = row.dataset.href;
+    });
+})();
+
 (function () {
     'use strict';
     var all = document.getElementById('equipmentCheckAll');

@@ -1879,11 +1879,18 @@ class OrderLabelLinkTests(TestCase):
         уезжают к заказчику. И код от длины адреса больше не зависит."""
         self.assertEqual(self._encoded(), f'u/{self.roe.pk}')
 
-    def test_the_unit_code_opens_the_order_at_that_unit(self):
+    def test_the_unit_code_opens_the_page_of_that_unit(self):
+        """Наклейка на приборе ведёт на страницу этой единицы.
+
+        До v2.76.0 она вела в карточку заказа к нужной строке — не от
+        хорошей жизни: страницы единицы тогда просто не было, и всё
+        про прибор лежало в трёх местах.
+        """
         resp = self.client_http.get(f'/u/{self.roe.pk}/')
 
         self.assertRedirects(
-            resp, f'/repair-orders/{self.order.pk}/#unit-{self.roe.pk}')
+            resp,
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/')
 
     def test_the_unit_row_carries_the_anchor(self):
         """Иначе переход приводит в начало страницы, и мастер ищет
@@ -1892,10 +1899,16 @@ class OrderLabelLinkTests(TestCase):
 
         self.assertContains(resp, f'id="unit-{self.roe.pk}"')
 
-    def test_the_history_of_that_unit_is_one_click_away(self):
-        resp = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+    def test_the_history_of_that_unit_is_two_clicks_away(self):
+        """История ремонтов переехала со строки заказа на страницу
+        единицы: в строке она нужна редко, а место занимала всегда."""
+        row = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+        self.assertContains(
+            row, f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/')
 
-        self.assertContains(resp, f'/equipment/{self.roe.equipment_id}/history/')
+        unit = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/')
+        self.assertContains(unit, f'/equipment/{self.roe.equipment_id}/history/')
 
     def test_the_unit_code_requires_login(self):
         resp = TestClient().get(f'/u/{self.roe.pk}/')
@@ -14348,3 +14361,216 @@ class EquipmentOwnerOnRepeatIntakeTests(TestCase):
         self.equipment.refresh_from_db()
         self.assertEqual(changed, 0)
         self.assertEqual(self.equipment.current_client, self.first)
+
+
+# ============ СТРАНИЦА ЕДИНИЦЫ ОБОРУДОВАНИЯ (v2.76.0) ============
+
+
+class UnitPageTests(TestCase):
+    """Всё про один прибор в одной работе — на одной странице.
+
+    Раньше это лежало в трёх местах: часть в строке карточки заказа,
+    часть в форме правки заказа, часть на дефектации, — и мастер
+    с платой в руках ходил между ними.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='unit_page', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(
+            name='БУАД-7-31', kind='Привод дверей'
+        )
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Электролитические конденсаторы потеряли ёмкость.',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, version=self.version, serial_number='SN-UNIT-1'
+            ),
+            fault_description='Не открывает двери на первом этаже',
+            initial_condition='Корпус цел, пломбы на месте',
+            work_performed='Заменены конденсаторы C12, C13',
+            seal_numbers='7788, 7789',
+            diagnosis='Вздулись конденсаторы в цепи питания',
+            estimated_cost=Decimal('4500.00'),
+        )
+        self.roe.faults.add(self.fault)
+
+    def _url(self):
+        return reverse('repair_order_unit_detail',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_the_page_gathers_what_used_to_lie_in_three_places(self):
+        html = self.http.get(self._url()).content.decode()
+
+        for expected in (
+            'Привод дверей БУАД-7-31.4',          # обозначение с исполнением
+            'SN-UNIT-1',
+            'Не открывает двери на первом этаже',  # приём
+            'Корпус цел, пломбы на месте',
+            'Вздулись конденсаторы в цепи питания',  # диагностика
+            'Электролитические конденсаторы потеряли ёмкость.',
+            'Заменены конденсаторы C12, C13',      # ремонт
+            '7788, 7789',                          # пломбы
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, html)
+
+    def test_the_position_in_the_order_is_shown(self):
+        """Позиция напечатана на наклейке, и человек с коробкой в руках
+        ищет по ней."""
+        second = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-UNIT-2'
+            ),
+        )
+
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, second.pk])
+        ).content.decode()
+
+        self.assertIn('позиция 2 в заказе', html)
+
+    def test_readiness_is_shown_first(self):
+        """С этим вопросом сюда чаще всего и приходят."""
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertIn('Записаны выполненные работы', html)
+        self.assertIn('Готовность', html)
+
+    def test_only_the_parts_of_this_unit_are_listed(self):
+        """Списанные «на заказ целиком» сюда не попадают: программа
+        не знает, в какую железку они ушли, и приписывать наугад нельзя."""
+        part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=10
+        )
+        other = SparePart.objects.create(
+            part_number='R-10K', name='Резистор 10 кОм', current_stock=10
+        )
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=2,
+        )
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=None,
+            part=other, quantity_used=1,
+        )
+
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertIn('C-100u', html)
+        self.assertNotIn('R-10K', html)
+
+    def test_a_unit_of_another_order_is_not_opened_by_a_guessed_address(self):
+        """Иначе по подобранному адресу открылась бы чужая позиция."""
+        other_order = RepairOrder.objects.create(client=self.order.client)
+
+        response = self.http.get(
+            reverse('repair_order_unit_detail', args=[other_order.pk, self.roe.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_page_requires_login(self):
+        self.http.logout()
+
+        response = self.http.get(self._url())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login/', response['Location'])
+
+    def test_tech_cards_are_linked_with_the_units_version(self):
+        """Без исполнения в ссылке мастер увидел бы половину карты
+        и не понял бы, что половины нет."""
+        card = TechCard.objects.create(
+            equipment_model=self.model, title='Разборка корпуса'
+        )
+
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertIn(
+            '%s?version=%d' % (
+                reverse('tech_card_detail', args=[card.pk]), self.version.pk
+            ),
+            html,
+        )
+
+
+class UnitRowOnOrderCardTests(TestCase):
+    """Строка единицы на карточке заказа: клик ведёт на её страницу."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='unit_row', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-ROW-1'
+            ),
+            fault_description='А' * 200,
+        )
+
+    @property
+    def html(self):
+        return self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+    def test_the_serial_number_is_a_real_link(self):
+        """Кликабельной строки мало: ссылка работает и без скриптов,
+        и средней кнопкой мыши в новой вкладке."""
+        html = self.html
+
+        self.assertIn(
+            'href="%s"' % reverse('repair_order_unit_detail',
+                                  args=[self.order.pk, self.roe.pk]),
+            html,
+        )
+        self.assertIn('data-href="%s"' % reverse(
+            'repair_order_unit_detail', args=[self.order.pk, self.roe.pk]), html)
+
+    def test_long_texts_are_cut_in_the_row(self):
+        """Раньше в ячейку шёл весь абзац, и строка вырастала на полэкрана —
+        из-за этого таблица и выглядела тяжёлой."""
+        html = self.html
+
+        self.assertNotIn('А' * 200, html)
+        self.assertIn('А' * 50, html)
+
+    def test_the_anchor_survives(self):
+        """С чек-листа готовности и из списка деталей ссылки ведут
+        на строку — переход по ним не должен сломаться."""
+        self.assertIn('id="unit-%d"' % self.roe.pk, self.html)
+
+    def test_clicks_on_controls_do_not_navigate(self):
+        """Галочка отмечает единицу для печати этикеток пачкой, кнопки
+        ведут каждая в своё место — увести их на страницу единицы
+        значило бы сломать и то, и другое."""
+        detail = (settings.BASE_DIR
+                  / 'core/templates/core/repair_orders/detail.html'
+                  ).read_text(encoding='utf-8')
+
+        self.assertIn("closest('a, button, input, label, select, textarea')", detail)
+        # И выделение текста мышью тоже не переход: серийники отсюда копируют
+        self.assertIn('window.getSelection()', detail)
