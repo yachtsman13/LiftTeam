@@ -24,6 +24,7 @@ from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test import Client as TestClient
+from django.test.utils import CaptureQueriesContext
 from django.test import RequestFactory
 from django.template.loader import render_to_string
 from django.test.utils import CaptureQueriesContext
@@ -14574,3 +14575,180 @@ class UnitRowOnOrderCardTests(TestCase):
         self.assertIn("closest('a, button, input, label, select, textarea')", detail)
         # И выделение текста мышью тоже не переход: серийники отсюда копируют
         self.assertIn('window.getSelection()', detail)
+
+
+# ============ ТРИ МЕЛОЧИ ПО ВИДУ СТРАНИЦ (v2.77.0) ============
+
+
+class ReadinessEverywhereTests(TestCase):
+    """Готовность видна там, где по ней принимают решения: на карточке
+    заказа, в списке заказов и на дашборде.
+
+    Список проверок при этом один на всю программу — иначе три экрана
+    рано или поздно начали бы говорить разное об одном и том же заказе.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='readiness_everywhere', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.client_obj = ClientModel.objects.create(name='МУП «Лифты»')
+
+    def _order(self, status='repair', ready=True, serial='SN-RE-1'):
+        order = RepairOrder.objects.create(client=self.client_obj, status=status)
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number=serial
+            ),
+        )
+        if ready:
+            roe.diagnosis = 'Высохли конденсаторы.'
+            roe.estimated_cost = Decimal('4500.00')
+            roe.work_performed = 'Заменены конденсаторы.'
+            roe.save()
+        return order
+
+    # --- список заказов ---
+
+    def test_the_list_shows_how_many_units_are_done(self):
+        """Чтобы понять, что реально можно отгружать, не открывая
+        каждый заказ."""
+        order = self._order(ready=False)
+        RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-RE-2'
+            ),
+        )
+
+        html = self.http.get(reverse('repair_order_list')).content.decode()
+
+        self.assertIn('Готовность', html)
+        self.assertIn('0 из 2', html)
+
+    def test_a_finished_order_is_marked_as_whole(self):
+        self._order(ready=True)
+
+        html = self.http.get(reverse('repair_order_list')).content.decode()
+
+        self.assertIn('все 1', html)
+
+    def test_a_shipped_order_is_not_alarmed_about(self):
+        """По отгруженному доделывать нечего, и жёлтая отметка была бы
+        ложной тревогой."""
+        self._order(status='shipped', ready=False)
+
+        html = self.http.get(reverse('repair_order_list')).content.decode()
+
+        self.assertIn('0 из 1', html)
+        self.assertNotIn('bg-warning text-dark">0 из 1', html)
+
+    def test_an_order_without_equipment_shows_a_dash(self):
+        """Отгружать нечего — это не «не готово», и тревожить нечем."""
+        RepairOrder.objects.create(client=self.client_obj, status='accepted')
+
+        html = self.http.get(reverse('repair_order_list')).content.decode()
+        cell = html.split('data-label="Готовность">')[1].split('</td>')[0]
+
+        self.assertIn('—', cell)
+        self.assertNotIn('bg-warning', cell)
+
+    def test_readiness_does_not_fan_out_into_queries(self):
+        """Готовность спрашивает и неисправности, и детали по каждой
+        единице: без предзагрузки страница списка уходила бы в сотню
+        запросов.
+
+        Проверяем прирост, а не общее число: на странице есть и другие
+        запросы, в том числе один на заказ ради суммы (он был здесь
+        и раньше). Важно, что готовность к этому не добавляет ничего.
+        """
+        def queries_for(count, tag):
+            RepairOrder.objects.all().delete()
+            Equipment.objects.all().delete()
+            for number in range(count):
+                self._order(serial='SN-%s-%d' % (tag, number))
+            with CaptureQueriesContext(connection) as captured:
+                self.http.get(reverse('repair_order_list'))
+            return len(captured)
+
+        three, six = queries_for(3, 'A'), queries_for(6, 'B')
+
+        # Не больше одного запроса на добавленный заказ — того самого,
+        # что считает сумму. Разошлась бы готовность — прирост был бы
+        # втрое больше
+        self.assertLessEqual(six - three, 3)
+
+    # --- дашборд ---
+
+    def test_the_dashboard_names_what_is_ready_to_ship(self):
+        """Первый вопрос дня, и раньше ответа на него здесь не было
+        вовсе."""
+        ready = self._order(status='ready_for_shipment', ready=True)
+        self._order(status='repair', ready=False, serial='SN-RE-3')
+
+        html = self.http.get(reverse('dashboard')).content.decode()
+
+        self.assertIn('Готово к отгрузке', html)
+        self.assertIn(ready.order_number, html.split('Готово к отгрузке')[1])
+
+    def test_an_unfinished_order_does_not_reach_the_dashboard_block(self):
+        self._order(status='repair', ready=False)
+
+        html = self.http.get(reverse('dashboard')).content.decode()
+
+        self.assertNotIn('Готово к отгрузке', html)
+
+    def test_a_shipped_order_is_no_longer_offered(self):
+        """Его уже отгрузили — предлагать отгрузить снова незачем."""
+        self._order(status='shipped', ready=True)
+
+        html = self.http.get(reverse('dashboard')).content.decode()
+
+        self.assertNotIn('Готово к отгрузке', html)
+
+
+class StatusControlPlacementTests(TestCase):
+    """Смена статуса стоит рядом со значком статуса, а не отдельной
+    карточкой внизу страницы.
+
+    Значок был вверху, а форма под деталями и платежами: на телефоне
+    это долгая прокрутка туда и обратно по нескольку раз в день.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='status_place', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+
+    def test_the_status_form_sits_in_the_order_info_card(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        head, _, tail = html.partition('Оборудование в заказе')
+        self.assertIn(
+            reverse('repair_order_change_status', args=[self.order.pk]), head
+        )
+        self.assertNotIn(
+            reverse('repair_order_change_status', args=[self.order.pk]), tail
+        )
+
+    def test_changing_the_status_still_works(self):
+        response = self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'repair', 'notes': 'взяли в работу'}, follow=True,
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.order.status, 'repair')

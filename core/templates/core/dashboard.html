@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дашборд — LiftTeam v2.76.0{% endblock %}
+{% block title %}Дашборд — LiftTeam v2.77.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -102,6 +102,62 @@
         </div>
     </div>
 </div>
+
+{% comment %}
+    «Что доделано и ждёт отправки» — первый вопрос дня, и раньше ответа
+    на него здесь не было вовсе: открывали список заказов и смотрели
+    каждый по очереди. Заказ попадает сюда, когда по всем его единицам
+    заполнено то, что нужно для документов и склада, — тот же список
+    проверок, что в чек-листе на карточке.
+
+    Ничего не запрещается и здесь: это подсказка, а не разрешение
+    на отгрузку. Мастер видит прибор, а программа нет.
+{% endcomment %}
+{% if ready_to_ship %}
+<div class="card mb-4 border-success">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-truck me-2"></i>Готово к отгрузке — {{ ready_to_ship_count }}</h5>
+        <a href="{% url 'repair_order_list' %}?status=ready_for_shipment" class="btn btn-sm btn-outline-success">
+            Список заказов
+        </a>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive table-scroll">
+            <table class="table table-hover mb-0 list-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>№ заказа</th>
+                        <th>Заказчик</th>
+                        <th class="text-end">Единиц</th>
+                        <th>Статус</th>
+                        <th>Принят</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in ready_to_ship %}
+                    <tr>
+                        <td class="fw-bold" data-label="№ заказа">
+                            <a href="{% url 'repair_order_detail' order.pk %}" class="text-decoration-none">{{ order.order_number }}</a>
+                        </td>
+                        <td data-label="Заказчик">{{ order.client.name }}</td>
+                        <td class="text-end" data-label="Единиц">{{ order.order_equipments.count }}</td>
+                        <td data-label="Статус">
+                            <span class="status-badge bg-{% if order.status == 'ready_for_shipment' %}success{% else %}primary{% endif %}">{{ order.get_status_display }}</span>
+                        </td>
+                        <td data-label="Принят">{{ order.date_received|date:"d.m.Y" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if ready_to_ship_count > 10 %}
+        <div class="p-3 small text-muted">
+            Показаны первые 10 из {{ ready_to_ship_count }}.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
 
 <div class="row g-4">
     <!-- Recent Orders -->

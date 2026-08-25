@@ -173,6 +173,26 @@ def dashboard(request):
         for code, label in RepairOrder.STATUS_CHOICES
     ]
 
+    # Что доделано и ждёт отправки — первый вопрос дня. Раньше ответа
+    # на него на дашборде не было вовсе: приходилось открывать список
+    # заказов и в нём каждый заказ по очереди.
+    #
+    # Берём заказы, ещё не отгруженные, и оставляем те, по которым
+    # заполнено всё, что нужно для документов и склада. Готовность
+    # считается по единицам (READINESS_CHECKS), поэтому нужны и строки
+    # заказа, и то, что спрашивает чек-лист.
+    ready_to_ship = [
+        order for order in (
+            RepairOrder.objects
+            .filter(status__in=('repair', 'ready_for_shipment'))
+            .select_related('client')
+            .prefetch_related('order_equipments__faults',
+                              'order_equipments__details')
+            .order_by('date_received')
+        )
+        if order.readiness()['all_ready']
+    ]
+
     # Должники (не оплаченные заказы)
     debtors = RepairOrder.objects.with_debt().select_related('client')
     total_debt = _total_debt(debtors)
@@ -192,6 +212,8 @@ def dashboard(request):
         'at_minimum_count': at_minimum_count,
         'at_minimum_parts': at_minimum_parts[:10],
         'recent_orders': recent_orders,
+        'ready_to_ship': ready_to_ship[:10],
+        'ready_to_ship_count': len(ready_to_ship),
         'status_stats': status_stats,
         'debtors': debtors[:10],
         'total_debt': total_debt,
@@ -1036,7 +1058,16 @@ def _filter_orders(request):
 def repair_order_list(request):
     orders, filter_context = _filter_orders(request)
 
-    paginator = Paginator(orders, 25)
+    # Готовность считается по единицам, поэтому по каждому заказу нужны
+    # и его строки, и то, что спрашивает чек-лист. Предзагрузка — на одну
+    # страницу списка, а не на всю выборку: без неё двадцать пять заказов
+    # уходили бы в сотню запросов
+    paginator = Paginator(
+        orders.prefetch_related(
+            'order_equipments__faults', 'order_equipments__details'
+        ),
+        25,
+    )
     page = request.GET.get('page')
     page_obj = paginator.get_page(page)
 

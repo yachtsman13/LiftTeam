@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.76.0{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.77.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -120,6 +120,7 @@
                         <th>№ заказа</th>
                         <th>Заказчик</th>
                         <th>Статус</th>
+                        <th>Готовность</th>
                         <th>Оплата</th>
                         <th>Стоимость</th>
                         <th>Дата</th>
@@ -136,6 +137,29 @@
                         <td class="fw-bold" data-label="№ заказа">{{ order.order_number }}</td>
                         <td data-label="Заказчик">{{ order.client.name }}</td>
                         <td data-label="Статус"><span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></td>
+                        {% comment %}
+                            Готовность по единицам — чтобы понять, что
+                            реально можно отгружать, не открывая каждый
+                            заказ. Список проверок тот же, что в чек-листе
+                            на карточке (READINESS_CHECKS).
+
+                            Завершённые и неремонтопригодные заказы
+                            не помечаются: по ним доделывать нечего,
+                            и жёлтая отметка была бы ложной тревогой.
+                        {% endcomment %}
+                        <td data-label="Готовность">
+                            {% with readiness=order.readiness %}
+                            {% if not readiness.total %}
+                            <span class="text-muted">—</span>
+                            {% elif readiness.all_ready %}
+                            <span class="status-badge bg-success">все {{ readiness.total }}</span>
+                            {% elif order.status == 'shipped' or order.status == 'unrepairable' %}
+                            <span class="text-muted">{{ readiness.ready }} из {{ readiness.total }}</span>
+                            {% else %}
+                            <span class="status-badge bg-warning text-dark">{{ readiness.ready }} из {{ readiness.total }}</span>
+                            {% endif %}
+                            {% endwith %}
+                        </td>
                         <td data-label="Оплата"><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></td>
                         <td data-label="Стоимость">{{ order.total_repair_cost }} ₽</td>
                         <td data-label="Дата">{{ order.date_received|date:"d.m.Y" }}</td>
@@ -145,7 +169,7 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="8" class="text-center text-muted py-4">Заказы не найдены</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted py-4">Заказы не найдены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
