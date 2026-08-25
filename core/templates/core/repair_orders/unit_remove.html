@@ -1,0 +1,56 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Убрать из заказа — LiftTeam v2.79.0{% endblock %}
+
+{% block content %}
+{% comment %}
+    Страница подтверждения, а не окно: окна рисует Bootstrap, а он
+    приходит из интернета. Да и переспросить тут дешевле, чем
+    восстанавливать записанное.
+{% endcomment %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Убрать единицу из заказа</h5>
+    </div>
+    <div class="card-body">
+        <p>Убрать <strong>{{ order_equipment.equipment.full_designation }}</strong>
+            (серийный номер {{ order_equipment.equipment.serial_number }})
+            из заказа {{ order.order_number }}?</p>
+
+        <p class="text-muted">
+            Вместе с ней пропадёт всё, что записано по этому прибору
+            в этой работе: заявленная неисправность, диагностика, выполненные
+            работы, пломбы и стоимость. Восстановить это будет нечем.
+        </p>
+
+        {% if details_count %}
+        <div class="alert alert-warning">
+            {% comment %}
+                Про детали надо сказать прямо: их и правда взяли
+                и потратили, склад тут ни при чём.
+            {% endcomment %}
+            На эту единицу списано деталей: <strong>{{ details_count }}</strong>.
+            <strong>На склад они не вернутся</strong> — их взяли и потратили.
+            Списание останется в заказе, но станет «на заказ целиком».
+            Если детали нужно вернуть, сделайте это до удаления, кнопкой
+            возврата в карточке заказа.
+        </div>
+        {% endif %}
+
+        <p class="text-muted">
+            Сам прибор из справочника оборудования никуда не денется —
+            его история ремонтов останется, и принять его снова можно
+            в любой момент.
+        </p>
+
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">
+                <i class="bi bi-trash me-2"></i>Убрать из заказа
+            </button>
+            <a href="{% url 'repair_order_unit_detail' order.pk order_equipment.pk %}"
+               class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

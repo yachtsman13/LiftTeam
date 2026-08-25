@@ -38,6 +38,7 @@ from .forms import OrganizationForm, RepairOrderEquipmentForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
+from .forms import UnitEditForm
 from . import yadisk
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
@@ -185,29 +186,22 @@ class RepairOrderFormErrorTests(TestCase):
         )
         return order, oe
 
-    def _post_edit(self, order, oe, **overrides):
+    def _post_unit(self, order, oe, **overrides):
+        """Поля прибора правятся на его странице: страницы правки заказа
+        больше нет, её работу забрали карточка заказа и страница единицы."""
         data = {
-            'client': self.client_obj.pk,
             'fault_description': '',
-            'invoice_number': '',
-            'invoice_date': '',
-            'payment_status': 'unpaid',
-            'equipments-TOTAL_FORMS': '1',
-            'equipments-INITIAL_FORMS': '1',
-            'equipments-MIN_NUM_FORMS': '0',
-            'equipments-MAX_NUM_FORMS': '1000',
-            'equipments-0-id': oe.pk,
-            'equipments-0-repair_order': order.pk,
-            'equipments-0-equipment': self.equipment.pk,
-            'equipments-0-fault_description': '',
-            'equipments-0-work_performed': '',
-            'equipments-0-seal_numbers': '',
-            'equipments-0-initial_condition': '',
-            'equipments-0-repair_cost': '',
-            'equipments-0-yandex_disk_folder': '',
+            'initial_condition': '',
+            'work_performed': '',
+            'seal_numbers': '',
+            'repair_cost': '',
+            'yandex_disk_folder': '',
         }
         data.update(overrides)
-        return self.client_http.post(f'/repair-orders/{order.pk}/edit/', data)
+        return self.client_http.post(
+            reverse('repair_order_unit_edit', args=[order.pk, oe.pk]),
+            data, follow=True,
+        )
 
     def test_valid_submission_creates_order(self):
         response = self._post()
@@ -216,21 +210,23 @@ class RepairOrderFormErrorTests(TestCase):
 
     def test_invalid_repair_cost_reports_error_and_saves_nothing(self):
         order, oe = self._order_with_equipment()
-        response = self._post_edit(order, oe, **{'equipments-0-repair_cost': '15 000 руб'})
+        response = self._post_unit(order, oe, repair_cost='15 000 руб')
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('repair_cost', response.context['formset'].errors[0])
         oe.refresh_from_db()
         self.assertIsNone(oe.repair_cost)
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Не сохранено' in text for text in texts), texts)
 
     def test_invalid_yandex_link_reports_error_and_saves_nothing(self):
+        """«Папка на диске» словами открывать нечем, а молча сохранённая
+        строка выглядит как рабочая ссылка."""
         order, oe = self._order_with_equipment()
-        response = self._post_edit(order, oe, **{'equipments-0-yandex_disk_folder': 'папка на диске'})
+        response = self._post_unit(order, oe, yandex_disk_folder='папка на диске')
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('yandex_disk_folder', response.context['formset'].errors[0])
         oe.refresh_from_db()
         self.assertEqual(oe.yandex_disk_folder, '')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Не сохранено' in text for text in texts), texts)
 
 
 class RepairOrderIntakeFormTests(TestCase):
@@ -240,8 +236,9 @@ class RepairOrderIntakeFormTests(TestCase):
     и в каком он виде приехал. Счёта, оплаты, диагноза, стоимости,
     выполненных работ и номеров пломб в этот момент не существует —
     счёт выставляют после согласования, пломбы ставят при выдаче.
-    Ни одно поле при этом не потеряно: полная форма открывается
-    по «Редактировать».
+    Ни одно поле при этом не потеряно: у каждого своё место —
+    диагноз и оценка на странице дефектации, работы, пломбы
+    и стоимость на странице единицы, счёт при его выставлении.
     """
 
     INTAKE_ONLY = ['invoice_number', 'invoice_date', 'payment_status']
@@ -284,28 +281,34 @@ class RepairOrderIntakeFormTests(TestCase):
                 self.assertNotIn('equipments-0-%s' % name, body)
                 self.assertNotIn('equipments-__prefix__-%s' % name, body)
 
-    def test_editing_still_offers_every_field(self):
-        """Урезан приём, а не заказ: по «Редактировать» доступно всё."""
+    def test_no_field_was_lost_when_intake_was_shortened(self):
+        """Урезан приём, а не заказ: каждое поле заполняется позже,
+        и у каждого есть своё место. После разбора страницы правки
+        заказа (v2.79.0) этих мест три."""
         order = RepairOrder.objects.create(client=self.client_obj)
-        RepairOrderEquipment.objects.create(
+        roe = RepairOrderEquipment.objects.create(
             repair_order=order, equipment=self.equipment
         )
-        page = self.http.get('/repair-orders/%d/edit/' % order.pk)
-        form_fields = list(page.context['form'].fields)
-        for name in self.INTAKE_ONLY:
-            self.assertIn(name, form_fields)
-        unit_fields = list(page.context['formset'].forms[0].fields)
+
+        # Поля прибора — на его странице
+        unit_fields = list(UnitEditForm(instance=roe).fields)
         for name in self.LATER_PER_UNIT:
-            self.assertIn(name, unit_fields)
+            with self.subTest(field=name):
+                self.assertIn(name, unit_fields)
+
+        # Счёт — при выставлении, статус оплаты — своей формой на карточке
+        card = self.http.get(
+            reverse('repair_order_detail', args=[order.pk])
+        ).content.decode()
+        self.assertIn(reverse('repair_order_change_payment_status', args=[order.pk]), card)
+        self.assertIn(reverse('repair_order_invoice', args=[order.pk]), card)
 
     def test_intake_says_where_the_other_fields_went(self):
         """Иначе мастер решит, что поля пропали, и пойдёт их искать."""
         body = self.http.get('/repair-orders/create/').content.decode()
-        self.assertIn('в акте дефектации и по кнопке «Редактировать»', body)
 
-        order = RepairOrder.objects.create(client=self.client_obj)
-        edit = self.http.get('/repair-orders/%d/edit/' % order.pk).content.decode()
-        self.assertNotIn('в акте дефектации и по кнопке «Редактировать»', edit)
+        self.assertIn('на странице дефектации', body)
+        self.assertIn('на странице единицы', body)
 
     def test_intake_saves_the_order_and_the_unit(self):
         response = self.http.post('/repair-orders/create/', {
@@ -7206,13 +7209,18 @@ class OrderEditLabelButtonTests(TestCase):
             equipment=Equipment.objects.create(model=model, serial_number='SN-EDIT-1'),
         )
 
-    def test_the_edit_page_offers_the_label(self):
-        response = self.client_http.get(f'/repair-orders/{self.order.pk}/edit/')
+    def test_a_saved_unit_offers_the_label(self):
+        """Кнопка этикетки стоит в строке карточки заказа и на странице
+        единицы; страницы правки заказа больше нет."""
+        label = f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/'
 
-        self.assertContains(
-            response,
-            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/label/',
+        card = self.client_http.get(f'/repair-orders/{self.order.pk}/')
+        unit = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/'
         )
+
+        self.assertContains(card, label)
+        self.assertContains(unit, label)
 
     def test_a_new_order_has_nothing_to_print_yet(self):
         """У несохранённой единицы нет ни номера, ни ссылки для кода."""
@@ -7405,8 +7413,11 @@ class FaultTemplateApplyTests(TestCase):
         self.assertFalse(data['success'])
         self.assertEqual(self.order.details.count(), 0)
 
-    def test_the_order_form_lists_only_this_equipments_model_faults(self):
-        response = self.client_http.get(f'/repair-orders/{self.order.pk}/edit/')
+    def test_the_unit_page_lists_only_this_equipments_model_faults(self):
+        roe = self.order.order_equipments.get(equipment=self.equipment)
+        response = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{roe.pk}/'
+        )
 
         self.assertContains(response, self.fault1.name)
         self.assertContains(response, self.fault2.name)
@@ -8320,11 +8331,6 @@ class OrderEquipmentFormsetRowTests(TestCase):
         self.assertIn('id="equipmentEmptyForm"', page)
         self.assertIn('equipments-__prefix__-equipment', page)
 
-    def test_edit_page_carries_empty_form_template(self):
-        page = self.http.get(f'/repair-orders/{self.order.pk}/edit/').content.decode()
-        self.assertIn('id="equipmentEmptyForm"', page)
-        self.assertIn('equipments-__prefix__-equipment', page)
-
     def test_row_markup_lives_in_one_place(self):
         """Заготовка и строки на странице — один и тот же файл: разойдись
         они, добавленная строка отличалась бы от уже стоящих."""
@@ -8335,7 +8341,7 @@ class OrderEquipmentFormsetRowTests(TestCase):
     def test_empty_form_row_has_no_saved_id(self):
         """У заготовки скрытый id пуст — иначе новая единица переписала бы
         собой уже сохранённую."""
-        page = self.http.get(f'/repair-orders/{self.order.pk}/edit/').content.decode()
+        page = self.http.get('/repair-orders/create/').content.decode()
         template = page.split('id="equipmentEmptyForm"')[1]
         self.assertIn('equipments-__prefix__-id', template)
         self.assertNotIn('equipments-__prefix__-id" value="', template)
@@ -10126,17 +10132,17 @@ class BusyEquipmentTests(TestCase):
         self.assertIn(self.free, choices)
         self.assertNotIn(self.busy, choices)
 
-    def test_editing_keeps_the_equipment_of_this_order(self):
+    def test_a_units_own_order_does_not_make_it_busy(self):
+        """`exclude_order` для того и нужен: без него собственные единицы
+        заказа считались бы занятыми в нём же."""
         RepairOrderEquipment.objects.create(
             repair_order=self.order, equipment=self.free
         )
         self.order.status = 'diagnostic'
         self.order.save(update_fields=['status'])
 
-        page = self.http.get('/repair-orders/%d/edit/' % self.order.pk)
-        choices = list(page.context['formset'].forms[0].fields['equipment'].queryset)
-
-        self.assertIn(self.free, choices)
+        self.assertIn(self.free, available_equipment_for_order(self.order))
+        self.assertNotIn(self.free, available_equipment_for_order(None))
 
     def test_the_order_card_offers_only_free_equipment(self):
         page = self.http.get('/repair-orders/%d/' % self.order.pk)
@@ -10256,10 +10262,9 @@ class EquipmentVersionOnQuickCreateTests(TestCase):
         self.assertIsNone(Equipment.objects.get(serial_number='SN-QC-1').version)
 
     def test_the_modal_asks_for_it(self):
-        order = RepairOrder.objects.create(
-            client=ClientModel.objects.create(name='МУП «Лифты»')
-        )
-        page = self.http.get('/repair-orders/%d/edit/' % order.pk).content.decode()
+        """Окно заведения оборудования осталось на приёме заказа —
+        страницы правки заказа больше нет."""
+        page = self.http.get('/repair-orders/create/').content.decode()
 
         self.assertIn('id="ceVersionSelect"', page)
         # прячется атрибутом, а не классом Bootstrap: он приходит из интернета
@@ -14943,3 +14948,221 @@ class UnitQuickActionsTests(TestCase):
         self.assertIn('bi-pencil-square', html)   # записать работы
         self.assertIn('bi-cpu', html)             # списать деталь
         self.assertNotIn('bi-box-arrow-in-right', html)
+
+
+# ============ РАЗБОР СТРАНИЦЫ ПРАВКИ ЗАКАЗА (v2.79.0) ============
+
+
+class OrderEditPageIsGoneTests(TestCase):
+    """Страницы правки заказа больше нет, и её работу забрали три места.
+
+    Оставленная «облегчённой», она означала бы два места для одних и тех
+    же полей — ровно ту беду, которую чинили: статус оплаты правился
+    и там, и своей формой на карточке, и вдобавок пересчитывался сам
+    после внесения платежа.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='order_edit_gone', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.first = ClientModel.objects.create(name='МУП «Лифты»')
+        self.second = ClientModel.objects.create(name='ООО «Подъём»')
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(client=self.first)
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-GONE-1'
+            ),
+        )
+
+    def test_the_address_is_gone(self):
+        self.assertEqual(
+            self.http.get('/repair-orders/%d/edit/' % self.order.pk).status_code,
+            404,
+        )
+
+    def test_nothing_links_to_it_any_more(self):
+        """Ссылка на несуществующую страницу — это «страница не найдена»
+        в руках у человека."""
+        for url in (reverse('repair_order_list'),
+                    reverse('repair_order_detail', args=[self.order.pk])):
+            with self.subTest(page=url):
+                html = self.http.get(url).content.decode()
+                self.assertNotIn('/repair-orders/%d/edit/' % self.order.pk, html)
+
+    def test_the_client_is_changed_from_the_order_card(self):
+        response = self.http.post(
+            reverse('repair_order_edit_info', args=[self.order.pk]),
+            {'client': str(self.second.pk),
+             'fault_description': 'Не включается после грозы'},
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.order.client, self.second)
+        self.assertEqual(self.order.fault_description, 'Не включается после грозы')
+
+    def test_the_card_does_not_offer_the_invoice_fields_twice(self):
+        """Счёт заполняется при выставлении, статус оплаты — своей формой
+        и пересчитывается сам после платежа."""
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        form = html.split('edit-info/')[1].split('</form>')[0]
+
+        for name in ('invoice_number', 'invoice_date', 'payment_status'):
+            with self.subTest(field=name):
+                self.assertNotIn('name="%s"' % name, form)
+
+    def test_only_post_changes_the_order(self):
+        response = self.http.get(
+            reverse('repair_order_edit_info', args=[self.order.pk])
+        )
+
+        self.assertEqual(response.status_code, 405)
+
+
+class UnitRemovalTests(TestCase):
+    """Снятие единицы с заказа — со страницы этой единицы."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='unit_removal', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-RM-1'
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+
+    def _url(self):
+        return reverse('repair_order_unit_remove',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_it_asks_before_removing(self):
+        """Убрать прибор — значит потерять записанное по нему, и
+        переспросить дешевле, чем восстанавливать."""
+        response = self.http.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(RepairOrderEquipment.objects.filter(pk=self.roe.pk).exists())
+        self.assertContains(response, 'Убрать из заказа')
+
+    def test_it_removes_on_post(self):
+        response = self.http.post(self._url())
+
+        self.assertRedirects(
+            response, reverse('repair_order_detail', args=[self.order.pk]))
+        self.assertFalse(RepairOrderEquipment.objects.filter(pk=self.roe.pk).exists())
+
+    def test_the_equipment_itself_survives(self):
+        """Прибор из справочника никуда не девается — его история
+        ремонтов остаётся, и принять его снова можно в любой момент."""
+        self.http.post(self._url())
+
+        self.equipment.refresh_from_db()
+        self.assertTrue(Equipment.objects.filter(pk=self.equipment.pk).exists())
+
+    def test_parts_stay_written_off_and_say_so(self):
+        """Детали и правда взяли и потратили: возврат на склад — своё
+        действие, и делать его молча за человека нельзя."""
+        part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор', current_stock=10
+        )
+        detail = RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=2,
+        )
+
+        page = self.http.get(self._url())
+        self.assertContains(page, 'На склад они не вернутся')
+
+        self.http.post(self._url())
+
+        detail.refresh_from_db()
+        self.assertIsNone(detail.order_equipment)
+        self.assertEqual(detail.quantity_used, 2)
+
+    def test_a_unit_of_another_order_is_not_removed(self):
+        other = RepairOrder.objects.create(client=self.order.client)
+
+        response = self.http.post(
+            reverse('repair_order_unit_remove', args=[other.pk, self.roe.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(RepairOrderEquipment.objects.filter(pk=self.roe.pk).exists())
+
+
+class NewEquipmentFromOrderTests(TestCase):
+    """Прибор, забытый при приёме, заводится с карточки заказа.
+
+    Раньше его заводили окном на странице правки заказа. Страницы больше
+    нет, а окно рисует Bootstrap, который приходит из интернета, — поэтому
+    обычная страница с возвратом обратно.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='new_equipment', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.client_obj = ClientModel.objects.create(name='МУП «Лифты»')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+
+    def test_the_order_card_offers_it(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('Завести новое оборудование', html)
+        self.assertIn('client=%d' % self.client_obj.pk, html)
+
+    def test_the_client_is_offered_as_the_owner(self):
+        """У прибора заказчик и станет владельцем — перевыбирать его
+        руками незачем."""
+        page = self.http.get(
+            reverse('equipment_create'), {'client': self.client_obj.pk}
+        )
+
+        self.assertEqual(
+            page.context['form'].initial.get('current_client'),
+            str(self.client_obj.pk),
+        )
+
+    def test_saving_returns_to_the_order(self):
+        back = reverse('repair_order_detail', args=[self.order.pk])
+
+        response = self.http.post(reverse('equipment_create'), {
+            'model': str(self.model.pk), 'serial_number': 'SN-NEW-1',
+            'current_client': str(self.client_obj.pk), 'next': back,
+        })
+
+        self.assertRedirects(response, back)
+        self.assertTrue(Equipment.objects.filter(serial_number='SN-NEW-1').exists())
+
+    def test_a_foreign_address_is_not_accepted(self):
+        """Иначе кнопка стала бы способом увести человека на постороннюю
+        страницу."""
+        response = self.http.post(reverse('equipment_create'), {
+            'model': str(self.model.pk), 'serial_number': 'SN-NEW-2',
+            'next': 'https://example.com/',
+        })
+
+        self.assertRedirects(response, reverse('equipment_list'))

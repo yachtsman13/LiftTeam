@@ -381,10 +381,10 @@ class RepairOrderEquipmentForm(forms.ModelForm):
         return cleaned
 
 
-RepairOrderEquipmentFormSet = inlineformset_factory(
-    RepairOrder, RepairOrderEquipment, form=RepairOrderEquipmentForm,
-    extra=1, can_delete=True
-)
+# Набора форм на все единицы разом больше нет: страницу правки заказа
+# разобрали в v2.79.0, а её работу забрали карточка заказа (заказчик
+# и описание), страница единицы (поля прибора) и приём по одной единице.
+# Сама форма единицы осталась — от неё наследует форма приёма.
 
 
 # Приём заказа и работа по нему — разные моменты, и знают о заказе они
@@ -397,9 +397,10 @@ RepairOrderEquipmentFormSet = inlineformset_factory(
 # и прятать за ними те три поля, которые он знает.
 #
 # Приём — тот же приём, что и у DefectActForm: поля, которые заполняют
-# в другой момент, живут в форме своего момента. Полная форма никуда
-# не делась и открывается по «Редактировать» — на приёме её просто
-# не показывают, и ни одно поле при этом не потеряно.
+# в другой момент, живут в форме своего момента. Ни одно поле при этом
+# не потеряно: диагноз и стоимость заполняются на странице дефектации,
+# работы, пломбы и неисправности — на странице единицы, счёт — при его
+# выставлении.
 
 class RepairOrderIntakeForm(RepairOrderForm):
     """Заказ в момент приёма: заказчик и что он рассказал.
@@ -900,6 +901,37 @@ class CabinetForm(forms.ModelForm):
         return cleaned
 
 
+class OrderInfoForm(forms.ModelForm):
+    """Заказчик и общее описание — то немногое, что относится к заказу
+    целиком, а не к прибору.
+
+    Раньше это правилось на отдельной странице вместе с полями всех
+    единиц разом, номером счёта и статусом оплаты. Счёт заполняется
+    на своей странице при выставлении, статус оплаты — своей формой
+    и пересчитывается сам после платежа; два места для одного и того же
+    расходятся молча, поэтому здесь их нет.
+    """
+
+    class Meta:
+        model = RepairOrder
+        fields = ['client', 'fault_description']
+        widgets = {
+            'client': forms.Select(attrs={'class': 'form-select'}),
+            'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+        labels = {
+            'client': 'Заказчик',
+            'fault_description': 'Общее описание неисправности',
+        }
+        help_texts = {
+            'fault_description': 'Печатается в акте приёма строкой «Со слов заказчика».',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['client'].queryset = Client.objects.order_by('name')
+
+
 class UnitEditForm(forms.ModelForm):
     """Правка единицы прямо на её странице.
 
@@ -918,6 +950,7 @@ class UnitEditForm(forms.ModelForm):
         fields = [
             'fault_description', 'initial_condition', 'faults',
             'work_performed', 'seal_numbers', 'repair_cost',
+            'yandex_disk_folder',
         ]
         widgets = {
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
@@ -926,6 +959,10 @@ class UnitEditForm(forms.ModelForm):
             'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
             'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+            # Ссылку обычно ставит кнопка «завести папку», но вписать
+            # руками должно быть можно: папку могли завести раньше
+            # программы или переложить
+            'yandex_disk_folder': forms.URLInput(attrs={'class': 'form-control'}),
         }
         labels = {
             'fault_description': 'Со слов заказчика',
@@ -934,6 +971,7 @@ class UnitEditForm(forms.ModelForm):
             'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'repair_cost': 'Стоимость ремонта, ₽',
+            'yandex_disk_folder': 'Папка на Яндекс.Диске',
         }
 
     def __init__(self, *args, **kwargs):

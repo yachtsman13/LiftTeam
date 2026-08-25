@@ -24,6 +24,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.core.paginator import Paginator
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from django.db import transaction
 from asgiref.sync import async_to_sync
@@ -45,8 +46,8 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
-    TechCardForm, TechCardStepFormSet, UnitEditForm,
-    RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
+    TechCardForm, TechCardStepFormSet, UnitEditForm, OrderInfoForm,
+    RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
     CabinetForm, MyNotificationsForm, FaultTypeForm, FaultTypePartFormSet,
@@ -439,15 +440,39 @@ def equipment_export(request):
 
 @login_required
 def equipment_create(request):
+    """Новое оборудование в справочнике.
+
+    `?next=` возвращает туда, откуда пришли, — с карточки заказа,
+    когда прибор забыли внести при приёме. Раньше такое оборудование
+    заводили окном на странице правки заказа; страницы больше нет,
+    а окно рисует Bootstrap, которого может не быть.
+
+    Адрес возврата принимается только свой: чужой превратил бы кнопку
+    в способ увести человека на постороннюю страницу.
+    """
+    next_url = request.POST.get('next') or request.GET.get('next') or ''
+    if not url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        next_url = ''
+
     if request.method == 'POST':
         form = EquipmentForm(request.POST)
         if form.is_valid():
-            form.save()
-            messages.success(request, 'Оборудование добавлено')
-            return redirect('equipment_list')
+            equipment = form.save()
+            messages.success(request, f'{equipment} добавлено в справочник')
+            return redirect(next_url or 'equipment_list')
     else:
-        form = EquipmentForm()
-    return render(request, 'core/equipment/form.html', {'form': form, 'title': 'Новое оборудование'})
+        # Заказчик заказа, из которого пришли: у прибора он и станет
+        # владельцем, а перевыбирать его руками незачем
+        initial = {}
+        client_id = request.GET.get('client', '')
+        if str(client_id).isdigit():
+            initial['current_client'] = client_id
+        form = EquipmentForm(initial=initial)
+    return render(request, 'core/equipment/form.html', {
+        'form': form, 'title': 'Новое оборудование', 'next_url': next_url,
+    })
 
 
 @login_required
@@ -1167,6 +1192,29 @@ def repair_order_create(request):
 
 @login_required
 @require_POST
+def repair_order_edit_info(request, pk):
+    """Заказчик и общее описание заказа — прямо на карточке.
+
+    Всё, что относится к прибору, правится на странице единицы; сюда
+    осталось то, что относится к заказу целиком. Отдельной страницы
+    правки заказа больше нет: она держала те же поля вторым местом,
+    и статус оплаты в ней спорил с формой на карточке.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    form = OrderInfoForm(request.POST, instance=order)
+    if form.is_valid():
+        saved = form.save()
+        # Заказчика могли поставить только сейчас — а владелец
+        # оборудования проставляется от него. Непустого не трогаем
+        saved.assign_equipment_owners()
+        messages.success(request, 'Заказ обновлён')
+    else:
+        messages.error(request, 'Не сохранено: проверьте отмеченные поля')
+    return redirect('repair_order_detail', pk=pk)
+
+
+@login_required
+@require_POST
 def repair_order_add_unit(request, pk):
     """Принять в уже существующий заказ ещё одну единицу — и сразу
     напечатать на неё наклейку.
@@ -1259,6 +1307,7 @@ def repair_order_detail(request, pk):
 
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
+    info_form = OrderInfoForm(instance=order)
     # Для формы «принять ещё единицу»: то, чего в этом заказе ещё нет
     # и что не лежит в другом незакрытом заказе
     available_equipment = (
@@ -1285,46 +1334,9 @@ def repair_order_detail(request, pk):
         'payments': order.payments.select_related('created_by'),
         'payment_form': PaymentForm(),
         'detail_form': detail_form,
+        'info_form': info_form,
         'available_equipment': available_equipment,
         'status_form': status_form,
-    })
-
-
-@login_required
-def repair_order_edit(request, pk):
-    order = get_object_or_404(RepairOrder, pk=pk)
-    old_payment_status = order.payment_status
-    if request.method == 'POST':
-        form = RepairOrderForm(request.POST, instance=order)
-        formset = RepairOrderEquipmentFormSet(
-            request.POST, instance=order, prefix='equipments',
-            form_kwargs={'order': order}
-        )
-        if form.is_valid() and formset.is_valid():
-            saved_order = form.save()
-            formset.save()
-            saved_order.assign_equipment_owners()
-            # Логируем изменение статуса оплаты, если он изменился
-            if saved_order.payment_status != old_payment_status:
-                OrderStatusHistory.objects.create(
-                    order=saved_order,
-                    payment_status=saved_order.payment_status,
-                    changed_by=request.user,
-                    notes=f'Статус оплаты изменён с "{dict(RepairOrder.PAYMENT_STATUS_CHOICES).get(old_payment_status)}" при редактировании заказа'
-                )
-            messages.success(request, 'Заказ обновлён')
-            return redirect('repair_order_detail', pk=order.pk)
-        messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
-    else:
-        form = RepairOrderForm(instance=order)
-        formset = RepairOrderEquipmentFormSet(
-            instance=order, prefix='equipments', form_kwargs={'order': order}
-        )
-    return render(request, 'core/repair_orders/form.html', {
-        'form': form,
-        'formset': formset,
-        'title': f'Редактирование заказа {order.order_number}',
-        'order': order
     })
 
 
@@ -4406,6 +4418,34 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
         'materials': equipment.model.materials_for(equipment.version),
         'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
         'repairs_count': equipment.repair_orders.count(),
+    })
+
+
+@login_required
+def repair_order_unit_remove(request, order_pk, roe_pk):
+    """Убрать единицу из заказа.
+
+    Отдельная страница подтверждения, а не окно: убрать прибор из заказа
+    — это потерять по нему записанные работы, дефектацию и пломбы,
+    и переспросить тут дешевле, чем восстанавливать.
+
+    **Детали, списанные на эту единицу, со склада не возвращаются.**
+    Их и правда взяли и потратили; связь с единицей просто обнуляется,
+    и списание становится «на заказ целиком». Возврат на склад — своё
+    действие, и делать его молча за человека нельзя.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+
+    if request.method == 'POST':
+        title = str(order_equipment.equipment)
+        order_equipment.delete()
+        messages.success(request, f'{title} убрано из заказа')
+        return redirect('repair_order_detail', pk=order_pk)
+
+    return render(request, 'core/repair_orders/unit_remove.html', {
+        'order': order_equipment.repair_order,
+        'order_equipment': order_equipment,
+        'details_count': order_equipment.details.count(),
     })
 
 

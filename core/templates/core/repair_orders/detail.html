@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.78.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.79.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -94,7 +94,6 @@ document.addEventListener('DOMContentLoaded', function () {
             <i class="bi bi-receipt me-2"></i>{% if order.invoice_sent_at %}Счёт выставлен{% else %}Счёт{% endif %}
         </a>
         {% endif %}
-        <a href="{% url 'repair_order_edit' order.pk %}" class="btn btn-outline-primary me-2"><i class="bi bi-pencil me-2"></i>Редактировать</a>
         <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
     </div>
 </div>
@@ -157,6 +156,41 @@ document.addEventListener('DOMContentLoaded', function () {
                         <div class="col-md-3 align-self-end">
                             <button type="submit" class="btn btn-warning w-100">
                                 <i class="bi bi-arrow-repeat me-2"></i>Изменить статус
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                {% comment %}
+                    Заказчик и общее описание — то немногое, что относится
+                    к заказу целиком, а не к прибору. Отдельная форма,
+                    а не общая со статусом: смена статуса пишет историю
+                    и шлёт оповещение заказчику, и складывать её
+                    с правкой полей нельзя.
+
+                    Номера счёта и статуса оплаты здесь нет намеренно:
+                    счёт заполняется при выставлении на своей странице,
+                    статус оплаты правится своей формой ниже
+                    и пересчитывается сам после платежа.
+                {% endcomment %}
+                <hr>
+                <form method="post" action="{% url 'repair_order_edit_info' order.pk %}">
+                    {% csrf_token %}
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1">{{ info_form.client.label }}</label>
+                            {{ info_form.client }}
+                            {% if info_form.client.errors %}<div class="text-danger small">{{ info_form.client.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small mb-1">{{ info_form.fault_description.label }}</label>
+                            {{ info_form.fault_description }}
+                            <div class="form-text">{{ info_form.fault_description.help_text }}</div>
+                        </div>
+                        <div class="col-md-3 align-self-start">
+                            <label class="form-label small mb-1 d-none d-md-block">&nbsp;</label>
+                            <button type="submit" class="btn btn-outline-primary w-100">
+                                <i class="bi bi-check-lg me-2"></i>Сохранить
                             </button>
                         </div>
                     </div>
@@ -346,6 +380,18 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <option value="{{ eq.pk }}">{{ eq }}</option>
                                 {% endfor %}
                             </select>
+                            {% comment %}
+                                Прибор, которого нет в справочнике, заводится
+                                отсюда же: страницей, а не окном — окна рисует
+                                Bootstrap, а он приходит из интернета.
+                                Возврат сюда и заказчик подставляются адресом.
+                            {% endcomment %}
+                            <div class="form-text">
+                                Нет в списке?
+                                <a href="{% url 'equipment_create' %}?client={{ order.client.pk }}&next={{ request.path|urlencode }}">
+                                    Завести новое оборудование
+                                </a>
+                            </div>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label small mb-1" for="addUnitFault">Неисправность</label>
@@ -362,11 +408,6 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <i class="bi bi-printer me-1"></i>Принять и печатать
                             </button>
                         </div>
-                    </div>
-                    <div class="form-text">
-                        Нового оборудования тут нет — его заводят при
-                        <a href="{% url 'repair_order_edit' order.pk %}">редактировании заказа</a>.
-                        Приезжавшее раньше проще отсканировать.
                     </div>
                 </form>
             </div>

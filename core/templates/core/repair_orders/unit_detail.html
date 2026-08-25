@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.78.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.79.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -248,6 +248,17 @@ document.addEventListener('DOMContentLoaded', function () {
                         {{ form.repair_cost }}
                         {% if form.repair_cost.errors %}<div class="text-danger small">{{ form.repair_cost.errors.0 }}</div>{% endif %}
                     </div>
+                    {% comment %}
+                        Ссылку на папку обычно ставит кнопка «завести
+                        папку» справа, но вписать руками должно быть
+                        можно: папку могли завести раньше программы
+                        или переложить.
+                    {% endcomment %}
+                    <div class="col-12">
+                        <label class="form-label">{{ form.yandex_disk_folder.label }}</label>
+                        {{ form.yandex_disk_folder }}
+                        {% if form.yandex_disk_folder.errors %}<div class="text-danger small">{{ form.yandex_disk_folder.errors.0 }}</div>{% endif %}
+                    </div>
                 </div>
             </div>
         </div>
@@ -391,6 +402,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 </a>
                 <a href="{% url 'equipment_edit' equipment.pk %}" class="btn btn-sm btn-outline-secondary">
                     <i class="bi bi-pencil me-1"></i>Карточка
+                </a>
+                {% comment %}
+                    Снятие единицы с заказа — здесь, а не в форме правки
+                    заказа: правки заказа больше нет, а решение это
+                    по одному прибору. Подтверждение на своей странице.
+                {% endcomment %}
+                <a href="{% url 'repair_order_unit_remove' order.pk order_equipment.pk %}"
+                   class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-x-lg me-1"></i>Убрать из заказа
                 </a>
             </div>
         </div>

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.78.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.79.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -13,7 +13,7 @@
             Возврат к списку вместе с отбором, с которым его открывали:
             иначе после «Назад» приходилось искать заново.
         {% endcomment %}
-        <a href="{{ back_url|default:'/equipment/' }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+        <a href="{% firstof next_url back_url '/equipment/' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
     </div>
 </div>
 
@@ -21,6 +21,12 @@
     <div class="card-body">
         <form method="post">
             {% csrf_token %}
+            {% comment %}
+                Куда вернуться после сохранения. Приходит с карточки заказа,
+                когда прибор забыли внести при приёме; чужой адрес
+                представление не принимает.
+            {% endcomment %}
+            {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
             <div class="row g-3">
                 {% for field in form %}
                 <div class="col-md-6">
@@ -34,7 +40,7 @@
             </div>
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
-                <a href="{{ back_url|default:'/equipment/' }}" class="btn btn-outline-secondary">Отмена</a>
+                <a href="{% firstof next_url back_url '/equipment/' %}" class="btn btn-outline-secondary">Отмена</a>
             </div>
         </form>
     </div>

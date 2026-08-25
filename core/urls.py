@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.78.0
+v2.79.0
 """
 from django.urls import path
 from . import views
@@ -70,6 +70,7 @@ urlpatterns = [
     path('repair-orders/export/', views.repair_order_export, name='repair_order_export'),
     path('repair-orders/labels/', views.repair_order_labels_batch, name='repair_order_labels_batch'),
     path('repair-orders/<int:pk>/add-unit/', views.repair_order_add_unit, name='repair_order_add_unit'),
+    path('repair-orders/<int:pk>/edit-info/', views.repair_order_edit_info, name='repair_order_edit_info'),
     path('repair-orders/<int:pk>/details/<int:detail_pk>/return/', views.repair_order_return_detail, name='repair_order_return_detail'),
     path('repair-orders/<int:pk>/details/<int:detail_pk>/write-off/', views.repair_order_write_off_detail, name='repair_order_write_off_detail'),
     path('repair-orders/<int:pk>/details/<int:detail_pk>/cancel/', views.repair_order_cancel_planned_detail, name='repair_order_cancel_planned_detail'),
@@ -77,7 +78,6 @@ urlpatterns = [
     path('repair-orders/bulk-status/', views.repair_order_bulk_status, name='repair_order_bulk_status'),
     path('repair-orders/create/', views.repair_order_create, name='repair_order_create'),
     path('repair-orders/<int:pk>/', views.repair_order_detail, name='repair_order_detail'),
-    path('repair-orders/<int:pk>/edit/', views.repair_order_edit, name='repair_order_edit'),
     path('repair-orders/<int:pk>/delete/', views.repair_order_delete, name='repair_order_delete'),
     path('repair-orders/<int:pk>/add-detail/', views.repair_order_add_detail, name='repair_order_add_detail'),
     path('repair-orders/<int:pk>/apply-fault-template/', views.repair_order_apply_fault_template, name='repair_order_apply_fault_template'),
@@ -89,6 +89,7 @@ urlpatterns = [
     # наклейка с прибора (короткий адрес /u/<id>/).
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/', views.repair_order_unit_detail, name='repair_order_unit_detail'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/edit/', views.repair_order_unit_edit, name='repair_order_unit_edit'),
+    path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/remove/', views.repair_order_unit_remove, name='repair_order_unit_remove'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/label/', views.repair_order_equipment_label, name='repair_order_equipment_label'),
     path('repair-orders/<int:pk>/act/receive/', views.repair_order_act_receive, name='repair_order_act_receive'),
     path('repair-orders/<int:pk>/act/complete/', views.repair_order_act_complete, name='repair_order_act_complete'),
