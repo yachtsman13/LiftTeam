@@ -13533,3 +13533,242 @@ class MediaInBackupTests(SimpleTestCase):
 
         self.assertIn('location /media/', conf)
         self.assertIn('alias /opt/lifteam/media/;', conf)
+
+
+# ============ ГОТОВНОСТЬ ЕДИНИЦЫ И ЧЕК-ЛИСТ (v2.71.0) ============
+
+
+class UnitReadinessTests(TestCase):
+    """Что по каждому прибору сделано, а что осталось.
+
+    Заказ один, а приборов в нём пять, и идут они не в ногу. Статус заказа
+    об этом не говорит ничего: перед отгрузкой приходилось открывать
+    единицы по очереди и вспоминать, что по ним не заполнено.
+
+    Отдельного поля состояния у единицы нет намеренно: любое такое поле
+    проставляют руками и забывают, и оно начинает врать.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='readiness_admin', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-READY-1'
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+
+    def _codes(self, roe=None):
+        return [check['code'] for check in (roe or self.roe).readiness_pending]
+
+    def _finish(self, roe=None):
+        """Заполнить всё, что чек-лист спрашивает."""
+        roe = roe or self.roe
+        roe.diagnosis = 'Высохли конденсаторы в цепи питания.'
+        roe.estimated_cost = Decimal('4500.00')
+        roe.work_performed = 'Заменены конденсаторы C12, C13.'
+        roe.save()
+        return roe
+
+    def test_a_fresh_unit_is_not_ready_and_says_why(self):
+        self.assertFalse(self.roe.is_ready)
+        # Запланированных деталей нет — и требовать по ним нечего:
+        # пункт есть в списке проверок, но выполнен
+        self.assertEqual(self._codes(), ['defect_act', 'price', 'work'])
+        self.assertEqual(len(self.roe.readiness()), 4)
+
+    def test_a_filled_unit_is_ready(self):
+        self._finish()
+
+        self.assertTrue(self.roe.is_ready)
+        self.assertEqual(self.roe.readiness_label, 'Готова')
+
+    def test_a_warranty_repair_is_not_asked_for_a_price(self):
+        """«Назначьте стоимость» на гарантийном ремонте — ложная тревога,
+        а к ложным тревогам привыкают и перестают читать все остальные."""
+        self.roe.warranty_case = 'warranty'
+        self.roe.diagnosis = 'Отказал драйвер.'
+        self.roe.work_performed = 'Заменён драйвер.'
+        self.roe.save()
+
+        self.assertNotIn('price', [c['code'] for c in self.roe.readiness()])
+        self.assertTrue(self.roe.is_ready)
+
+    def test_a_non_warranty_repair_is_asked_for_a_price(self):
+        self.roe.warranty_case = 'non_warranty'
+        self.roe.save()
+
+        self.assertIn('price', self._codes())
+
+    def test_a_planned_part_keeps_the_unit_unfinished(self):
+        """Деталь числится нужной по ремонту, но со склада не взята —
+        значит работа не закончена, чем бы ни были заполнены поля."""
+        self._finish()
+        part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=0
+        )
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=2, is_planned=True,
+        )
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self._codes(), ['planned_parts'])
+        self.assertEqual(self.roe.readiness_label, 'Осталось 1')
+
+    def test_a_written_off_part_does_not_keep_it_unfinished(self):
+        self._finish()
+        part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=10
+        )
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=2, is_planned=False,
+        )
+
+        self.roe.refresh_from_db()
+        self.assertTrue(self.roe.is_ready)
+
+    def test_whitespace_is_not_recorded_work(self):
+        """Пробел в поле — это не запись о работе."""
+        self.roe.work_performed = '   \n '
+        self.roe.save()
+
+        self.assertIn('work', self._codes())
+
+    def test_the_order_is_ready_only_when_every_unit_is(self):
+        """Отгружают коробку, а не статус."""
+        self._finish()
+        second = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-READY-2'
+            ),
+        )
+
+        readiness = self.order.readiness()
+        self.assertEqual(readiness['total'], 2)
+        self.assertEqual(readiness['ready'], 1)
+        self.assertEqual(readiness['pending'], [second])
+        self.assertFalse(readiness['all_ready'])
+
+    def test_an_order_without_equipment_is_not_ready(self):
+        """Отгружать нечего — это не «готово»."""
+        empty = RepairOrder.objects.create(client=self.order.client)
+
+        self.assertFalse(empty.readiness()['all_ready'])
+
+    def test_every_check_has_a_reason_written_down(self):
+        """Пункт без объяснения читается как придирка программы."""
+        for check in self.roe.readiness():
+            with self.subTest(code=check['code']):
+                self.assertTrue(check['label'])
+                self.assertTrue(check['hint'])
+
+
+class ReadinessScreensTests(TestCase):
+    """Где готовность видна и где о ней предупреждают."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='readiness_screens', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»'),
+            status='ready_for_shipment',
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-SCREEN-1'
+            ),
+        )
+
+    def test_the_order_card_lists_what_is_left(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('Готовность к отгрузке', html)
+        self.assertIn('Заполнена дефектация', html)
+        self.assertIn('Осталось 3', html)
+
+    def test_a_finished_order_says_so_instead_of_an_empty_card(self):
+        self.roe.diagnosis = 'Высохли конденсаторы.'
+        self.roe.estimated_cost = Decimal('4500.00')
+        self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.save()
+
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('заполнено всё', html.lower())
+        self.assertIn('Готова', html)
+
+    def test_shipping_warns_but_does_not_forbid(self):
+        """Мастер видит прибор, а программа нет. Запрет означал бы, что
+        статус проставляют «как-нибудь», лишь бы программа пропустила."""
+        response = self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'shipped', 'notes': ''}, follow=True,
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, 'shipped')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(
+            any('Осталась работа по оборудованию' in text for text in texts),
+            texts,
+        )
+        self.assertTrue(any('SN-SCREEN-1' in text for text in texts), texts)
+
+    def test_no_warning_when_everything_is_filled(self):
+        self.roe.diagnosis = 'Высохли конденсаторы.'
+        self.roe.estimated_cost = Decimal('4500.00')
+        self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.save()
+
+        response = self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'shipped', 'notes': ''}, follow=True,
+        )
+
+        texts = [str(m) for m in response.context['messages']]
+        self.assertFalse(any('Осталась работа' in text for text in texts), texts)
+
+    def test_no_warning_on_an_ordinary_status_step(self):
+        """Недоделки на пути «в ремонт» — это не недоделки, а работа,
+        которую ещё не начали."""
+        self.order.status = 'accepted'
+        self.order.save()
+
+        response = self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'repair', 'notes': ''}, follow=True,
+        )
+
+        texts = [str(m) for m in response.context['messages']]
+        self.assertFalse(any('Осталась работа' in text for text in texts), texts)
+
+    def test_bulk_shipment_shows_readiness_before_it_happens(self):
+        html = self.http.get(
+            reverse('repair_order_bulk_status'), {'ids': str(self.order.pk)}
+        ).content.decode()
+
+        self.assertIn('осталась работа по 1 из 1', html)
+        # и всё-таки отгрузить даёт
+        self.assertNotIn('disabled', html.split('Отгрузить')[0][-200:])

@@ -1206,7 +1206,15 @@ def repair_order_detail(request, pk):
     )
     details = order.details.select_related('part', 'order_equipment__equipment__model')
     history = order.status_history.select_related('changed_by').order_by('-changed_at')
-    order_equipments = list(order.order_equipments.select_related('equipment__model').order_by('id'))
+    # faults и details — ради готовности единицы: она спрашивает и то,
+    # и другое по каждой строке, и без предзагрузки карточка заказа
+    # с пятью приборами делала бы десяток лишних запросов
+    order_equipments = list(
+        order.order_equipments
+        .select_related('equipment__model')
+        .prefetch_related('faults', 'details')
+        .order_by('id')
+    )
 
     # Гарантия по прошлым ремонтам: текущий заказ исключён, иначе сразу после
     # его завершения он же и попадал бы в «повторное обращение по гарантии»
@@ -1215,6 +1223,8 @@ def repair_order_detail(request, pk):
     )
     for oe in order_equipments:
         oe.previous_warranty = previous_warranty.get(oe.equipment_id)
+
+    readiness_pending = [oe for oe in order_equipments if not oe.is_ready]
 
     detail_form = RepairOrderDetailForm()
     status_form = StatusChangeForm()
@@ -1236,6 +1246,10 @@ def repair_order_detail(request, pk):
         'details': details,
         'history': history,
         'order_equipments': order_equipments,
+        # Готовность считаем по уже загруженным строкам, а не заново:
+        # order.readiness() сходил бы в базу второй раз за тем же самым
+        'readiness_pending': readiness_pending,
+        'readiness_ready': len(order_equipments) - len(readiness_pending),
         'details_cost': details_cost,
         'payments': order.payments.select_related('created_by'),
         'payment_form': PaymentForm(),
@@ -1633,7 +1647,40 @@ def repair_order_change_status(request, pk):
         notifications.notify_order_status(order, changed_by=request.user)
 
         messages.success(request, f'Статус изменён на «{order.get_status_display()}»')
+        _warn_about_unfinished_units(request, order, new_status)
     return redirect('repair_order_detail', pk=pk)
+
+
+# Статусы, при которых недоделки по единицам стоит называть вслух: дальше
+# прибор уезжает к заказчику, и незаполненный акт всплывёт уже у него.
+READINESS_WARNING_STATUSES = ('ready_for_shipment', 'shipped')
+
+
+def _warn_about_unfinished_units(request, order, new_status):
+    """Сказать, по каким единицам осталась работа.
+
+    Именно сказать, а не запретить: мастер видит прибор, а программа нет.
+    Бывает ремонт, где записывать нечего, и запрет здесь означал бы, что
+    статус проставляют «как-нибудь», лишь бы программа пропустила.
+
+    Перечисляем не больше трёх единиц: в сообщении на весь экран список
+    из десяти всё равно не читают, а полный разбор стоит карточкой
+    на самой странице заказа.
+    """
+    if new_status not in READINESS_WARNING_STATUSES:
+        return
+    pending = order.readiness()['pending']
+    if not pending:
+        return
+    shown = ', '.join(unit.equipment.serial_number for unit in pending[:3])
+    if len(pending) > 3:
+        shown += f' и ещё {len(pending) - 3}'
+    messages.warning(
+        request,
+        f'Осталась работа по оборудованию ({len(pending)} из '
+        f'{order.order_equipments.count()}): {shown}. Что именно — '
+        f'в чек-листе готовности на карточке заказа.'
+    )
 
 
 # Единственный переход, разрешённый массовой сменой статуса. Курьер обычно
@@ -1659,7 +1706,13 @@ def repair_order_bulk_status(request):
         RepairOrder.objects
         .filter(pk__in=[value for value in ids if str(value).isdigit()])
         .select_related('client')
-        .prefetch_related('order_equipments__equipment__model')
+        .prefetch_related(
+            'order_equipments__equipment__model',
+            # Готовность спрашивает и то, и другое по каждой единице:
+            # без предзагрузки страница подтверждения на десяток заказов
+            # делала бы сотню запросов
+            'order_equipments__faults', 'order_equipments__details',
+        )
         .order_by('pk')
     )
 

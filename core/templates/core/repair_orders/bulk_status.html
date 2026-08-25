@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Массовая отгрузка заказов — LiftTeam v2.70.0{% endblock %}
+{% block title %}Массовая отгрузка заказов — LiftTeam v2.71.0{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -105,14 +105,33 @@
                 <div class="table-responsive table-scroll mb-3">
                     <table class="table table-sm list-table">
                         <thead class="table-light">
-                            <tr><th>№ заказа</th><th>Заказчик</th></tr>
+                            <tr><th>№ заказа</th><th>Заказчик</th><th>Готовность</th></tr>
                         </thead>
                         <tbody>
+                            {% comment %}
+                                Недоделки называются вслух, но отгрузку
+                                не останавливают: мастер видит прибор,
+                                а программа нет. Курьер уже стоит, и запрет
+                                означал бы, что статус проставляют
+                                «как-нибудь», лишь бы программа пропустила.
+                            {% endcomment %}
                             {% for order in eligible %}
+                            {% with readiness=order.readiness %}
                             <tr>
                                 <td class="fw-bold" data-label="№ заказа">{{ order.order_number }}</td>
                                 <td data-label="Заказчик">{{ order.client.name }}</td>
+                                <td data-label="Готовность">
+                                    {% if readiness.all_ready %}
+                                    <span class="badge bg-success">Заполнено всё</span>
+                                    {% else %}
+                                    <a href="{% url 'repair_order_detail' order.pk %}#readiness"
+                                       class="badge bg-warning text-dark text-decoration-none" target="_blank">
+                                        осталась работа по {{ readiness.pending|length }} из {{ readiness.total }}
+                                    </a>
+                                    {% endif %}
+                                </td>
                             </tr>
+                            {% endwith %}
                             {% endfor %}
                         </tbody>
                     </table>

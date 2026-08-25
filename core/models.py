@@ -1632,6 +1632,22 @@ class RepairOrder(models.Model):
         start = getattr(settings, 'TBANK_INVOICE_NUMBER_START', 1)
         return str(max(biggest + 1, start))
 
+    def readiness(self):
+        """Готовность заказа по единицам: (готово, всего, что осталось).
+
+        Заказ целиком готов тогда, когда готова каждая единица: отгружают
+        коробку, а не статус. Заказ без единиц готовым не считается —
+        отгружать нечего.
+        """
+        units = list(self.order_equipments.all())
+        pending = [unit for unit in units if not unit.is_ready]
+        return {
+            'total': len(units),
+            'ready': len(units) - len(pending),
+            'pending': pending,
+            'all_ready': bool(units) and not pending,
+        }
+
     def legal_entity(self):
         """От какого юрлица идут документы по этому заказу.
 
@@ -1968,6 +1984,75 @@ class RepairOrderEquipment(models.Model):
         руками в поле диагностики.
         """
         return self.document_fault_text(self.diagnosis)
+
+    # --- Готовность единицы ---
+    # Заказ один, а приборов в нём пять, и идут они не в ногу: по одному
+    # акт подписан и работы записаны, по другому не заполнено ничего.
+    # Статус заказа об этом не говорит ничего, и перед отгрузкой каждый
+    # раз приходилось открывать единицы по очереди и вспоминать, что
+    # по ним осталось.
+    #
+    # Отдельного поля состояния у единицы нет намеренно: любое такое поле
+    # проставляют руками и забывают, и оно начинает врать. Здесь всё
+    # выводится из того, что уже заполнено, — соврать нечему.
+    #
+    # Список проверок один на всю программу: карточка заказа, отметка
+    # в списке единиц и предупреждение при смене статуса читают его,
+    # а не перечисляют условия каждая по-своему.
+
+    READINESS_CHECKS = (
+        ('defect_act', 'Заполнена дефектация',
+         'Без неё нечего печатать в акте, и заказчик не знает, за что платит.'),
+        ('price', 'Назначена стоимость',
+         'Без неё в коммерческом предложении по этой единице пусто.'),
+        ('work', 'Записаны выполненные работы',
+         'Без них акт выполненных работ по этой единице пуст.'),
+        ('planned_parts', 'Запланированные детали списаны',
+         'Деталь числится нужной по ремонту, но со склада не взята.'),
+    )
+
+    def readiness(self):
+        """Что по этой единице сделано, а что осталось.
+
+        Возвращает список словарей `{code, label, hint, done}` — в том
+        порядке, в каком работу и делают. Пункт, который к этой единице
+        не относится, в список не попадает вовсе: «назначьте стоимость»
+        на гарантийном ремонте — это ложная тревога, а к ложным тревогам
+        привыкают и перестают читать все остальные.
+        """
+        done = {
+            'defect_act': self.has_defect_act,
+            'price': self.estimated_cost is not None,
+            'work': bool(self.work_performed.strip()),
+            'planned_parts': not any(
+                detail.is_planned for detail in self.details.all()
+            ),
+        }
+        # Гарантийный ремонт заказчику не выставляют — спрашивать
+        # стоимость незачем
+        skip = {'price'} if self.warranty_case == 'warranty' else set()
+        return [
+            {'code': code, 'label': label, 'hint': hint, 'done': done[code]}
+            for code, label, hint in self.READINESS_CHECKS
+            if code not in skip
+        ]
+
+    @property
+    def readiness_pending(self):
+        """Невыполненные пункты — то, что осталось сделать."""
+        return [check for check in self.readiness() if not check['done']]
+
+    @property
+    def is_ready(self):
+        return not self.readiness_pending
+
+    @property
+    def readiness_label(self):
+        """Короткая отметка для списка единиц."""
+        pending = self.readiness_pending
+        if not pending:
+            return 'Готова'
+        return 'Осталось %d' % len(pending)
 
     # --- Сложность ремонта ---
     # Поле `repair_complexity` осталось на месте и правится руками: мастер
