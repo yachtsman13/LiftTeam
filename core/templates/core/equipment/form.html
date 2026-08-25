@@ -1,6 +1,89 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.79.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.80.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * В выборе исполнения — только исполнения выбранной модели.
+ *
+ * Раньше список приходил целиком: все исполнения всех моделей, сотни
+ * строк, из которых к прибору относятся одна-две. Чужое можно было
+ * выбрать, и отказ приходил уже после «Сохранить».
+ *
+ * Сменили модель — выбранное исполнение снимается: к новой модели оно
+ * не относится, и молча оставлять его нельзя. Об этом сказано строкой
+ * под полем, а не молчанием.
+ *
+ * Данные те же, что у окна заведения оборудования при приёме заказа
+ * (ajax_equipment_model_list): один источник, одно поведение.
+ * LiftTeamWS.fetch — чтобы обрыв связи поднял общую полосу вверху
+ * страницы, а не выглядел как «исполнений нет».
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var modelField = document.getElementById('id_model');
+    var versionField = document.getElementById('id_version');
+    if (!modelField || !versionField) return;
+
+    var note = document.createElement('div');
+    note.className = 'form-text';
+    note.hidden = true;
+    versionField.parentNode.appendChild(note);
+
+    var emptyLabel = versionField.options.length ? versionField.options[0].text : 'Без версии';
+    var byModel = {};
+    var chosen = versionField.value;
+
+    function fill(modelId, keepChosen) {
+        var versions = byModel[String(modelId)] || [];
+        var previous = versionField.value;
+        versionField.innerHTML = '';
+
+        var blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = emptyLabel;
+        versionField.appendChild(blank);
+
+        versions.forEach(function (version) {
+            var option = document.createElement('option');
+            option.value = version.id;
+            option.textContent = version.name;
+            versionField.appendChild(option);
+        });
+
+        var wanted = keepChosen ? chosen : previous;
+        var kept = versions.some(function (v) { return String(v.id) === String(wanted); });
+        versionField.value = kept ? wanted : '';
+
+        // Молчать нельзя: исполнение исчезло из поля, и человек решит,
+        // что программа его потеряла
+        note.hidden = !(previous && !kept);
+        note.textContent = 'Исполнение снято: к выбранной модели оно не относится.';
+        if (!versions.length) {
+            note.hidden = false;
+            note.textContent = 'У этой модели исполнений не заведено.';
+        }
+    }
+
+    LiftTeamWS.fetch('{% url "ajax_equipment_model_list" %}')
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+            (data.models || []).forEach(function (model) {
+                byModel[String(model.id)] = model.versions || [];
+            });
+            fill(modelField.value, true);
+            modelField.addEventListener('change', function () {
+                fill(modelField.value, false);
+            });
+        })
+        .catch(function () {
+            // Список не пришёл — оставляем как есть: полный выбор хуже
+            // отфильтрованного, но лучше пустого. Отказ на сервере всё
+            // равно не пропустит чужое исполнение
+        });
+});
+</script>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">

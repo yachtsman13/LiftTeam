@@ -13621,16 +13621,19 @@ class UnitReadinessTests(TestCase):
         """Заполнить всё, что чек-лист спрашивает."""
         roe = roe or self.roe
         roe.diagnosis = 'Высохли конденсаторы в цепи питания.'
-        roe.estimated_cost = Decimal('4500.00')
         roe.work_performed = 'Заменены конденсаторы C12, C13.'
+        # Стоимость по факту, а не оценка из дефектации: по ней считается
+        # сумма заказа и выставляется счёт
+        roe.repair_cost = Decimal('4500.00')
         roe.save()
         return roe
 
     def test_a_fresh_unit_is_not_ready_and_says_why(self):
         self.assertFalse(self.roe.is_ready)
         # Запланированных деталей нет — и требовать по ним нечего:
-        # пункт есть в списке проверок, но выполнен
-        self.assertEqual(self._codes(), ['defect_act', 'price', 'work'])
+        # пункт есть в списке проверок, но выполнен. Порядок — по ходу
+        # работы: вскрыли, починили, взяли детали, посчитали
+        self.assertEqual(self._codes(), ['defect_act', 'work', 'repair_cost'])
         self.assertEqual(len(self.roe.readiness()), 4)
 
     def test_a_filled_unit_is_ready(self):
@@ -13647,14 +13650,14 @@ class UnitReadinessTests(TestCase):
         self.roe.work_performed = 'Заменён драйвер.'
         self.roe.save()
 
-        self.assertNotIn('price', [c['code'] for c in self.roe.readiness()])
+        self.assertNotIn('repair_cost', [c['code'] for c in self.roe.readiness()])
         self.assertTrue(self.roe.is_ready)
 
     def test_a_non_warranty_repair_is_asked_for_a_price(self):
         self.roe.warranty_case = 'non_warranty'
         self.roe.save()
 
-        self.assertIn('price', self._codes())
+        self.assertIn('repair_cost', self._codes())
 
     def test_a_planned_part_keeps_the_unit_unfinished(self):
         """Деталь числится нужной по ремонту, но со склада не взята —
@@ -13755,8 +13758,8 @@ class ReadinessScreensTests(TestCase):
 
     def test_a_finished_order_says_so_instead_of_an_empty_card(self):
         self.roe.diagnosis = 'Высохли конденсаторы.'
-        self.roe.estimated_cost = Decimal('4500.00')
         self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
 
         html = self.http.get(
@@ -13785,8 +13788,8 @@ class ReadinessScreensTests(TestCase):
 
     def test_no_warning_when_everything_is_filled(self):
         self.roe.diagnosis = 'Высохли конденсаторы.'
-        self.roe.estimated_cost = Decimal('4500.00')
         self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
 
         response = self.http.post(
@@ -14615,8 +14618,8 @@ class ReadinessEverywhereTests(TestCase):
         )
         if ready:
             roe.diagnosis = 'Высохли конденсаторы.'
-            roe.estimated_cost = Decimal('4500.00')
             roe.work_performed = 'Заменены конденсаторы.'
+            roe.repair_cost = Decimal('4500.00')
             roe.save()
         return order
 
@@ -15166,3 +15169,308 @@ class NewEquipmentFromOrderTests(TestCase):
         })
 
         self.assertRedirects(response, reverse('equipment_list'))
+
+
+# ============ ПРАВКИ ПО ЗАМЕЧАНИЯМ ВЛАДЕЛЬЦА (v2.80.0) ============
+
+
+class SpaceSeparatorTests(TestCase):
+    """У части изделий разделитель между моделью и исполнением — пробел.
+
+    Django у текстовых полей по умолчанию обрезает пробелы по краям,
+    поэтому введённое « 21.01» ложилось в базу как «21.01», и печаталось
+    «МАГНУС21.01». Дело было не в печати, а в сохранении.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='space_sep', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+        self.model = EquipmentModel.objects.create(name='МАГНУС')
+
+    def _post(self, name):
+        return self.http.post(reverse('equipment_version_create'), {
+            'equipment_model': str(self.model.pk), 'name': name, 'note': '',
+        })
+
+    def test_a_leading_space_survives_saving(self):
+        self._post(' 21.01')
+
+        version = EquipmentVersion.objects.get()
+        self.assertEqual(version.name, ' 21.01')
+
+    def test_the_designation_is_printed_with_the_space(self):
+        self._post(' 21.01')
+        equipment = Equipment.objects.create(
+            model=self.model, version=EquipmentVersion.objects.get(),
+            serial_number='SN-SPACE-1',
+        )
+
+        self.assertEqual(equipment.designation, 'МАГНУС 21.01')
+        self.assertEqual(str(EquipmentVersion.objects.get()), 'МАГНУС 21.01')
+
+    def test_other_separators_still_work(self):
+        for name in ('.4', '-1.1'):
+            with self.subTest(name=name):
+                EquipmentVersion.objects.all().delete()
+                self._post(name)
+                self.assertEqual(EquipmentVersion.objects.get().name, name)
+
+    def test_a_trailing_space_is_refused_as_a_typo(self):
+        """Слева пробел — разделитель, справа — задетый случайно."""
+        response = self._post('21.01 ')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(EquipmentVersion.objects.exists())
+        self.assertContains(response, 'Пробел в конце обозначения')
+
+    def test_spaces_only_is_not_a_designation(self):
+        response = self._post('   ')
+
+        self.assertFalse(EquipmentVersion.objects.exists())
+        self.assertContains(response, 'не может быть пустым')
+
+    def test_the_form_shows_what_will_be_printed(self):
+        """Пробела не видно — значит его надо показать: иначе разница
+        всплывает только на бумаге, у заказчика."""
+        html = self.http.get(reverse('equipment_version_create')).content.decode()
+
+        self.assertIn('id="versionPreview"', html)
+        self.assertIn('Напечатается', html)
+        self.assertIn('"%d": "МАГНУС"' % self.model.pk, html)
+
+
+class VersionChoiceScopedToModelTests(TestCase):
+    """В выборе исполнения — только исполнения выбранной модели."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='version_scope', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.other = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        self.alien = EquipmentVersion.objects.create(
+            equipment_model=self.other, name='-1.1'
+        )
+
+    def test_the_page_filters_the_list_by_the_chosen_model(self):
+        """Раньше список приходил целиком — сотни строк, из которых
+        к прибору относятся одна-две, и отказ приходил после сохранения."""
+        html = self.http.get(reverse('equipment_create')).content.decode()
+
+        self.assertIn(reverse('ajax_equipment_model_list'), html)
+        self.assertIn('Исполнение снято', html)
+
+    def test_the_data_source_is_the_one_that_already_exists(self):
+        """Один источник, одно поведение: то же, что у окна заведения
+        оборудования при приёме заказа."""
+        data = self.http.get(reverse('ajax_equipment_model_list')).json()
+
+        by_name = {m['name']: m for m in data['models']}
+        self.assertEqual(
+            [v['name'] for v in by_name['БУАД-7-31']['versions']], ['.4']
+        )
+        self.assertEqual(
+            [v['name'] for v in by_name['EkoDrive 2.0']['versions']], ['-1.1']
+        )
+
+    def test_the_server_still_refuses_a_foreign_version(self):
+        """Отбор в браузере — удобство; последнее слово за сервером."""
+        response = self.http.post(reverse('equipment_create'), {
+            'model': str(self.model.pk), 'version': str(self.alien.pk),
+            'serial_number': 'SN-SCOPE-1',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Equipment.objects.exists())
+        self.assertContains(response, 'относится к другой модели')
+
+
+class DefectActDateTests(TestCase):
+    """Дата акта — день первой записи, а не день печати."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='defect_date', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-DATE-1'
+            ),
+        )
+
+    def _fill(self, **extra):
+        data = {
+            'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
+            'error_codes': '', 'warranty_case': '',
+            'non_warranty_reason': '', 'estimated_cost': '',
+        }
+        data.update(extra)
+        return self.http.post(
+            reverse('repair_order_defect_act_edit',
+                    args=[self.order.pk, self.roe.pk]),
+            data,
+        )
+
+    def test_the_date_is_stamped_on_the_first_entry(self):
+        self._fill()
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.defect_act_date, timezone.localdate())
+
+    def test_it_does_not_drift_on_later_saves(self):
+        """Заполнили в понедельник, вернулись в среду — в акте должен
+        остаться понедельник."""
+        monday = timezone.localdate() - datetime.timedelta(days=2)
+        self.roe.diagnosis = 'Высохли конденсаторы'
+        self.roe.defect_act_date = monday
+        self.roe.save()
+
+        self._fill(defect_act_date=monday.strftime('%Y-%m-%d'),
+                   diagnosis='Высохли конденсаторы и резистор')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.defect_act_date, monday)
+
+    def test_a_hand_written_date_wins(self):
+        """Диагностировать могли вчера, а записать сегодня."""
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+
+        self._fill(defect_act_date=yesterday.strftime('%Y-%m-%d'))
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.defect_act_date, yesterday)
+
+    def test_an_empty_act_is_not_stamped(self):
+        """Дата на пустом акте означала бы, что диагностика была."""
+        self._fill(diagnosis='')
+
+        self.roe.refresh_from_db()
+        self.assertIsNone(self.roe.defect_act_date)
+
+    def test_the_printed_act_carries_the_stamped_date(self):
+        self._fill()
+        self.roe.refresh_from_db()
+
+        html = self.http.get(
+            reverse('repair_order_act_defect',
+                    args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn(self.roe.defect_act_date.strftime('%d.%m.%Y'), html)
+
+
+class ReadinessButtonsTests(TestCase):
+    """Чек-лист: кнопки, порядок по ходу работы, стоимость по факту."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='readiness_buttons', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-BTN-1'
+            ),
+        )
+
+    def test_the_order_follows_the_work(self):
+        """Вскрыли и записали, что нашли; починили и записали, что сделали;
+        взяли со склада намеченное; проставили, во что обошлось."""
+        self.assertEqual(
+            [check['code'] for check in self.roe.readiness()],
+            ['defect_act', 'work', 'planned_parts', 'repair_cost'],
+        )
+
+    def test_the_cost_asked_for_is_the_one_the_invoice_uses(self):
+        """Оценка из дефектации согласуется до ремонта; сумма заказа
+        и счёт считаются по фактической стоимости."""
+        self.roe.estimated_cost = Decimal('9000.00')
+        self.roe.save()
+        codes = [c['code'] for c in self.roe.readiness_pending]
+        self.assertIn('repair_cost', codes)
+
+        self.roe.repair_cost = Decimal('9000.00')
+        self.roe.save()
+
+        self.assertNotIn(
+            'repair_cost', [c['code'] for c in self.roe.readiness_pending]
+        )
+
+    def test_every_check_leads_to_the_field(self):
+        expected = {
+            'defect_act': reverse(
+                'repair_order_defect_act_edit',
+                args=[self.order.pk, self.roe.pk]) + '#id_diagnosis',
+            'work': reverse(
+                'repair_order_unit_detail',
+                args=[self.order.pk, self.roe.pk]) + '#id_work_performed',
+            'planned_parts': reverse(
+                'repair_order_detail', args=[self.order.pk]) + '#parts',
+            'repair_cost': reverse(
+                'repair_order_unit_detail',
+                args=[self.order.pk, self.roe.pk]) + '#id_repair_cost',
+        }
+
+        for check in self.roe.readiness():
+            with self.subTest(code=check['code']):
+                self.assertEqual(check['url'], expected[check['code']])
+
+    def test_a_done_check_keeps_its_button(self):
+        """Перепроверить написанное надо уметь в один щелчок."""
+        self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.save()
+
+        done = [c for c in self.roe.readiness() if c['code'] == 'work'][0]
+
+        self.assertTrue(done['done'])
+        self.assertTrue(done['url'])
+
+    def test_the_unit_page_draws_them_as_buttons(self):
+        html = self.http.get(
+            reverse('repair_order_unit_detail',
+                    args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+        block = html.split('Готовность')[1].split('</div></div>')[0]
+
+        self.assertIn('id_work_performed', block)
+        self.assertIn('btn', block)
+
+    def test_the_anchor_puts_the_cursor_in_the_field(self):
+        """Браузер к якорю прокрутит и сам, но на длинной странице этого
+        мало: видно, что страница съехала, а куда вписывать — нет."""
+        base = (settings.BASE_DIR / 'core/templates/core/base.html'
+                ).read_text(encoding='utf-8')
+
+        self.assertIn('function focusFromHash', base)
+        self.assertIn("field.focus({preventScroll: true})", base)
+
+    def test_the_parts_list_has_the_anchor_it_is_sent_to(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('id="parts"', html)

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.79.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.80.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -98,19 +98,23 @@ document.addEventListener('DOMContentLoaded', function () {
                 </span>
             </div>
             <div class="card-body">
-                <ul class="mb-0 list-unstyled">
+                {% comment %}
+                    Пункты — кнопки, и выполненные тоже: перепроверить
+                    написанное надо уметь в один щелчок. Переход ставит
+                    курсор прямо в поле — общий скрипт в base.html.
+                {% endcomment %}
+                <div class="d-grid gap-2">
                     {% for check in order_equipment.readiness %}
-                    <li class="mb-1">
-                        {% if check.done %}
-                        <i class="bi bi-check-lg text-success me-1"></i>{{ check.label }}
-                        {% else %}
-                        <i class="bi bi-dash-lg text-warning me-1"></i>
-                        <strong>{{ check.label }}</strong>
-                        <span class="text-muted small">— {{ check.hint }}</span>
+                    <a href="{{ check.url }}"
+                       class="btn btn-sm text-start {% if check.done %}btn-outline-secondary{% else %}btn-warning{% endif %}">
+                        {% if check.done %}<i class="bi bi-check-lg me-2"></i>{% else %}<i class="bi bi-dash-lg me-2"></i>{% endif %}
+                        {{ check.label }}
+                        {% if not check.done %}
+                        <div class="small ms-4">{{ check.hint }}</div>
                         {% endif %}
-                    </li>
+                    </a>
                     {% endfor %}
-                </ul>
+                </div>
             </div>
         </div>
 

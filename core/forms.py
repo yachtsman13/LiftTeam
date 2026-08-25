@@ -97,12 +97,23 @@ class EquipmentTypeForm(forms.ModelForm):
 
 
 class EquipmentVersionForm(forms.ModelForm):
+    """Исполнение модели. Разделитель хранится внутри обозначения.
+
+    У части изделий разделитель — **пробел**: «МАГНУС 21.01». Django
+    у текстовых полей по умолчанию обрезает пробелы по краям, поэтому
+    введённое « 21.01» ложилось в базу как «21.01», и обозначение
+    печаталось слитно — «МАГНУС21.01». Получить пробел было нельзя
+    никак, и дело было не в печати, а в сохранении.
+    """
+
     class Meta:
         model = EquipmentVersion
         fields = ['equipment_model', 'name', 'note']
         widgets = {
             'equipment_model': forms.Select(attrs={'class': 'form-select'}),
-            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': '1.1'}),
+            'name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': '.4, -1.1 или « 21.01»',
+            }),
             'note': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
         }
         labels = {
@@ -110,6 +121,28 @@ class EquipmentVersionForm(forms.ModelForm):
             'name': 'Версия',
             'note': 'Комментарий',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Пробел слева — это разделитель, а не лишний знак
+        self.fields['name'].strip = False
+
+    def clean_name(self):
+        """Пробел слева разрешён, справа — нет.
+
+        Слева он разделитель, справа — опечатка: обозначение кончается
+        пробелом, и в списках это выглядит как случайно задетый пробел
+        (каковым и является). Имя из одних пробелов — не имя вовсе.
+        """
+        name = self.cleaned_data.get('name') or ''
+        if not name.strip():
+            raise forms.ValidationError('Обозначение не может быть пустым.')
+        if name != name.rstrip():
+            raise forms.ValidationError(
+                'Пробел в конце обозначения — опечатка. Пробел как '
+                'разделитель ставится слева: « 21.01».'
+            )
+        return name
 
 
 class EquipmentModelForm(forms.ModelForm):

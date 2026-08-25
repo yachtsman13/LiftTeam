@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.79.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.80.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -539,27 +539,59 @@ document.addEventListener('DOMContentLoaded', function () {
                     что нужно для документов и склада.
                 </p>
                 {% else %}
+                {% comment %}
+                    Каждый пункт — кнопка, и она нажимается всегда, в том
+                    числе у выполненного: перепроверить написанное надо
+                    уметь в один щелчок. Вид говорит о состоянии, а не
+                    о доступности.
+
+                    Ссылка, оформленная кнопкой, а не <button>: её можно
+                    открыть в соседней вкладке средней кнопкой мыши
+                    и пройти по ней с клавиатуры.
+                {% endcomment %}
                 <div class="d-grid gap-3">
                     {% for oe in readiness_pending %}
                     <div>
-                        <div class="fw-bold">
-                            <a href="#unit-{{ oe.pk }}" class="text-decoration-none">
+                        <div class="fw-bold mb-2">
+                            <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}" class="text-decoration-none">
                                 {{ oe.equipment.designation }} — {{ oe.equipment.serial_number }}
                             </a>
                         </div>
-                        <ul class="mb-1">
-                            {% for check in oe.readiness_pending %}
-                            <li>
+                        <div class="d-grid gap-2">
+                            {% for check in oe.readiness %}
+                            <a href="{{ check.url }}"
+                               class="btn btn-sm text-start {% if check.done %}btn-outline-secondary{% else %}btn-warning{% endif %}">
+                                {% if check.done %}<i class="bi bi-check-lg me-2"></i>{% else %}<i class="bi bi-dash-lg me-2"></i>{% endif %}
                                 {{ check.label }}
-                                <span class="text-muted small">— {{ check.hint }}</span>
-                            </li>
+                                {% if not check.done %}
+                                <div class="small ms-4">{{ check.hint }}</div>
+                                {% endif %}
+                            </a>
                             {% endfor %}
-                        </ul>
-                        <a href="{% url 'repair_order_defect_act_edit' order.pk oe.pk %}"
-                           class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-clipboard2-plus me-1"></i>К дефектации
-                        </a>
+                        </div>
                     </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% comment %}
+                    Готовые единицы — одной строкой: сорок кнопок на заказ
+                    из десяти приборов никто не читает. Перепроверить
+                    написанное можно на странице единицы, туда и ведёт
+                    «Проверить».
+                {% endcomment %}
+                {% if readiness_ready and readiness_pending %}
+                <hr>
+                <div class="small text-muted mb-2">Заполнено полностью:</div>
+                <div class="d-grid gap-1">
+                    {% for oe in order_equipments %}
+                    {% if oe.is_ready %}
+                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}"
+                       class="btn btn-sm btn-outline-success text-start">
+                        <i class="bi bi-check-lg me-2"></i>{{ oe.equipment.designation }} — {{ oe.equipment.serial_number }}
+                        <span class="text-muted">· проверить</span>
+                    </a>
+                    {% endif %}
                     {% endfor %}
                 </div>
                 {% endif %}
@@ -569,7 +601,7 @@ document.addEventListener('DOMContentLoaded', function () {
         <!-- Used Parts -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Использованные детали</h5>
+                <h5 class="mb-0" id="parts"><i class="bi bi-cpu me-2"></i>Использованные детали</h5>
             </div>
             <div class="card-body">
                 <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-3 mb-3" id="usePartForm">

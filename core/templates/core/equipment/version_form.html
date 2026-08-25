@@ -1,6 +1,45 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.79.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.80.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Живая подсказка «что напечатается».
+ *
+ * Разделитель между моделью и обозначением исполнения хранится внутри
+ * самого обозначения, и у части изделий это пробел. Пробела не видно —
+ * значит его надо показать: иначе разница между «МАГНУС 21.01»
+ * и «МАГНУС21.01» всплывает только на бумаге, у заказчика.
+ *
+ * Названия моделей кладём в разметку сервером: отдельный запрос ради
+ * подсказки — лишняя вещь, которая не приедет, когда со связью плохо.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var models = {{ model_names|safe }};
+    var modelField = document.getElementById('id_equipment_model');
+    var nameField = document.getElementById('id_name');
+    var preview = document.getElementById('versionPreview');
+    if (!modelField || !nameField || !preview) return;
+
+    function redraw() {
+        var model = models[modelField.value] || '';
+        var name = nameField.value;
+        if (!model && !name.trim()) {
+            preview.textContent = '—';
+            return;
+        }
+        // Простое сложение строк, как и в программе: своего разделителя
+        // здесь нет и быть не должно
+        preview.textContent = model + name;
+    }
+
+    modelField.addEventListener('change', redraw);
+    nameField.addEventListener('input', redraw);
+    redraw();
+});
+</script>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -25,6 +64,21 @@
                 {% if field.errors %}<div class="text-danger small">{{ field.errors.0 }}</div>{% endif %}
             </div>
             {% endfor %}
+
+            {% comment %}
+                Разделитель хранится внутри обозначения, и один из них —
+                пробел. Пробел не видно, поэтому рядом стоит то, что
+                напечатается: без этой строки человек не отличит
+                «МАГНУС 21.01» от «МАГНУС21.01», пока не напечатает акт.
+            {% endcomment %}
+            <div class="alert alert-light border py-2 px-3 mb-3">
+                Напечатается: <strong id="versionPreview">—</strong>
+                <div class="form-text mb-0">
+                    Разделитель входит в обозначение: «.4», «-1.1» или пробел
+                    в начале — « 21.01».
+                </div>
+            </div>
+
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
             <a href="{% url 'equipment_version_list' %}" class="btn btn-outline-secondary">Отмена</a>
         </form>

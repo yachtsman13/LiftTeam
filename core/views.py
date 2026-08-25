@@ -731,6 +731,19 @@ def equipment_version_list(request):
     return render(request, 'core/equipment/version_list.html', {'versions': versions})
 
 
+def _equipment_model_names_json():
+    """Названия моделей для подсказки «что напечатается».
+
+    Кладём их в разметку сервером: отдельный запрос ради подсказки —
+    ещё одна вещь, которая не приедет, когда со связью плохо, а подсказка
+    нужна ровно в тот момент, когда обозначение набирают.
+    """
+    return json.dumps(
+        {str(pk): name for pk, name in EquipmentModel.objects.values_list('pk', 'name')},
+        ensure_ascii=False,
+    )
+
+
 @login_required
 def equipment_version_create(request):
     if request.method == 'POST':
@@ -744,6 +757,7 @@ def equipment_version_create(request):
         form = EquipmentVersionForm(initial={'equipment_model': request.GET.get('model') or None})
     return render(request, 'core/equipment/version_form.html', {
         'form': form, 'title': 'Новая версия модели',
+        'model_names': _equipment_model_names_json(),
     })
 
 
@@ -760,6 +774,7 @@ def equipment_version_edit(request, pk):
         form = EquipmentVersionForm(instance=version)
     return render(request, 'core/equipment/version_form.html', {
         'form': form, 'title': 'Редактирование версии', 'version': version,
+        'model_names': _equipment_model_names_json(),
     })
 
 
@@ -4484,6 +4499,10 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
             # Цену прайса запоминаем здесь: назначают её на этой странице,
             # и только тут известно, от чего мастер отступил. Уже
             # замороженную не переписываем.
+            # Дата акта — день первой записи, а не день печати. Пустая
+            # дата означала «печатай сегодняшнее число», и акт, заполненный
+            # в понедельник, к среде становился средой
+            saved.stamp_defect_act_date()
             saved.freeze_list_price()
             messages.success(request, 'Акт дефектации сохранён')
             # Возвращаемся на ту же страницу, а не на печатный акт.

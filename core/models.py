@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models, transaction
+from django.urls import reverse
 from django.core.exceptions import ValidationError
 from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
@@ -1886,7 +1887,8 @@ class RepairOrderEquipment(models.Model):
     # что нашли внутри, и подписывать эти две вещи одним текстом нельзя.
     defect_act_date = models.DateField(
         'Дата акта дефектации', null=True, blank=True,
-        help_text='День диагностики. Пусто — в акте встанет сегодняшнее число.'
+        help_text='Проставляется сама в день первой записи. Правится руками: '
+                  'диагностировать могли вчера, а записать сегодня.'
     )
     diagnosis = models.TextField(
         'Результаты диагностики', blank=True,
@@ -2012,42 +2014,82 @@ class RepairOrderEquipment(models.Model):
     # в списке единиц и предупреждение при смене статуса читают его,
     # а не перечисляют условия каждая по-своему.
 
+    # Порядок — по ходу работы, а не по алфавиту и не по удобству кода:
+    # вскрыли и записали, что нашли; починили и записали, что сделали;
+    # взяли со склада то, что наметили; проставили, во что обошлось.
+    # Список читают сверху вниз, и он обязан читаться как сама работа.
     READINESS_CHECKS = (
         ('defect_act', 'Заполнена дефектация',
          'Без неё нечего печатать в акте, и заказчик не знает, за что платит.'),
-        ('price', 'Назначена стоимость',
-         'Без неё в коммерческом предложении по этой единице пусто.'),
         ('work', 'Записаны выполненные работы',
          'Без них акт выполненных работ по этой единице пуст.'),
         ('planned_parts', 'Запланированные детали списаны',
          'Деталь числится нужной по ремонту, но со склада не взята.'),
+        # Именно стоимость по факту, а не оценка из дефектации: по ней
+        # считается сумма заказа и выставляется счёт. Оценку согласуют
+        # с заказчиком до ремонта, и требовать её перед отгрузкой —
+        # ложная тревога. До v2.80.0 здесь стояла как раз она, и единица
+        # с проставленной стоимостью числилась неготовой.
+        ('repair_cost', 'Проставлена стоимость ремонта',
+         'По ней считается сумма заказа и выставляется счёт.'),
     )
 
     def readiness(self):
         """Что по этой единице сделано, а что осталось.
 
-        Возвращает список словарей `{code, label, hint, done}` — в том
-        порядке, в каком работу и делают. Пункт, который к этой единице
-        не относится, в список не попадает вовсе: «назначьте стоимость»
-        на гарантийном ремонте — это ложная тревога, а к ложным тревогам
-        привыкают и перестают читать все остальные.
+        Возвращает список словарей `{code, label, hint, done, url}` —
+        в том порядке, в каком работу и делают. `url` ведёт туда, где это
+        вписывают, и есть у выполненных пунктов тоже: перепроверить
+        написанное надо уметь в один щелчок.
+
+        Пункт, который к этой единице не относится, в список не попадает
+        вовсе: «проставьте стоимость» на гарантийном ремонте — это ложная
+        тревога, а к ложным тревогам привыкают и перестают читать все
+        остальные.
         """
         done = {
             'defect_act': self.has_defect_act,
-            'price': self.estimated_cost is not None,
             'work': bool(self.work_performed.strip()),
             'planned_parts': not any(
                 detail.is_planned for detail in self.details.all()
             ),
+            'repair_cost': self.repair_cost is not None,
         }
         # Гарантийный ремонт заказчику не выставляют — спрашивать
         # стоимость незачем
-        skip = {'price'} if self.warranty_case == 'warranty' else set()
+        skip = {'repair_cost'} if self.warranty_case == 'warranty' else set()
         return [
-            {'code': code, 'label': label, 'hint': hint, 'done': done[code]}
+            {'code': code, 'label': label, 'hint': hint, 'done': done[code],
+             'url': self._readiness_url(code)}
             for code, label, hint in self.READINESS_CHECKS
             if code not in skip
         ]
+
+    def _readiness_url(self, code):
+        """Куда идти, чтобы этот пункт закрыть — или перечитать.
+
+        Адрес считается здесь, рядом с самим списком проверок: разойдись
+        он с ним, чек-лист на карточке заказа и на странице единицы
+        повели бы в разные стороны.
+
+        Якорь — идентификатор самого поля (Django даёт полям `id_<имя>`):
+        общий скрипт в base.html ставит в него курсор, и на длинной
+        странице не приходится искать глазами, куда вписывать.
+        """
+        unit = reverse('repair_order_unit_detail',
+                       args=[self.repair_order_id, self.pk])
+        if code == 'defect_act':
+            return reverse(
+                'repair_order_defect_act_edit',
+                args=[self.repair_order_id, self.pk],
+            ) + '#id_diagnosis'
+        if code == 'work':
+            return unit + '#id_work_performed'
+        if code == 'repair_cost':
+            return unit + '#id_repair_cost'
+        # Запланированную деталь списывают из списка деталей заказа:
+        # там же лежат и списанные «на заказ целиком»
+        return reverse('repair_order_detail', args=[self.repair_order_id]) + '#parts'
 
     @property
     def readiness_pending(self):
@@ -2138,6 +2180,27 @@ class RepairOrderEquipment(models.Model):
         """Что прайс предлагает за этот ремонт сейчас, или None."""
         line = self.price_list_line
         return line.price if line else None
+
+    def stamp_defect_act_date(self, today=None):
+        """Поставить дату акта, если её ещё нет, а акту уже есть что печатать.
+
+        День первой записи, а не день печати. Раньше пустая дата означала
+        «в акте встанет сегодняшнее число»: заполнили в понедельник,
+        напечатали в среду — и в акте среда, хотя прибор смотрели
+        в понедельник.
+
+        Правится руками и после этого не трогается: диагностировать могли
+        вчера, а записать сегодня. Очистили и сохранили — проставится
+        заново: у заполненного акта дата есть всегда, иначе печать опять
+        начнёт подставлять текущее число.
+
+        Возвращает True, если дату проставили.
+        """
+        if self.defect_act_date is not None or not self.has_defect_act:
+            return False
+        self.defect_act_date = today or timezone.localdate()
+        self.save(update_fields=['defect_act_date'])
+        return True
 
     def freeze_list_price(self):
         """Запомнить цену прайса на момент назначения стоимости.
