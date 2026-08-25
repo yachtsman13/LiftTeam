@@ -14169,3 +14169,158 @@ class HttpsDeploymentTests(SimpleTestCase):
         self.assertIn("SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')", pi)
         self.assertIn('SECURE_SSL_REDIRECT', pi)
         self.assertIn('CSRF_TRUSTED_ORIGINS', pi)
+
+
+# ============ ИЗДЕЛИЕ В КОММЕРЧЕСКОМ ПРЕДЛОЖЕНИИ (v2.74.0) ============
+
+
+class QuoteEquipmentNameTests(TestCase):
+    """Наименование изделия в предложении: своё, но правимое.
+
+    Решение владельца. Исполнение значит разное у разных изделий:
+    у преобразователей частоты версии отличаются мощностью, то есть
+    и ценой ремонта, а у приводов дверей на цену почти не влияют. Что
+    из этого важно заказчику в этом предложении, решает мастер.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='quote_name', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(
+            name='Emotron-2.0', kind='Преобразователь частоты'
+        )
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='-1.1'
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, version=self.version, serial_number='SN-Q-1'
+            ),
+            proposed_work='Замена конденсаторов звена постоянного тока',
+            estimated_cost=Decimal('12000.00'),
+        )
+
+    def test_the_designation_with_the_version_is_used_by_default(self):
+        """Одна и та же модель в разных исполнениях — разное изделие,
+        и в предложении это должно быть видно."""
+        self.assertEqual(
+            self.roe.quote_equipment_name,
+            'Преобразователь частоты Emotron-2.0-1.1',
+        )
+
+    def test_a_hand_written_name_wins(self):
+        self.roe.quote_designation = 'ПЧ Emotron 2.0 (7,5 кВт)'
+        self.roe.save()
+
+        self.assertEqual(self.roe.quote_equipment_name, 'ПЧ Emotron 2.0 (7,5 кВт)')
+
+    def test_whitespace_is_not_a_name(self):
+        self.roe.quote_designation = '   '
+        self.roe.save()
+
+        self.assertEqual(
+            self.roe.quote_equipment_name,
+            'Преобразователь частоты Emotron-2.0-1.1',
+        )
+
+    def test_a_unit_without_a_version_prints_without_one(self):
+        """Исполнения нет — «исп. 1.0» вместо пустого поля
+        не выдумывается."""
+        self.roe.equipment.version = None
+        self.roe.equipment.save()
+
+        self.assertEqual(
+            self.roe.quote_equipment_name, 'Преобразователь частоты Emotron-2.0'
+        )
+
+    def test_the_printed_quote_shows_the_equipment_and_the_work(self):
+        """Изделие — первой строкой, работы под ним: заказчик должен
+        видеть, какое именно ему считают."""
+        html = self.http.get(
+            reverse('repair_order_quote', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('Преобразователь частоты Emotron-2.0-1.1', html)
+        self.assertIn('Замена конденсаторов звена постоянного тока', html)
+
+    def test_the_form_offers_the_default_as_a_placeholder(self):
+        """«Введите наименование» тут ничего не объясняет: наименование
+        уже есть, вопрос только в том, устраивает ли оно."""
+        html = self.http.get(
+            reverse('repair_order_quote_edit', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('placeholder="Преобразователь частоты Emotron-2.0-1.1"', html)
+
+    def test_the_name_is_saved_from_the_form(self):
+        response = self.http.post(
+            reverse('repair_order_quote_edit', args=[self.order.pk]),
+            {
+                'quote_subject': '', 'quote_date': '2026-08-25',
+                'quote_valid_until': '2026-09-25', 'quote_lead_time': '',
+                'quote_payment_terms': '', 'quote_delivery_terms': '',
+                'order_equipments-TOTAL_FORMS': '1',
+                'order_equipments-INITIAL_FORMS': '1',
+                'order_equipments-MIN_NUM_FORMS': '0',
+                'order_equipments-MAX_NUM_FORMS': '1000',
+                'order_equipments-0-id': str(self.roe.pk),
+                'order_equipments-0-quote_designation': 'ПЧ Emotron 2.0 (7,5 кВт)',
+                'order_equipments-0-proposed_work': self.roe.proposed_work,
+                'order_equipments-0-repair_complexity': '',
+                'order_equipments-0-estimated_cost': '12000.00',
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.quote_designation, 'ПЧ Emotron 2.0 (7,5 кВт)')
+
+
+class EquipmentOwnerOnRepeatIntakeTests(TestCase):
+    """Владельца при повторном приёме не меняем — решение владельца.
+
+    Прибор нередко приезжает от другого обслуживающего предприятия,
+    и это не значит, что он сменил хозяина. У кого он был в каждом
+    ремонте, и так видно по заказам.
+    """
+
+    def setUp(self):
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.first = ClientModel.objects.create(name='МУП «Лифты»')
+        self.second = ClientModel.objects.create(name='ООО «Подъём»')
+        self.equipment = Equipment.objects.create(
+            model=self.model, serial_number='SN-OWNER-1'
+        )
+
+    def test_an_empty_owner_is_filled_in(self):
+        order = RepairOrder.objects.create(client=self.first)
+        RepairOrderEquipment.objects.create(
+            repair_order=order, equipment=self.equipment
+        )
+
+        order.assign_equipment_owners()
+
+        self.equipment.refresh_from_db()
+        self.assertEqual(self.equipment.current_client, self.first)
+
+    def test_an_existing_owner_survives_a_repeat_intake(self):
+        self.equipment.current_client = self.first
+        self.equipment.save()
+        second_order = RepairOrder.objects.create(client=self.second)
+        RepairOrderEquipment.objects.create(
+            repair_order=second_order, equipment=self.equipment
+        )
+
+        changed = second_order.assign_equipment_owners()
+
+        self.equipment.refresh_from_db()
+        self.assertEqual(changed, 0)
+        self.assertEqual(self.equipment.current_client, self.first)

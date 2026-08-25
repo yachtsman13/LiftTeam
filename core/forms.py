@@ -936,8 +936,10 @@ class QuoteLineForm(forms.ModelForm):
 
     class Meta:
         model = RepairOrderEquipment
-        fields = ['proposed_work', 'repair_complexity', 'estimated_cost']
+        fields = ['quote_designation', 'proposed_work', 'repair_complexity',
+                  'estimated_cost']
         widgets = {
+            'quote_designation': forms.TextInput(attrs={'class': 'form-control'}),
             'proposed_work': forms.Textarea(attrs={
                 'class': 'form-control', 'rows': 2,
                 'placeholder': 'Ремонт импульсного блока питания, замена транзисторов'}),
@@ -945,6 +947,17 @@ class QuoteLineForm(forms.ModelForm):
             'estimated_cost': forms.NumberInput(attrs={
                 'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}),
         }
+
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # В подсказке — то, что напечатается, если поле оставить пустым.
+        # «Введите наименование» тут ничего не объясняет: наименование
+        # уже есть, вопрос только в том, устраивает ли оно
+        if self.instance and self.instance.equipment_id:
+            self.fields['quote_designation'].widget.attrs['placeholder'] = (
+                self.instance.equipment.full_designation
+            )
 
 
 QuoteLineFormSet = inlineformset_factory(

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.73.0{% endblock %}
+{% block title %}Предложение по заказу {{ order.order_number }} — LiftTeam v2.74.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -80,7 +80,21 @@
                     <div class="small text-muted">SN: {{ line.instance.equipment.serial_number }}</div>
                 </div>
                 <div class="col-md-5">
-                    <label class="form-label small">{{ line.proposed_work.label }}</label>
+                    {% comment %}
+                        Наименование изделия правится руками: исполнение
+                        значит разное у разных изделий. У преобразователей
+                        частоты версии отличаются мощностью, то есть и ценой
+                        ремонта; у приводов дверей — почти нет. Что из этого
+                        важно заказчику, решает мастер, а не программа.
+                    {% endcomment %}
+                    <label class="form-label small">{{ line.quote_designation.label }}</label>
+                    {{ line.quote_designation }}
+                    <div class="form-text">{{ line.quote_designation.help_text }}</div>
+                    {% if line.quote_designation.errors %}
+                    <div class="text-danger small">{{ line.quote_designation.errors.0 }}</div>
+                    {% endif %}
+
+                    <label class="form-label small mt-2">{{ line.proposed_work.label }}</label>
                     {{ line.proposed_work }}
                     {% if line.proposed_work.errors %}
                     <div class="text-danger small">{{ line.proposed_work.errors.0 }}</div>
