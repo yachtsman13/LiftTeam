@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ card.title }} — LiftTeam v2.69.0{% endblock %}
+{% block title %}{{ card.title }} — LiftTeam v2.70.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -44,6 +44,16 @@
         border: 1px solid #b02a37;
         color: #842029;
         font-weight: 600;
+    }
+    /* Снимок — подспорье, а не главное на листе: высота ограничена,
+       чтобы шаг не занял страницу целиком и карта осталась картой,
+       а не фотоальбомом. */
+    .step-image {
+        display: block;
+        margin-top: 2mm;
+        max-width: 100%;
+        max-height: 70mm;
+        border: 1px solid #ccc;
     }
     .step-version {
         display: inline-block;
@@ -120,6 +130,9 @@
             <div class="step-text">{{ step.text }}</div>
             {% if step.caution %}
             <div class="step-caution">Внимание: {{ step.caution }}</div>
+            {% endif %}
+            {% if step.image %}
+            <img class="step-image" src="{{ step.image.url }}" alt="">
             {% endif %}
             {% if step.version %}
             <div class="step-version">только для {{ step.version }}</div>

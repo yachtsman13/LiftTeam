@@ -27,6 +27,11 @@ Environment=RCLONE_CONFIG=/opt/lifteam/rclone.conf
 # Настроить выгрузку наружу: раскомментировать и указать remote из rclone config
 # Environment=LIFTEAM_RCLONE_REMOTE=yandex:LiftTeam/backups
 
+# Снимки к шагам технологических карт уходят туда же, в подкаталог media.
+# Отдельно настраивать не нужно; строка ниже — только если их надо
+# отправлять в другое место.
+# Environment=LIFTEAM_RCLONE_MEDIA_REMOTE=yandex:LiftTeam/photos
+
 ExecStart=/opt/lifteam/deploy/backup.sh
 
 NoNewPrivileges=true

@@ -33,6 +33,9 @@ from django import forms
 
 from . import invoicing, messengers, net, notifications, scanning, tbank, tochka, views, webhooks
 from .forms import OrganizationForm, RepairOrderEquipmentForm
+from django.core.files.uploadedfile import SimpleUploadedFile
+
+from .images import MAX_UPLOAD_BYTES
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
@@ -13322,3 +13325,211 @@ class TechCardScreensTests(TestCase):
 
         self.assertIn('карт пока нет', html)
         self.assertIn(reverse('tech_card_create'), html)
+
+
+# ============ СНИМКИ К ШАГАМ КАРТЫ И РЕЗЕРВНАЯ КОПИЯ (v2.70.0) ============
+
+
+def _photo_bytes(size=(4000, 3000), fmt='JPEG', mode='RGB'):
+    """Снимок нужного размера — как приезжает с телефона."""
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new(mode, size, 'red').save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix='lifteam-test-media-'))
+class TechCardImageTests(TestCase):
+    """Снимок к шагу — единственный файл, который программа хранит у себя.
+
+    Схемы и инструкции по-прежнему ссылками: их правят на Диске, и копия
+    разошлась бы с оригиналом. Снимок шага никто не правит — он показывает,
+    как это выглядит на столе.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='techcard_photo', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.card = TechCard.objects.create(
+            equipment_model=self.model, title='Разборка корпуса'
+        )
+        self.step = TechCardStep.objects.create(
+            card=self.card, number=10, text='Снять крышку'
+        )
+
+    def _post(self, upload):
+        return self.http.post(
+            reverse('tech_card_edit', args=[self.card.pk]),
+            {
+                'equipment_model': str(self.model.pk), 'fault_type': '',
+                'title': self.card.title, 'purpose': '',
+                'steps-TOTAL_FORMS': '1', 'steps-INITIAL_FORMS': '1',
+                'steps-MIN_NUM_FORMS': '0', 'steps-MAX_NUM_FORMS': '1000',
+                'steps-0-id': str(self.step.pk), 'steps-0-card': str(self.card.pk),
+                'steps-0-number': '10', 'steps-0-text': 'Снять крышку',
+                'steps-0-version': '', 'steps-0-caution': '',
+                'steps-0-image': upload,
+            },
+        )
+
+    def test_a_phone_photo_is_shrunk_before_it_is_stored(self):
+        """С телефона приезжает четыре мегабайта, а программа живёт
+        на карте памяти и выгружает копии по домашнему каналу."""
+        from PIL import Image
+        original = _photo_bytes()
+        upload = SimpleUploadedFile('IMG_0042.jpg', original, 'image/jpeg')
+
+        response = self._post(upload)
+
+        self.assertEqual(response.status_code, 302)
+        self.step.refresh_from_db()
+        self.assertTrue(self.step.image)
+        with Image.open(self.step.image.path) as stored:
+            self.assertEqual(max(stored.size), 1600)
+        self.assertLess(self.step.image.size, len(original))
+
+    def test_a_png_stays_a_png(self):
+        """PNG обычно приходит скриншотом схемы: перегон в JPEG размыл бы
+        подписи на выводах."""
+        upload = SimpleUploadedFile(
+            'scheme.png', _photo_bytes(size=(2000, 1200), fmt='PNG'), 'image/png'
+        )
+
+        self._post(upload)
+
+        self.step.refresh_from_db()
+        self.assertTrue(self.step.image.name.endswith('.png'))
+
+    def test_a_small_photo_is_not_enlarged(self):
+        from PIL import Image
+        upload = SimpleUploadedFile(
+            'small.jpg', _photo_bytes(size=(800, 600)), 'image/jpeg'
+        )
+
+        self._post(upload)
+
+        self.step.refresh_from_db()
+        with Image.open(self.step.image.path) as stored:
+            self.assertEqual(stored.size, (800, 600))
+
+    def test_a_huge_file_is_refused_with_a_reason(self):
+        """Схема на сорок мегабайт — не снимок шага, и её место
+        на Диске ссылкой.
+
+        Порог на время проверки занижен: настоящие пятнадцать мегабайт
+        пришлось бы собирать из шума, а проверяется здесь правило,
+        а не число.
+        """
+        upload = SimpleUploadedFile(
+            'scheme.jpg', _photo_bytes(size=(1200, 900)), 'image/jpeg'
+        )
+
+        with patch('core.forms.MAX_UPLOAD_BYTES', 1024):
+            response = self._post(upload)
+
+        self.assertEqual(response.status_code, 200)
+        self.step.refresh_from_db()
+        self.assertFalse(self.step.image)
+        self.assertContains(response, 'вешаются ссылкой в карточке модели')
+
+    def test_the_limit_is_a_phone_photo_not_a_scheme(self):
+        """Порог — про снимок с телефона: он укладывается с запасом,
+        а схема на десятки мегабайт нет, и её место ссылкой."""
+        self.assertEqual(MAX_UPLOAD_BYTES, 15 * 1024 * 1024)
+
+    def test_saving_the_card_again_does_not_touch_the_photo(self):
+        """Поле не трогали — приходит уже сохранённый файл, а не загрузка:
+        уменьшать его второй раз незачем."""
+        self._post(SimpleUploadedFile('IMG.jpg', _photo_bytes(), 'image/jpeg'))
+        self.step.refresh_from_db()
+        stored_name, stored_size = self.step.image.name, self.step.image.size
+
+        self.http.post(reverse('tech_card_edit', args=[self.card.pk]), {
+            'equipment_model': str(self.model.pk), 'fault_type': '',
+            'title': self.card.title, 'purpose': '',
+            'steps-TOTAL_FORMS': '1', 'steps-INITIAL_FORMS': '1',
+            'steps-MIN_NUM_FORMS': '0', 'steps-MAX_NUM_FORMS': '1000',
+            'steps-0-id': str(self.step.pk), 'steps-0-card': str(self.card.pk),
+            'steps-0-number': '10', 'steps-0-text': 'Снять крышку и отложить',
+            'steps-0-version': '', 'steps-0-caution': '',
+        })
+
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.text, 'Снять крышку и отложить')
+        self.assertEqual(self.step.image.name, stored_name)
+        self.assertEqual(self.step.image.size, stored_size)
+
+    def test_the_photo_is_printed_on_the_card(self):
+        self._post(SimpleUploadedFile('IMG.jpg', _photo_bytes(), 'image/jpeg'))
+        self.step.refresh_from_db()
+
+        html = self.http.get(
+            reverse('tech_card_detail', args=[self.card.pk])
+        ).content.decode()
+
+        self.assertIn(self.step.image.url, html)
+        self.assertIn('step-image', html)
+
+    def test_the_form_can_carry_files_at_all(self):
+        """Без enctype снимки не доехали бы до сервера вовсе, а форма
+        сохранилась бы молча — как будто картинку не выбирали."""
+        html = self.http.get(
+            reverse('tech_card_edit', args=[self.card.pk])
+        ).content.decode()
+
+        self.assertIn('enctype="multipart/form-data"', html)
+
+
+class MediaInBackupTests(SimpleTestCase):
+    """Снимки уходят в резервную копию вместе с базой.
+
+    В базе только имя файла. Копия базы без снимков восстановит карты
+    без картинок, и заметно это станет у стола, когда картинка понадобится.
+    """
+
+    @property
+    def script(self):
+        return (settings.BASE_DIR / 'deploy/backup.sh').read_text(encoding='utf-8')
+
+    def test_media_is_uploaded_too(self):
+        self.assertIn('rclone copy "${APP_DIR}/media"', self.script)
+
+    def test_media_goes_with_copy_not_sync(self):
+        """sync зеркалит удаления: файл, удалённый здесь по ошибке,
+        исчез бы и в облаке — то есть ровно тогда, когда копия и нужна."""
+        self.assertNotIn('rclone sync', self.script)
+
+    def test_a_missing_media_directory_is_not_an_error(self):
+        """Карт со снимками ещё не завели — это не повод падать
+        и оставлять базу без выгрузки."""
+        self.assertIn('if [[ -d "${APP_DIR}/media" ]]; then', self.script)
+
+    def test_an_already_configured_install_needs_no_edits(self):
+        """Выгрузка снимков включается сама там, где выгрузка базы уже
+        настроена: править юнит на работающей установке никто не пойдёт."""
+        self.assertIn(
+            'RCLONE_MEDIA_REMOTE="${LIFTEAM_RCLONE_MEDIA_REMOTE:-'
+            '${RCLONE_REMOTE:+${RCLONE_REMOTE}/media}}"',
+            self.script,
+        )
+
+    def test_a_saved_message_does_not_go_to_paper(self):
+        """Печатают сразу после сохранения, и «Карта сохранена» уходило
+        на бумагу первой строкой, над самим документом. Правило своё,
+        не бутстраповское: Bootstrap приходит из интернета."""
+        base = (settings.BASE_DIR / 'core/templates/core/base.html').read_text(encoding='utf-8')
+
+        self.assertIn("alert-dismissible fade show no-print", base)
+        self.assertIn('.no-print { display: none !important; }', base)
+
+    def test_nginx_serves_media(self):
+        """Снимок, который некому отдать, на странице карты не появится."""
+        conf = (settings.BASE_DIR / 'deploy/nginx-lifteam.conf').read_text(encoding='utf-8')
+
+        self.assertIn('location /media/', conf)
+        self.assertIn('alias /opt/lifteam/media/;', conf)

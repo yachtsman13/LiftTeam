@@ -6,6 +6,7 @@ from django.contrib.auth import authenticate
 from django.core import validators
 from django.forms import inlineformset_factory
 from . import invoicing
+from .images import MAX_UPLOAD_BYTES, shrink_photo
 from .models import (
     Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
@@ -552,13 +553,38 @@ class TechCardForm(forms.ModelForm):
 class TechCardStepForm(forms.ModelForm):
     class Meta:
         model = TechCardStep
-        fields = ['number', 'text', 'version', 'caution']
+        fields = ['number', 'text', 'version', 'caution', 'image']
         widgets = {
             'number': forms.NumberInput(attrs={'class': 'form-control', 'min': 1}),
             'text': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
             'version': forms.Select(attrs={'class': 'form-select'}),
             'caution': forms.TextInput(attrs={'class': 'form-control'}),
+            'image': forms.ClearableFileInput(attrs={
+                'class': 'form-control form-control-sm', 'accept': 'image/*',
+            }),
         }
+
+    def clean_image(self):
+        """Отказ по размеру и уменьшение — здесь, одним местом.
+
+        Снимок уменьшается до сохранения, а не при показе: место
+        на карте памяти и ночная выгрузка расходуются один раз,
+        а показов много.
+        """
+        image = self.cleaned_data.get('image')
+        # Поле не трогали — приходит уже сохранённый файл, а не загрузка:
+        # уменьшать его второй раз незачем, и не всякое хранилище даст
+        # его перечитать
+        if not image or not hasattr(image, 'content_type'):
+            return image
+
+        if image.size > MAX_UPLOAD_BYTES:
+            raise forms.ValidationError(
+                'Файл больше %d МБ. Это снимок с телефона, а не схема: '
+                'схемы и инструкции вешаются ссылкой в карточке модели.'
+                % (MAX_UPLOAD_BYTES // (1024 * 1024))
+            )
+        return shrink_photo(image)
 
     def __init__(self, *args, equipment_model=None, **kwargs):
         super().__init__(*args, **kwargs)

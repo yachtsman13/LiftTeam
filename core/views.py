@@ -811,7 +811,7 @@ def _tech_card_page(request, card, title):
             pk=request.POST.get('equipment_model') or 0
         ).first()
         formset = TechCardStepFormSet(
-            request.POST, instance=card,
+            request.POST, request.FILES, instance=card,
             form_kwargs={'equipment_model': posted or model},
         )
         if form.is_valid() and formset.is_valid():
