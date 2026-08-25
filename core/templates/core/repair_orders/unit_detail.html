@@ -1,6 +1,63 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.77.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.78.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Применение рецепта деталей выбранных неисправностей.
+ *
+ * Тот же обработчик на сервере, что и у формы заказа: второй такой
+ * однажды разошёлся бы с первым, а списание со склада — не то место,
+ * где это можно позволить.
+ *
+ * Список неисправностей берётся сохранённый, а не выбранный в форме:
+ * рецепт применяется к тому, что записано в заказе, а не к тому,
+ * что человек наметил и ещё не сохранил.
+ *
+ * LiftTeamWS.fetch, а не голый fetch: обрыв связи должен поднять общую
+ * полосу вверху страницы, а не выглядеть как «рецепт пуст».
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var button = document.getElementById('applyRecipe');
+    if (!button) return;
+
+    button.addEventListener('click', function () {
+        var saved = [{% for fault in faults %}'{{ fault.pk }}'{% if not forloop.last %}, {% endif %}{% endfor %}];
+        if (!saved.length) {
+            alert('Сначала выберите типовые неисправности и сохраните.');
+            return;
+        }
+
+        var body = new URLSearchParams();
+        saved.forEach(function (id) { body.append('fault_ids', id); });
+        body.append('equipment_id', button.dataset.equipment);
+
+        button.disabled = true;
+        LiftTeamWS.fetch(button.dataset.url, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: body.toString()
+        }).then(function (response) {
+            return response.json();
+        }).then(function (data) {
+            if (data.success) {
+                location.reload();
+            } else {
+                button.disabled = false;
+                alert(data.error || 'Рецепт не применён');
+            }
+        }).catch(function (err) {
+            button.disabled = false;
+            alert(LiftTeamWS.errorText(err, 'Не удалось применить рецепт. Попробуйте ещё раз.'));
+        });
+    });
+});
+</script>
+{% endblock %}
 
 {% block content %}
 {% comment %}
@@ -57,19 +114,35 @@
             </div>
         </div>
 
-        <div class="card mb-4">
+        {% comment %}
+            Правка прямо здесь, одной формой на три карточки и одной
+            кнопкой «Сохранить». Раньше эти поля правились только через
+            редактирование всего заказа — формой на все единицы разом:
+            записать работы по одному прибору стоило открыть заказ
+            целиком и сохранить всё вместе.
+
+            Диагностика со стоимостью в эту форму не входит: у неё своя
+            страница, где рядом прайс, техкарты и материалы.
+        {% endcomment %}
+        <form method="post" action="{% url 'repair_order_unit_edit' order.pk order_equipment.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="anchor" value="repair" id="unitEditAnchor">
+
+        <div class="card mb-4" id="intake">
             <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-box-arrow-in-down me-2"></i>Приём</h5>
             </div>
             <div class="card-body">
-                <p class="mb-2">
-                    <strong>Со слов заказчика:</strong><br>
-                    {{ order_equipment.fault_description|default:"—"|linebreaksbr }}
-                </p>
-                <p class="mb-0">
-                    <strong>Начальное состояние:</strong><br>
-                    {{ order_equipment.initial_condition|default:"—"|linebreaksbr }}
-                </p>
+                <div class="mb-3">
+                    <label class="form-label">{{ form.fault_description.label }}</label>
+                    {{ form.fault_description }}
+                    {% if form.fault_description.errors %}<div class="text-danger small">{{ form.fault_description.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="mb-0">
+                    <label class="form-label">{{ form.initial_condition.label }}</label>
+                    {{ form.initial_condition }}
+                    {% if form.initial_condition.errors %}<div class="text-danger small">{{ form.initial_condition.errors.0 }}</div>{% endif %}
+                </div>
             </div>
         </div>
 
@@ -117,50 +190,77 @@
                 {% endif %}
 
                 {% comment %}
-                    Типовые неисправности показываем полными описаниями —
-                    теми, что идут в документы. Короткое название
-                    (FaultType.name) в документы не попадает никогда,
-                    но здесь мы не документ, а рабочий экран, поэтому
-                    показываем и его: по нему их выбирают.
+                    Типовые неисправности выбираются здесь же. Их описания
+                    идут в акт дефектации и в предложение, из них выводится
+                    сложность ремонта, и по их рецептам списываются детали.
+
+                    Кнопка «Применить рецепт» — не часть формы: она
+                    списывает детали со склада, то есть меняет остатки,
+                    и складывать её с обычным сохранением полей нельзя.
+                    Вложенной формой её тоже не сделать — вложенных форм
+                    в разметке не бывает, поэтому запрос уходит скриптом.
                 {% endcomment %}
-                {% if faults %}
                 <hr>
-                <strong>Типовые неисправности:</strong>
-                <ul class="mb-0 mt-1">
+                <label class="form-label"><strong>{{ form.faults.label }}</strong></label>
+                {{ form.faults }}
+                <div class="form-text">{{ form.faults.help_text }}</div>
+                {% if form.faults.errors %}<div class="text-danger small">{{ form.faults.errors.0 }}</div>{% endif %}
+
+                {% if faults %}
+                <ul class="mt-2 mb-2 small text-muted">
                     {% for fault in faults %}
-                    <li>
-                        {{ fault.name }}
-                        <span class="badge bg-{% if fault.complexity == 'complex' %}warning text-dark{% else %}secondary{% endif %}">
-                            {{ fault.get_complexity_display|lower }}
-                        </span>
-                        {% if fault.description %}
-                        <div class="small text-muted">{{ fault.description }}</div>
-                        {% endif %}
-                    </li>
+                    <li>{{ fault.name }} — {{ fault.get_complexity_display|lower }}{% if fault.description %}: {{ fault.description }}{% endif %}</li>
                     {% endfor %}
                 </ul>
                 {% endif %}
+
+                <button type="button" class="btn btn-sm btn-outline-warning mt-1"
+                        id="applyRecipe"
+                        data-url="{% url 'repair_order_apply_fault_template' order.pk %}"
+                        data-equipment="{{ equipment.pk }}">
+                    <i class="bi bi-magic me-1"></i>Применить рецепт деталей
+                </button>
+                <div class="form-text">
+                    Спишет со склада детали из рецептов сохранённых
+                    неисправностей — на эту единицу. Список деталей
+                    дополняется, ничего в нём не заменяется.
+                </div>
             </div>
         </div>
 
-        <div class="card mb-4">
+        <div class="card mb-4" id="repair">
             <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-tools me-2"></i>Ремонт</h5>
             </div>
             <div class="card-body">
-                <p class="mb-2">
-                    <strong>Выполненные работы:</strong><br>
-                    {{ order_equipment.work_performed|default:"—"|linebreaksbr }}
-                </p>
-                <div class="row">
-                    <div class="col-sm-6"><strong>Пломбы:</strong>
-                        {{ order_equipment.seal_numbers|default:"—" }}</div>
-                    <div class="col-sm-6"><strong>Стоимость ремонта:</strong>
-                        {% if order_equipment.repair_cost is not None %}{{ order_equipment.repair_cost|floatformat:2 }} ₽{% else %}—{% endif %}
+                <div class="mb-3">
+                    <label class="form-label">{{ form.work_performed.label }}</label>
+                    {{ form.work_performed }}
+                    {% if form.work_performed.errors %}<div class="text-danger small">{{ form.work_performed.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="row g-3">
+                    <div class="col-sm-6">
+                        <label class="form-label">{{ form.seal_numbers.label }}</label>
+                        {{ form.seal_numbers }}
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">{{ form.repair_cost.label }}</label>
+                        {{ form.repair_cost }}
+                        {% if form.repair_cost.errors %}<div class="text-danger small">{{ form.repair_cost.errors.0 }}</div>{% endif %}
                     </div>
                 </div>
             </div>
         </div>
+
+        <div class="mb-4 d-flex gap-2 align-items-center flex-wrap">
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-2"></i>Сохранить
+            </button>
+            <span class="text-muted small">
+                Приём, неисправности и ремонт сохраняются вместе.
+            </span>
+        </div>
+        </form>
 
         {% comment %}
             Детали именно этой единицы. Списанные «на заказ целиком»

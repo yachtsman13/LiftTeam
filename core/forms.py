@@ -900,6 +900,57 @@ class CabinetForm(forms.ModelForm):
         return cleaned
 
 
+class UnitEditForm(forms.ModelForm):
+    """Правка единицы прямо на её странице.
+
+    Раньше эти поля правились только через редактирование всего заказа —
+    формой на все единицы разом. Записать выполненные работы по одному
+    прибору стоило открыть заказ целиком, найти в нём нужную строку
+    и сохранить всё вместе.
+
+    Состав нарочно узкий: то, что заполняют по ходу ремонта. Диагностика
+    со стоимостью живёт на своей странице (там рядом прайс, техкарты
+    и материалы), состав заказа — в заказе, предложение — в предложении.
+    """
+
+    class Meta:
+        model = RepairOrderEquipment
+        fields = [
+            'fault_description', 'initial_condition', 'faults',
+            'work_performed', 'seal_numbers', 'repair_cost',
+        ]
+        widgets = {
+            'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'initial_condition': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'faults': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 6}),
+            'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
+            'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+        }
+        labels = {
+            'fault_description': 'Со слов заказчика',
+            'initial_condition': 'Начальное состояние',
+            'faults': 'Типовые неисправности',
+            'work_performed': 'Выполненные работы',
+            'seal_numbers': 'Номера пломб',
+            'repair_cost': 'Стоимость ремонта, ₽',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Неисправности — только этой модели. Список неисправностей висит
+        # на модели, а не на исполнении: сохнут те же конденсаторы.
+        # Чужая в списке означала бы рецепт деталей не от этого прибора
+        model_id = self.instance.equipment.model_id
+        self.fields['faults'].queryset = FaultType.objects.filter(
+            equipment_model_id=model_id
+        ).order_by('name')
+        self.fields['faults'].help_text = (
+            'Их описания идут в акт дефектации и в предложение, а рецепт '
+            'деталей применяется кнопкой ниже.'
+        )
+
+
 class QuoteForm(forms.ModelForm):
     """Условия коммерческого предложения по заказу."""
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LiftTeam Launcher v2.77.0 — standalone desktop app
+LiftTeam Launcher v2.78.0 — standalone desktop app
 Запускает Django сервер и открывает браузер автоматически
 """
 import os
@@ -92,7 +92,7 @@ def init_database():
 def main():
     """Главная функция запуска"""
     print("=" * 56)
-    print("  LiftTeam v2.77.0 — Система учёта ремонта лифтов")
+    print("  LiftTeam v2.78.0 — Система учёта ремонта лифтов")
     print("=" * 56)
 
     # Переходим в директорию скрипта

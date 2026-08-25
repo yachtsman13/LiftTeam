@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.77.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.78.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -266,7 +266,28 @@ document.addEventListener('DOMContentLoaded', function () {
                                     {% endif %}
                                 </td>
                                 <td class="text-end col-actions">
-                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}" class="btn btn-sm btn-outline-primary" title="Всё об этой единице"><i class="bi bi-box-arrow-in-right"></i></a>
+                                    {% comment %}
+                                        Кнопки «страница единицы» здесь нет
+                                        намеренно: на страницу ведёт вся
+                                        строка и серийный номер в ней.
+                                        Место лучше отдать тому, что жмут
+                                        по многу раз в день.
+
+                                        «Записать работы» ведёт на страницу
+                                        единицы прямо к форме ремонта:
+                                        до этого работы правились только
+                                        через редактирование всего заказа.
+                                    {% endcomment %}
+                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#repair" class="btn btn-sm btn-outline-primary" title="Записать выполненные работы и пломбы"><i class="bi bi-pencil-square"></i></a>
+                                    {% comment %}
+                                        «Списать деталь» — не переход:
+                                        форма списания стоит на этой же
+                                        странице ниже, кнопка только
+                                        подставляет в неё эту единицу
+                                        и доводит до неё.
+                                    {% endcomment %}
+                                    <button type="button" class="btn btn-sm btn-outline-warning use-part-here"
+                                            data-unit="{{ oe.pk }}" title="Списать деталь на эту единицу"><i class="bi bi-cpu"></i></button>
                                     {% comment %}
                                         Пока дефектации нет — ведём на заполнение,
                                         потом на сам акт: печатать пустой бланк
@@ -399,6 +420,32 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 })();
 
+/*
+ * «Списать деталь на эту единицу»: форма списания стоит ниже на этой же
+ * странице, и уводить с неё незачем — кнопка подставляет единицу
+ * и доводит до формы, курсор встаёт в выбор детали.
+ *
+ * Выбор единицы в форме показывается только когда приборов в заказе
+ * несколько (когда он один, программа привязывает деталь сама).
+ * Поэтому список может отсутствовать — и это не повод ронять переход.
+ */
+(function () {
+    'use strict';
+    document.addEventListener('click', function (event) {
+        var button = event.target.closest('.use-part-here');
+        if (!button) return;
+        var form = document.getElementById('usePartForm');
+        if (!form) return;
+
+        var select = form.querySelector('select[name="order_equipment"]');
+        if (select) select.value = button.dataset.unit;
+
+        form.scrollIntoView({block: 'center', behavior: 'smooth'});
+        var picker = form.querySelector('.part-picker input, .part-picker button');
+        if (picker) picker.focus();
+    });
+})();
+
 (function () {
     'use strict';
     var all = document.getElementById('equipmentCheckAll');
@@ -484,7 +531,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Использованные детали</h5>
             </div>
             <div class="card-body">
-                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-3 mb-3">
+                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-3 mb-3" id="usePartForm">
                     {% csrf_token %}
                     {% comment %}
                         Вместо списка на весь каталог — общий выбор детали

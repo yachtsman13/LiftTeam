@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.77.0
+v2.78.0
 """
 from django.urls import path
 from . import views
@@ -88,6 +88,7 @@ urlpatterns = [
     # Страница единицы: всё про этот прибор в этой работе. Сюда же ведёт
     # наклейка с прибора (короткий адрес /u/<id>/).
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/', views.repair_order_unit_detail, name='repair_order_unit_detail'),
+    path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/edit/', views.repair_order_unit_edit, name='repair_order_unit_edit'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/label/', views.repair_order_equipment_label, name='repair_order_equipment_label'),
     path('repair-orders/<int:pk>/act/receive/', views.repair_order_act_receive, name='repair_order_act_receive'),
     path('repair-orders/<int:pk>/act/complete/', views.repair_order_act_complete, name='repair_order_act_complete'),

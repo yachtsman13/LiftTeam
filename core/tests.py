@@ -10809,12 +10809,14 @@ class PartsPerUnitTests(TestCase):
         self.assertEqual(detail.quantity_used, 3)
 
     def test_the_card_asks_only_when_there_is_a_choice(self):
+        # Ищем сам список, а не имя поля где угодно: имя встречается
+        # и в скрипте кнопки «списать деталь на эту единицу»
         page = self.http.get('/repair-orders/%d/' % self.order.pk)
-        self.assertNotContains(page, 'name="order_equipment"')
+        self.assertNotContains(page, '<select name="order_equipment"')
 
         self._second_unit()
         page = self.http.get('/repair-orders/%d/' % self.order.pk)
-        self.assertContains(page, 'name="order_equipment"')
+        self.assertContains(page, '<select name="order_equipment"')
         self.assertContains(page, 'На заказ целиком')
 
     def test_old_write_offs_read_as_on_the_order(self):
@@ -14752,3 +14754,192 @@ class StatusControlPlacementTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.order.status, 'repair')
+
+
+# ============ БЫСТРЫЕ ДЕЙСТВИЯ ПО ЕДИНИЦЕ (v2.78.0) ============
+
+
+class UnitEditTests(TestCase):
+    """Правка единицы на её странице.
+
+    Раньше эти поля правились только через редактирование всего заказа —
+    формой на все единицы разом: записать работы по одному прибору стоило
+    открыть заказ целиком и сохранить всё вместе.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='unit_edit', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Конденсаторы потеряли ёмкость.',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-EDIT-1'
+            ),
+        )
+
+    def _post(self, **extra):
+        data = {
+            'fault_description': 'Не открывает двери',
+            'initial_condition': 'Корпус цел',
+            'work_performed': 'Заменены конденсаторы C12, C13',
+            'seal_numbers': '7788',
+            'repair_cost': '5200.00',
+        }
+        data.update(extra)
+        return self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            data,
+        )
+
+    def test_the_fields_are_saved_from_the_unit_page(self):
+        response = self._post()
+
+        self.roe.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.roe.work_performed, 'Заменены конденсаторы C12, C13')
+        self.assertEqual(self.roe.seal_numbers, '7788')
+        self.assertEqual(self.roe.repair_cost, Decimal('5200.00'))
+        self.assertEqual(self.roe.fault_description, 'Не открывает двери')
+
+    def test_saving_returns_to_the_place_that_was_edited(self):
+        """Мастер записывает работы по одному прибору и берётся
+        за следующий, а не уходит в заказ целиком."""
+        response = self._post(anchor='repair')
+
+        self.assertEqual(
+            response['Location'],
+            reverse('repair_order_unit_detail',
+                    args=[self.order.pk, self.roe.pk]) + '#repair',
+        )
+
+    def test_faults_of_another_model_are_not_offered(self):
+        """Чужая неисправность означала бы рецепт деталей не от этого
+        прибора."""
+        other = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = FaultType.objects.create(equipment_model=other, name='иная')
+
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn('высохли конденсаторы', html)
+        self.assertNotIn('>иная<', html)
+        self.assertNotIn('value="%d"' % alien.pk, html)
+
+    def test_choosing_a_fault_changes_readiness_and_documents(self):
+        """Описание выбранной неисправности идёт в акт дефектации,
+        и из неё же выводится сложность ремонта."""
+        self._post(faults=[str(self.fault.pk)])
+
+        self.roe.refresh_from_db()
+        self.assertEqual(list(self.roe.faults.all()), [self.fault])
+        self.assertIn('Конденсаторы потеряли ёмкость.',
+                      self.roe.diagnosis_document_text)
+
+    def test_a_bad_cost_saves_nothing(self):
+        response = self._post(repair_cost='дорого')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(self.roe.repair_cost)
+        self.assertEqual(self.roe.work_performed, '')
+
+    def test_only_post_edits(self):
+        """Ссылку с этим адресом мог бы открыть кто угодно."""
+        response = self.http.get(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk])
+        )
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_a_unit_of_another_order_is_not_edited(self):
+        other = RepairOrder.objects.create(client=self.order.client)
+
+        response = self.http.post(
+            reverse('repair_order_unit_edit', args=[other.pk, self.roe.pk]),
+            {'work_performed': 'чужое'},
+        )
+
+        self.roe.refresh_from_db()
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.roe.work_performed, '')
+
+    def test_the_recipe_button_uses_the_same_endpoint_as_the_order_form(self):
+        """Второй такой обработчик однажды разошёлся бы с первым,
+        а списание со склада — не то место, где это можно позволить."""
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn(
+            reverse('repair_order_apply_fault_template', args=[self.order.pk]),
+            html,
+        )
+        self.assertIn('LiftTeamWS.fetch', html)
+
+
+class UnitQuickActionsTests(TestCase):
+    """Быстрые действия в строке единицы на карточке заказа."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='quick_actions', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-QA-1'
+            ),
+        )
+
+    @property
+    def html(self):
+        return self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+    def test_writing_work_is_one_click_from_the_row(self):
+        """Самое узкое место: поле входит в чек-лист готовности,
+        а добраться до него было дороже всего."""
+        expected = reverse(
+            'repair_order_unit_detail', args=[self.order.pk, self.roe.pk]
+        ) + '#repair'
+
+        self.assertIn(expected, self.html)
+
+    def test_using_a_part_points_at_the_form_below(self):
+        """Форма списания стоит на этой же странице — уводить с неё
+        незачем."""
+        html = self.html
+
+        self.assertIn('use-part-here', html)
+        self.assertIn('data-unit="%d"' % self.roe.pk, html)
+        self.assertIn('id="usePartForm"', html)
+
+    def test_the_row_does_not_carry_a_page_button_any_more(self):
+        """На страницу ведёт вся строка и серийный номер в ней; место
+        отдано тому, что жмут по многу раз в день."""
+        html = self.html
+
+        self.assertIn('bi-pencil-square', html)   # записать работы
+        self.assertIn('bi-cpu', html)             # списать деталь
+        self.assertNotIn('bi-box-arrow-in-right', html)

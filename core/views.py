@@ -45,7 +45,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
-    TechCardForm, TechCardStepFormSet,
+    TechCardForm, TechCardStepFormSet, UnitEditForm,
     RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
@@ -4394,6 +4394,7 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
     return render(request, 'core/repair_orders/unit_detail.html', {
         'order': order,
         'order_equipment': order_equipment,
+        'form': UnitEditForm(instance=order_equipment),
         'equipment': equipment,
         'position': position,
         'previous_warranty': previous.get(equipment.pk),
@@ -4406,6 +4407,30 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
         'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
         'repairs_count': equipment.repair_orders.count(),
     })
+
+
+@login_required
+@require_POST
+def repair_order_unit_edit(request, order_pk, roe_pk):
+    """Сохранить правку единицы со страницы этой единицы.
+
+    Только POST: страница показывается своим представлением, а сюда
+    приходит одна форма — та, что на ней стоит. Возвращаемся туда же,
+    к тому месту, которое правили: мастер записывает работы по одному
+    прибору и берётся за следующий, а не уходит в заказ целиком.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    form = UnitEditForm(request.POST, instance=order_equipment)
+    anchor = request.POST.get('anchor', '')
+
+    if form.is_valid():
+        form.save()
+        messages.success(request, 'Записано')
+    else:
+        messages.error(request, 'Не сохранено: проверьте отмеченные поля')
+
+    url = reverse('repair_order_unit_detail', args=[order_pk, roe_pk])
+    return redirect(f'{url}#{anchor}' if anchor else url)
 
 
 @login_required
