@@ -1,0 +1,135 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ card.title }} — LiftTeam v2.69.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Лист карты — свои правила, а не классы Bootstrap: он приходит
+       из интернета, и когда не приезжает, карта у стола нужна всё равно.
+       Разметка на бумаге тоже своя — печатают её на обычный A4. */
+    .card-sheet {
+        max-width: 190mm;
+        background: #fff;
+        color: #000;
+        margin: 0 auto;
+    }
+    .card-sheet h1 { font-size: 18pt; margin: 0 0 2mm; }
+    .card-sheet .card-sheet-meta { font-size: 10pt; color: #444; margin-bottom: 5mm; }
+    .card-sheet .card-sheet-purpose {
+        border-left: 3px solid #0d6efd;
+        padding: 2mm 0 2mm 4mm;
+        margin-bottom: 6mm;
+    }
+    .step-row {
+        display: flex;
+        gap: 4mm;
+        padding: 3mm 0;
+        border-top: 1px solid #ddd;
+        page-break-inside: avoid;
+    }
+    .step-number {
+        flex: 0 0 12mm;
+        font-size: 14pt;
+        font-weight: 700;
+        color: #0d6efd;
+    }
+    .step-body { flex: 1 1 auto; }
+    .step-text { white-space: pre-line; }
+    /* Предостережение — то, что нельзя пропустить. Цвет задан целиком:
+       на бумаге он всё равно уйдёт в серый, поэтому рядом стоит слово
+       «Внимание» и рамка, а не один только цвет. */
+    .step-caution {
+        margin-top: 2mm;
+        padding: 2mm 3mm;
+        border: 1px solid #b02a37;
+        color: #842029;
+        font-weight: 600;
+    }
+    .step-version {
+        display: inline-block;
+        margin-top: 1mm;
+        padding: 0 2mm;
+        border: 1px solid #666;
+        font-size: 9pt;
+        color: #333;
+    }
+
+    @media screen {
+        .card-sheet {
+            padding: 10mm;
+            box-shadow: 0 0 8px rgba(0, 0, 0, .15);
+        }
+    }
+    @media print {
+        @page { size: A4; margin: 15mm; }
+        body { margin: 0; padding: 0; background: #fff; }
+        .sidebar, .sidebar-toggle, .no-print, nav, .btn { display: none !important; }
+        .main-content { margin-left: 0 !important; padding: 0 !important; }
+        .card-sheet { max-width: none; padding: 0; box-shadow: none; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
+    <button onclick="window.print()" class="btn btn-primary">
+        <i class="bi bi-printer me-2"></i>Печать
+    </button>
+    <a href="{% url 'tech_card_edit' card.pk %}" class="btn btn-outline-primary">
+        <i class="bi bi-pencil me-2"></i>Изменить
+    </a>
+    <a href="{% url 'tech_card_list' %}" class="btn btn-outline-secondary">К списку карт</a>
+    {% if version %}
+    <span class="text-muted small">
+        Показаны шаги для исполнения {{ version }}: общие и помеченные им.
+    </span>
+    {% else %}
+    <span class="text-muted small">
+        Показаны только общие шаги. Шаги отдельных исполнений видны, когда
+        карту открывают от единицы оборудования — со страницы дефектации.
+    </span>
+    {% endif %}
+</div>
+
+{% if version_missing %}
+<div class="alert alert-warning no-print">
+    Такого исполнения у модели «{{ card.equipment_model.name }}» нет — показаны
+    только общие шаги. Шаги, помеченные исполнениями, в этот список не попали.
+</div>
+{% endif %}
+
+<div class="card-sheet">
+    <h1>{{ card.title }}</h1>
+    <div class="card-sheet-meta">
+        {{ card.equipment_model.full_name }}{% if version %}{{ version.name }}{% endif %}
+        {% if card.fault_type %}
+        · неисправность: {{ card.fault_type.name }}
+        {% else %}
+        · общая процедура по модели
+        {% endif %}
+    </div>
+
+    {% if card.purpose %}
+    <div class="card-sheet-purpose">{{ card.purpose|linebreaksbr }}</div>
+    {% endif %}
+
+    {% for step in steps %}
+    <div class="step-row">
+        <div class="step-number">{{ step.number }}</div>
+        <div class="step-body">
+            <div class="step-text">{{ step.text }}</div>
+            {% if step.caution %}
+            <div class="step-caution">Внимание: {{ step.caution }}</div>
+            {% endif %}
+            {% if step.version %}
+            <div class="step-version">только для {{ step.version }}</div>
+            {% endif %}
+        </div>
+    </div>
+    {% empty %}
+    <p class="text-muted">
+        В карте пока нет ни одного шага{% if version %} для этого исполнения{% endif %}.
+    </p>
+    {% endfor %}
+</div>
+{% endblock %}

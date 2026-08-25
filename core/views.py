@@ -31,7 +31,7 @@ from channels.layers import get_channel_layer
 
 from .models import (
     Client, EquipmentModel, EquipmentType, EquipmentVersion, Equipment,
-    PriceList, PriceListLine, available_equipment_for_order,
+    PriceList, PriceListLine, TechCard, available_equipment_for_order,
     FaultType, FaultTypePart, RepairOrder, RepairOrderEquipment,
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
@@ -45,6 +45,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
+    TechCardForm, TechCardStepFormSet,
     RepairOrderEquipmentFormSet, RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
@@ -742,6 +743,114 @@ def fault_type_list(request):
         .order_by('equipment_model__name', 'name')
     )
     return render(request, 'core/faults/list.html', {'fault_types': fault_types})
+
+
+# ==================== ТЕХНОЛОГИЧЕСКИЕ КАРТЫ ====================
+# Карта отвечает на вопрос «как это делают руками». Привязана к модели
+# всегда, к неисправности — по желанию: «как разобрать корпус» не про
+# поломку, а про прибор. Права — как у соседних справочников: смотреть
+# и править может любой вошедший, удалять — склад и мастер.
+
+
+@login_required
+def tech_card_list(request):
+    cards = (
+        TechCard.objects.select_related('equipment_model', 'fault_type')
+        .annotate(step_count=Count('steps'))
+        .order_by('equipment_model__name', 'title')
+    )
+    model_id = request.GET.get('model', '')
+    if model_id:
+        cards = cards.filter(equipment_model_id=model_id)
+    return render(request, 'core/tech_cards/list.html', {
+        'cards': cards,
+        'models': EquipmentModel.objects.order_by('name'),
+        'model_id': model_id,
+    })
+
+
+@login_required
+def tech_card_detail(request, pk):
+    """Карта на экране и на бумаге.
+
+    `?version=` сужает шаги до одного исполнения — так на неё приходят
+    со страницы дефектации, где исполнение единицы уже известно. Без него
+    показываются только общие шаги: шаг чужого исполнения хуже, чем его
+    отсутствие.
+    """
+    card = get_object_or_404(
+        TechCard.objects.select_related('equipment_model', 'fault_type'), pk=pk
+    )
+    version = None
+    version_id = request.GET.get('version', '')
+    if version_id:
+        version = card.equipment_model.versions.filter(pk=version_id).first()
+    return render(request, 'core/tech_cards/detail.html', {
+        'card': card,
+        'version': version,
+        'steps': card.steps_for(version).select_related('version'),
+        # Исполнение просили, а его у этой модели нет — молчать нельзя:
+        # человек решит, что карта полная, а половины шагов не увидит
+        'version_missing': bool(version_id) and version is None,
+    })
+
+
+def _tech_card_page(request, card, title):
+    """Общая работа страниц создания и правки карты.
+
+    Одна на обе: набор шагов создаётся с моделью карты, иначе в выборе
+    исполнения оказались бы исполнения всех моделей разом.
+    """
+    model = card.equipment_model if card.pk else None
+    if request.method == 'POST':
+        form = TechCardForm(request.POST, instance=card)
+        # Модель могли поменять в этом же запросе — исполнения берём
+        # из присланной, а не из сохранённой: иначе правка «перенести
+        # карту на другую модель» отвергала бы собственные исполнения
+        posted = EquipmentModel.objects.filter(
+            pk=request.POST.get('equipment_model') or 0
+        ).first()
+        formset = TechCardStepFormSet(
+            request.POST, instance=card,
+            form_kwargs={'equipment_model': posted or model},
+        )
+        if form.is_valid() and formset.is_valid():
+            with transaction.atomic():
+                saved = form.save()
+                formset.instance = saved
+                formset.save()
+            messages.success(request, 'Технологическая карта сохранена')
+            return redirect('tech_card_detail', pk=saved.pk)
+        messages.error(request, 'Карта не сохранена: проверьте отмеченные поля')
+    else:
+        form = TechCardForm(instance=card)
+        formset = TechCardStepFormSet(
+            instance=card, form_kwargs={'equipment_model': model}
+        )
+    return render(request, 'core/tech_cards/form.html', {
+        'form': form, 'formset': formset, 'title': title, 'card': card,
+    })
+
+
+@login_required
+def tech_card_create(request):
+    return _tech_card_page(request, TechCard(), 'Новая технологическая карта')
+
+
+@login_required
+def tech_card_edit(request, pk):
+    card = get_object_or_404(TechCard, pk=pk)
+    return _tech_card_page(request, card, 'Правка технологической карты')
+
+
+@role_required('repair_manager', 'warehouse')
+def tech_card_delete(request, pk):
+    card = get_object_or_404(TechCard, pk=pk)
+    if request.method == 'POST':
+        card.delete()
+        messages.success(request, 'Технологическая карта удалена')
+        return redirect('tech_card_list')
+    return render(request, 'core/tech_cards/delete.html', {'card': card})
 
 
 def _fault_type_copy_initial(source):
@@ -4198,6 +4307,12 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
         'price_line': line,
         'price_source': str(line.price_list) if line else '',
         'materials': equipment.model.materials_for(equipment.version),
+        # Карты модели целиком, а не только по выбранным неисправностям:
+        # на дефектации их ещё выбирают, а «как разобрать корпус» нужна
+        # раньше любого выбора. Исполнение передаётся в ссылку, чтобы
+        # карта открылась сразу со своими шагами
+        'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
+        'version_id': equipment.version_id or '',
     })
 
 

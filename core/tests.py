@@ -40,7 +40,8 @@ from .models import (
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
-    StorageCell, WebhookDelivery, parse_layout, plural_genitive, format_spec,
+    StorageCell, TechCard, TechCardStep, WebhookDelivery,
+    parse_layout, plural_genitive, format_spec,
 )
 
 
@@ -13081,3 +13082,243 @@ class EquipmentMaterialScreensTests(TestCase):
 
         self.assertIn('target="_blank"', html)
         self.assertIn('rel="noopener"', html)
+
+
+# ==================== ТЕХНОЛОГИЧЕСКИЕ КАРТЫ (v2.69.0) ====================
+
+
+class TechCardTests(TestCase):
+    """Карта — «как это делают руками»: разобрать корпус, проверить
+    на стенде, заменить высохшие конденсаторы.
+
+    Привязана к модели всегда, к неисправности — по желанию: так решил
+    владелец, и это ответ на давний открытый вопрос. «Как разобрать
+    корпус» не про поломку, а про прибор.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='techcard_admin', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.other_version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.7'
+        )
+        self.fault = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Электролитические конденсаторы потеряли ёмкость.',
+        )
+
+    def _card(self, **kwargs):
+        kwargs.setdefault('equipment_model', self.model)
+        kwargs.setdefault('title', 'Разборка корпуса')
+        return TechCard.objects.create(**kwargs)
+
+    def test_a_card_without_a_fault_is_allowed(self):
+        """То, ради чего вопрос и задавался: «как разобрать корпус»
+        не привязана ни к какой поломке."""
+        card = self._card()
+
+        card.full_clean()
+        self.assertIsNone(card.fault_type)
+
+    def test_a_fault_of_another_model_is_refused(self):
+        """Карта висела бы у одного прибора, а предлагалась при поломке
+        другого."""
+        other = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = FaultType.objects.create(equipment_model=other, name='иная')
+        card = TechCard(
+            equipment_model=self.model, fault_type=alien, title='Чужая'
+        )
+
+        with self.assertRaises(ValidationError) as caught:
+            card.full_clean()
+
+        self.assertIn('fault_type', caught.exception.error_dict)
+
+    def test_general_cards_come_before_fault_ones(self):
+        """Прибор разбирают раньше, чем чинят."""
+        self._card(fault_type=self.fault, title='Замена конденсаторов')
+        general = self._card(title='Разборка корпуса')
+
+        self.assertEqual(self.model.tech_cards.first(), general)
+
+    def test_a_step_of_a_version_shows_only_for_it(self):
+        card = self._card()
+        common = TechCardStep.objects.create(
+            card=card, number=10, text='Снять крышку'
+        )
+        special = TechCardStep.objects.create(
+            card=card, number=20, text='Отвернуть четыре винта',
+            version=self.version,
+        )
+
+        self.assertEqual(list(card.steps_for(self.version)), [common, special])
+        self.assertEqual(list(card.steps_for(self.other_version)), [common])
+        self.assertEqual(list(card.steps_for(None)), [common])
+
+    def test_a_step_version_of_another_model_is_refused(self):
+        other = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = EquipmentVersion.objects.create(
+            equipment_model=other, name='-1.1'
+        )
+        card = self._card()
+        step = TechCardStep(card=card, number=10, text='шаг', version=alien)
+
+        with self.assertRaises(ValidationError) as caught:
+            step.full_clean()
+
+        self.assertIn('version', caught.exception.error_dict)
+
+    def test_a_deleted_fault_does_not_take_the_card_with_it(self):
+        """Неисправность убрали из справочника — описанная процедура
+        никуда не делась, и терять её нельзя."""
+        card = self._card(fault_type=self.fault, title='Замена конденсаторов')
+
+        self.fault.delete()
+
+        card.refresh_from_db()
+        self.assertIsNone(card.fault_type)
+
+
+class TechCardScreensTests(TestCase):
+    """Где карты заводят, где печатают и где видят при работе."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='techcard_screens', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.4'
+        )
+        self.other_version = EquipmentVersion.objects.create(
+            equipment_model=self.model, name='.7'
+        )
+        self.equipment = Equipment.objects.create(
+            model=self.model, version=self.version, serial_number='SN-TC-1',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment
+        )
+        self.card = TechCard.objects.create(
+            equipment_model=self.model, title='Разборка корпуса',
+            purpose='Перед любой работой внутри.',
+        )
+        self.common_step = TechCardStep.objects.create(
+            card=self.card, number=10, text='Снять крышку',
+            caution='сначала разрядить конденсаторы',
+        )
+        self.version_step = TechCardStep.objects.create(
+            card=self.card, number=20, text='Отвернуть четыре винта',
+            version=self.version,
+        )
+
+    def _defect_url(self):
+        return reverse('repair_order_defect_act_edit',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_a_card_is_created_with_its_steps(self):
+        response = self.http.post(reverse('tech_card_create'), {
+            'equipment_model': str(self.model.pk), 'fault_type': '',
+            'title': 'Проверка на стенде', 'purpose': '',
+            'steps-TOTAL_FORMS': '1', 'steps-INITIAL_FORMS': '0',
+            'steps-MIN_NUM_FORMS': '0', 'steps-MAX_NUM_FORMS': '1000',
+            'steps-0-number': '10', 'steps-0-text': 'Подключить питание',
+            'steps-0-version': '', 'steps-0-caution': '',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        card = TechCard.objects.get(title='Проверка на стенде')
+        self.assertEqual(card.steps.get().text, 'Подключить питание')
+
+    def test_a_new_card_offers_no_versions_yet(self):
+        """Исполнения берутся у модели, а модель выбирают в этой же форме:
+        предлагать чужие исполнения нельзя — шаг с ним не покажется никогда."""
+        html = self.http.get(reverse('tech_card_create')).content.decode()
+
+        self.assertNotIn(str(self.version), html)
+
+    def test_editing_offers_only_this_models_versions(self):
+        other_model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='-1.1'
+        )
+
+        html = self.http.get(
+            reverse('tech_card_edit', args=[self.card.pk])
+        ).content.decode()
+
+        self.assertIn('>%s</option>' % self.version, html)
+        self.assertNotIn(str(alien), html)
+
+    def test_the_printed_card_shows_only_asked_for_steps(self):
+        url = reverse('tech_card_detail', args=[self.card.pk])
+
+        for_version = self.http.get(url, {'version': self.version.pk}).content.decode()
+        for_other = self.http.get(url, {'version': self.other_version.pk}).content.decode()
+        bare = self.http.get(url).content.decode()
+
+        self.assertIn('Отвернуть четыре винта', for_version)
+        self.assertNotIn('Отвернуть четыре винта', for_other)
+        self.assertNotIn('Отвернуть четыре винта', bare)
+        for html in (for_version, for_other, bare):
+            self.assertIn('Снять крышку', html)
+
+    def test_a_caution_is_printed_with_a_word_not_only_a_colour(self):
+        """На бумаге цвет уходит в серый, и предостережение нужно узнавать
+        по слову, а не по оттенку."""
+        html = self.http.get(
+            reverse('tech_card_detail', args=[self.card.pk])
+        ).content.decode()
+
+        self.assertIn('Внимание: сначала разрядить конденсаторы', html)
+
+    def test_an_unknown_version_says_so_instead_of_pretending(self):
+        """Молчание тут означало бы, что мастер считает карту полной,
+        а половины шагов не видит."""
+        other_model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='-1.1'
+        )
+
+        html = self.http.get(
+            reverse('tech_card_detail', args=[self.card.pk]),
+            {'version': alien.pk},
+        ).content.decode()
+
+        self.assertIn('Такого исполнения у модели', html)
+        self.assertNotIn('Отвернуть четыре винта', html)
+
+    def test_diagnostics_links_the_card_with_the_units_version(self):
+        """Без исполнения в ссылке мастер увидел бы половину карты
+        и не понял бы, что половины нет."""
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertIn('Разборка корпуса', html)
+        self.assertIn(
+            '%s?version=%d' % (
+                reverse('tech_card_detail', args=[self.card.pk]), self.version.pk
+            ),
+            html,
+        )
+
+    def test_diagnostics_without_cards_says_where_to_add_them(self):
+        TechCard.objects.all().delete()
+
+        html = self.http.get(self._defect_url()).content.decode()
+
+        self.assertIn('карт пока нет', html)
+        self.assertIn(reverse('tech_card_create'), html)

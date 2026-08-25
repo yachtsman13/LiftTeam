@@ -1,0 +1,23 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление технологической карты — LiftTeam v2.69.0{% endblock %}
+
+{% block content %}
+<div class="card border-danger">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Подтверждение удаления</h5>
+    </div>
+    <div class="card-body">
+        <p>Удалить технологическую карту <strong>{{ card.title }}</strong>
+            ({{ card.equipment_model.name }})?</p>
+        <p class="text-muted">Шаги будут удалены вместе с ней, и восстановить их
+            будет нечем. На заказы это не влияет: карта — описание работы,
+            а не запись о ней.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'tech_card_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

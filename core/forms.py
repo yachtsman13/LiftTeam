@@ -10,7 +10,8 @@ from .models import (
     Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
-    PriceList, PriceListLine, EquipmentMaterial, available_equipment_for_order,
+    PriceList, PriceListLine, EquipmentMaterial, TechCard, TechCardStep,
+    available_equipment_for_order,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
     parse_layout, format_spec,
 )
@@ -518,6 +519,61 @@ class EquipmentMaterialForm(forms.ModelForm):
 EquipmentMaterialFormSet = inlineformset_factory(
     EquipmentModel, EquipmentMaterial, form=EquipmentMaterialForm,
     extra=1, can_delete=True
+)
+
+
+class TechCardForm(forms.ModelForm):
+    """Шапка технологической карты: чья она и о чём."""
+
+    class Meta:
+        model = TechCard
+        fields = ['equipment_model', 'fault_type', 'title', 'purpose']
+        widgets = {
+            'equipment_model': forms.Select(attrs={'class': 'form-select'}),
+            'fault_type': forms.Select(attrs={'class': 'form-select'}),
+            'title': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Разборка корпуса'
+            }),
+            'purpose': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['equipment_model'].queryset = EquipmentModel.objects.order_by('name')
+        # Неисправности всех моделей разом: модель выбирают в этой же форме,
+        # и сузить список заранее не по чему. Чужую отсекает clean модели —
+        # там же, где это правило и записано, а не вторым его списком здесь
+        self.fields['fault_type'].queryset = FaultType.objects.select_related(
+            'equipment_model'
+        ).order_by('equipment_model__name', 'name')
+        self.fields['fault_type'].empty_label = 'Общая процедура по модели'
+
+
+class TechCardStepForm(forms.ModelForm):
+    class Meta:
+        model = TechCardStep
+        fields = ['number', 'text', 'version', 'caution']
+        widgets = {
+            'number': forms.NumberInput(attrs={'class': 'form-control', 'min': 1}),
+            'text': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'version': forms.Select(attrs={'class': 'form-select'}),
+            'caution': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+    def __init__(self, *args, equipment_model=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Только исполнения той же модели: чужое означало бы шаг, который
+        # не покажется никогда. Модель приходит извне — у пустой строки
+        # набора связь с картой проставляется уже после сборки формы
+        self.fields['version'].queryset = (
+            EquipmentVersion.objects.filter(equipment_model=equipment_model)
+            if equipment_model is not None else EquipmentVersion.objects.none()
+        )
+        self.fields['version'].empty_label = 'Для всех исполнений'
+
+
+TechCardStepFormSet = inlineformset_factory(
+    TechCard, TechCardStep, form=TechCardStepForm, extra=1, can_delete=True
 )
 
 

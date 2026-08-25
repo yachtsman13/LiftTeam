@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.68.0
+v2.69.0
 """
 from django.urls import path
 from . import views
@@ -56,6 +56,14 @@ urlpatterns = [
     path('faults/create/', views.fault_type_create, name='fault_type_create'),
     path('faults/<int:pk>/edit/', views.fault_type_edit, name='fault_type_edit'),
     path('faults/<int:pk>/delete/', views.fault_type_delete, name='fault_type_delete'),
+
+    # Технологические карты: как это делают руками. Карта привязана
+    # к модели всегда, к неисправности — по желанию.
+    path('tech-cards/', views.tech_card_list, name='tech_card_list'),
+    path('tech-cards/create/', views.tech_card_create, name='tech_card_create'),
+    path('tech-cards/<int:pk>/', views.tech_card_detail, name='tech_card_detail'),
+    path('tech-cards/<int:pk>/edit/', views.tech_card_edit, name='tech_card_edit'),
+    path('tech-cards/<int:pk>/delete/', views.tech_card_delete, name='tech_card_delete'),
 
     # Заказы на ремонт
     path('repair-orders/', views.repair_order_list, name='repair_order_list'),

@@ -1093,6 +1093,120 @@ class FaultTypePart(models.Model):
         return f'{self.part.name} x{self.quantity}'
 
 
+class TechCard(models.Model):
+    """Технологическая карта: что делать руками у стола.
+
+    Отвечает на вопрос «нашли вот это — как чинить» либо «как проделать
+    вот это»: разобрать корпус, проверить на стенде, заменить высохшие
+    конденсаторы. Карта на модель целиком была бы книгой, поэтому карт
+    у модели много, и каждая — процедура на полстраницы.
+
+    Привязана **к модели**, всегда. Неисправность необязательна, и это
+    решение владельца: карты бывают и без неё — «как разобрать корпус»
+    не про поломку, а про прибор. Указана неисправность — карта
+    показывается как ответ на неё; не указана — как общая процедура
+    по модели.
+
+    Обе привязки сразу противоречия не создают: неисправность сама живёт
+    у модели, и `clean` следит, чтобы это была та же модель. Иначе карта
+    висела бы у одного прибора, а предлагалась при поломке другого.
+
+    Исполнение уточняет **шаг**, а не карту целиком (см. `TechCardStep`):
+    при трёх исполнениях иначе вышло бы три почти одинаковых карты,
+    и любую правку пришлось бы вносить трижды.
+    """
+    equipment_model = models.ForeignKey(
+        EquipmentModel, on_delete=models.CASCADE, related_name='tech_cards',
+        verbose_name='Модель оборудования'
+    )
+    # Пусто — общая процедура по модели («как разобрать корпус»).
+    # SET_NULL, а не CASCADE: неисправность убрали из справочника,
+    # а описанная процедура никуда не делась и терять её нельзя
+    fault_type = models.ForeignKey(
+        FaultType, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='tech_cards', verbose_name='Неисправность',
+        help_text='Необязательно. Пусто — общая процедура по модели: '
+                  '«как разобрать корпус», «как проверить на стенде».'
+    )
+    title = models.CharField('Название карты', max_length=255)
+    purpose = models.TextField(
+        'Для чего', blank=True,
+        help_text='Одна-две строки: когда эту карту берут в руки.'
+    )
+
+    class Meta:
+        verbose_name = 'Технологическая карта'
+        verbose_name_plural = 'Технологические карты'
+        # Общие процедуры первыми: разбирают прибор раньше, чем чинят.
+        # F() с nulls_first — потому что «пусто» здесь означает не «нет
+        # данных», а «карта общая», и она должна стоять вверху списка
+        ordering = [models.F('fault_type').asc(nulls_first=True), 'title']
+
+    def __str__(self):
+        return self.title
+
+    def clean(self):
+        if self.fault_type_id and self.fault_type.equipment_model_id != self.equipment_model_id:
+            raise ValidationError({
+                'fault_type': 'Эта неисправность заведена у другой модели.'
+            })
+
+    def steps_for(self, version=None):
+        """Шаги для этого исполнения: общие плюс помеченные им.
+
+        Вытеснения нет — шаг с исполнением не заменяет общий, а
+        добавляется. Общие шаги («снять крышку») нужны на любом
+        исполнении, а помеченный описывает то, что там иначе.
+        """
+        steps = self.steps.all()
+        if version is None:
+            return steps.filter(version__isnull=True)
+        return steps.filter(Q(version__isnull=True) | Q(version=version))
+
+
+class TechCardStep(models.Model):
+    """Один шаг технологической карты.
+
+    Исполнение стоит у шага, а не у карты: при трёх исполнениях иначе
+    вышло бы три почти одинаковых карты, и любую правку пришлось бы
+    вносить трижды.
+    """
+    card = models.ForeignKey(
+        TechCard, on_delete=models.CASCADE, related_name='steps',
+        verbose_name='Карта'
+    )
+    # Номер задаёт человек, а не программа: шаги нумеруют с запасом
+    # (10, 20, 30), чтобы вставить между ними новый, не перебивая все
+    number = models.PositiveIntegerField('Номер шага', default=1)
+    text = models.TextField('Что делать')
+    # Пусто — шаг общий для всех исполнений; указано — только для этого.
+    # CASCADE: исполнение удалили — уточняющий его шаг больше не о чем
+    version = models.ForeignKey(
+        EquipmentVersion, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='tech_card_steps', verbose_name='Только для исполнения'
+    )
+    caution = models.CharField(
+        'Предостережение', max_length=255, blank=True,
+        help_text='То, что нельзя пропустить: «сначала разрядить '
+                  'конденсаторы». Печатается заметно.'
+    )
+
+    class Meta:
+        verbose_name = 'Шаг технологической карты'
+        verbose_name_plural = 'Шаги технологических карт'
+        ordering = ['number', 'pk']
+
+    def __str__(self):
+        return f'{self.number}. {self.text[:60]}'
+
+    def clean(self):
+        if self.version_id and self.card_id:
+            if self.version.equipment_model_id != self.card.equipment_model_id:
+                raise ValidationError({
+                    'version': 'Это исполнение другой модели.'
+                })
+
+
 class RepairOrderQuerySet(models.QuerySet):
     """Отбор по долгам. Условия записаны здесь, а не в каждом отчёте:
     «должник» встречается на дашборде, в отчёте, в выгрузке и в напоминаниях,

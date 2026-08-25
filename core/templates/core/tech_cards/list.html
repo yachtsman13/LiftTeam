@@ -1,0 +1,76 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Технологические карты — LiftTeam v2.69.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-card-checklist me-2"></i>Технологические карты</h2>
+    <div>
+        <a href="{% url 'fault_type_list' %}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-clipboard2-pulse me-2"></i>Неисправности
+        </a>
+        <a href="{% url 'tech_card_create' %}" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-2"></i>Новая карта
+        </a>
+    </div>
+</div>
+
+{% comment %}
+    Карта отвечает на вопрос «как это делают руками». Общие процедуры
+    по модели («разобрать корпус») стоят выше карт по неисправностям:
+    прибор разбирают раньше, чем чинят.
+{% endcomment %}
+<div class="card">
+    <div class="card-body">
+        <form method="get" class="row g-2 mb-3">
+            <div class="col-md-5">
+                <select name="model" class="form-select" onchange="this.form.submit()">
+                    <option value="">Все модели</option>
+                    {% for model in models %}
+                    <option value="{{ model.pk }}" {% if model_id == model.pk|stringformat:"s" %}selected{% endif %}>{{ model.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </form>
+
+        <div class="table-responsive table-scroll">
+            <table class="table list-table align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Модель</th>
+                        <th>Карта</th>
+                        <th>Неисправность</th>
+                        <th class="text-end">Шагов</th>
+                        <th class="col-actions"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for card in cards %}
+                    <tr>
+                        <td data-label="Модель">{{ card.equipment_model.name }}</td>
+                        <td data-label="Карта">
+                            <a href="{% url 'tech_card_detail' card.pk %}"><strong>{{ card.title }}</strong></a>
+                            {% if card.purpose %}<div class="small text-muted">{{ card.purpose|truncatechars:90 }}</div>{% endif %}
+                        </td>
+                        <td data-label="Неисправность">
+                            {% if card.fault_type %}{{ card.fault_type.name }}
+                            {% else %}<span class="text-muted">общая процедура</span>{% endif %}
+                        </td>
+                        <td class="text-end" data-label="Шагов">{{ card.step_count }}</td>
+                        <td class="col-actions">
+                            <a href="{% url 'tech_card_edit' card.pk %}" class="btn btn-sm btn-outline-primary" title="Изменить"><i class="bi bi-pencil"></i></a>
+                            <a href="{% url 'tech_card_delete' card.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="5" class="text-center text-muted py-4">
+                        Карт пока нет. Первая — обычно «как разобрать корпус»:
+                        она нужна на любом ремонте и ни к какой неисправности не привязана.
+                    </td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
