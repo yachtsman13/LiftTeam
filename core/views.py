@@ -926,6 +926,7 @@ def _fault_type_copy_initial(source):
         'equipment_model': source.equipment_model_id,
         'name': f'{source.name} (копия)'[:255],
         'description': source.description,
+        'work_description': source.work_description,
         'complexity': source.complexity,
     }
     lines_initial = [

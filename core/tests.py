@@ -12071,10 +12071,29 @@ class MigrationOnLiveDataTests(TransactionTestCase):
     пустым или со значением по умолчанию.
     """
 
+    # Откатываемся к состоянию до появления типов, версий и сложности —
+    # именно на такой базе стояла программа у владельца.
     BEFORE = '0033_invoice_paid_notice'
-    AFTER = '0034_equipment_type_version_fault_complexity'
 
     available_apps = None
+
+    @property
+    def AFTER(self):
+        """Последняя миграция, а не та, ради которой тест писали.
+
+        Имя выводится, а не записано: после отката проверки идут текущими
+        классами моделей, и схема обязана совпадать с ними. Пока здесь
+        стояло имя одной миграции, тест ломался при каждом новом поле
+        в уже существующей таблице — не потому, что миграция плохая,
+        а потому что база оставалась на полпути.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        names = sorted(
+            name for app, name in MigrationLoader(None, ignore_no_migrations=True).disk_migrations
+            if app == 'core'
+        )
+        return names[-1]
 
     def _migrate(self, target):
         from django.db import connection as db_connection
@@ -15474,3 +15493,188 @@ class ReadinessButtonsTests(TestCase):
         ).content.decode()
 
         self.assertIn('id="parts"', html)
+
+
+# ============ ТИПОВЫЕ ВЫПОЛНЕННЫЕ РАБОТЫ (v2.81.0) ============
+
+
+class TypicalWorkTests(TestCase):
+    """У типовой неисправности есть не только «что нашли», но и «что делают».
+
+    Два разных текста, и путать их нельзя: акт выполненных работ с фразой
+    «конденсаторы потеряли ёмкость» читается как отчёт о том, что ничего
+    не делали.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='typical_work', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.dried = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            description='Электролитические конденсаторы потеряли ёмкость.',
+            work_description='Заменены электролитические конденсаторы в цепи питания.',
+        )
+        self.driver = FaultType.objects.create(
+            equipment_model=self.model, name='отказал драйвер',
+            description='Драйвер силового ключа не открывает транзистор.',
+            work_description='Заменён драйвер силового ключа.',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-TW-1'
+            ),
+        )
+
+    def _unit_url(self):
+        return reverse('repair_order_unit_detail',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_the_two_texts_stay_separate(self):
+        """Описание отвечает «что нашли», работы — «что сделали»."""
+        self.roe.faults.add(self.dried)
+
+        self.assertIn('потеряли ёмкость', self.roe.diagnosis_document_text)
+        self.assertNotIn('Заменены', self.roe.diagnosis_document_text)
+        self.assertEqual(
+            self.roe.typical_work_lines,
+            ['Заменены электролитические конденсаторы в цепи питания.'],
+        )
+
+    def test_lines_follow_the_order_of_the_faults(self):
+        self.roe.faults.add(self.dried, self.driver)
+
+        self.assertEqual(len(self.roe.typical_work_lines), 2)
+        self.assertIn('конденсаторы', self.roe.typical_work_lines[0])
+
+    def test_a_fault_without_typical_work_is_skipped(self):
+        """Подставлять нечего, а короткое название вместо работ не идёт:
+        оно не для документов."""
+        silent = FaultType.objects.create(
+            equipment_model=self.model, name='непонятный шум',
+        )
+        self.roe.faults.add(silent)
+
+        self.assertEqual(self.roe.typical_work_lines, [])
+
+    def test_nothing_is_written_into_the_act_by_itself(self):
+        """Неисправности выбирают при дефектации, до ремонта: собери
+        программа акт сама, он оказался бы готов по неразобранному
+        прибору, и чек-лист показал бы «работы записаны»."""
+        self.roe.faults.add(self.dried)
+        self.roe.refresh_from_db()
+
+        self.assertEqual(self.roe.work_performed, '')
+        self.assertIn(
+            'work', [check['code'] for check in self.roe.readiness_pending]
+        )
+
+    def test_the_button_carries_the_lines_to_the_page(self):
+        self.roe.faults.add(self.dried)
+
+        html = self.http.get(self._unit_url()).content.decode()
+
+        self.assertIn('data-typical-work', html)
+        self.assertIn('data-target="id_work_performed"', html)
+        self.assertIn('Заменены электролитические конденсаторы', html)
+
+    def test_the_lines_travel_as_json(self):
+        """В описании работ бывают и запятые, и кавычки, и переводы
+        строк — перечислением через запятую их не передать."""
+        self.dried.work_description = 'Заменены C12, C13; проверен «стенд»'
+        self.dried.save()
+        self.roe.faults.add(self.dried)
+
+        self.assertEqual(
+            json.loads(self.roe.typical_work_json),
+            ['Заменены C12, C13; проверен «стенд»'],
+        )
+
+    def test_the_fault_card_asks_for_both_texts(self):
+        html = self.http.get(
+            reverse('fault_type_edit', args=[self.dried.pk])
+        ).content.decode()
+
+        self.assertIn('Описание для документов', html)
+        self.assertIn('Типовые выполненные работы', html)
+
+    def test_the_field_is_saved_from_the_fault_card(self):
+        response = self.http.post(reverse('fault_type_edit', args=[self.dried.pk]), {
+            'equipment_model': str(self.model.pk),
+            'name': self.dried.name,
+            'description': self.dried.description,
+            'work_description': 'Заменены конденсаторы C12, C13 и проверен стенд.',
+            'complexity': 'simple',
+            'parts-TOTAL_FORMS': '0', 'parts-INITIAL_FORMS': '0',
+            'parts-MIN_NUM_FORMS': '0', 'parts-MAX_NUM_FORMS': '1000',
+        })
+
+        self.dried.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('C12, C13', self.dried.work_description)
+
+    def test_a_copy_carries_the_typical_work(self):
+        """Копирование карточки копирует всё — новое поле не исключение."""
+        html = self.http.get(
+            reverse('fault_type_create'), {'copy_from': self.dried.pk}
+        ).content.decode()
+
+        self.assertIn('Заменены электролитические конденсаторы', html)
+
+    def test_the_quote_offers_the_same_button(self):
+        """Предложение делают до ремонта, и текст тот же — только речь
+        о будущем."""
+        self.roe.faults.add(self.dried)
+
+        html = self.http.get(
+            reverse('repair_order_quote_edit', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('data-typical-work', html)
+        self.assertIn('Подставить типовые работы', html)
+
+
+class TypicalWorkScriptTests(SimpleTestCase):
+    """Правила подстановки записаны в одном скрипте на обе страницы."""
+
+    SCRIPT = Path(__file__).resolve().parent / 'static' / 'js' / 'typical-work.js'
+
+    @property
+    def code(self):
+        source = self.SCRIPT.read_text(encoding='utf-8')
+        source = re.sub(r'/\*.*?\*/', '', source, flags=re.S)
+        return re.sub(r'^\s*//.*$', '', source, flags=re.M)
+
+    def test_loaded_once_for_every_page(self):
+        base = (settings.BASE_DIR / 'core/templates/core/base.html'
+                ).read_text(encoding='utf-8')
+
+        self.assertIn('js/typical-work.js', base)
+
+    def test_typing_is_not_overwritten(self):
+        """Мастер уже что-то вписал — строки дописываются, а не заменяют."""
+        self.assertIn("var prefix = current.trim() ?", self.code)
+
+    def test_a_second_click_does_not_duplicate(self):
+        self.assertIn('added = lines.filter', self.code)
+        self.assertIn('flat.indexOf(flatten(line)) === -1', self.code)
+
+    def test_nothing_to_add_is_said_out_loud(self):
+        """Молчаливое бездействие человек примет за поломку кнопки."""
+        for text in ('типовых работ не заведено', 'уже вписаны', 'Подставлено строк'):
+            with self.subTest(text=text):
+                self.assertIn(text, self.SCRIPT.read_text(encoding='utf-8'))
+
+    def test_no_bootstrap_and_no_extra_request(self):
+        code = self.code
+
+        self.assertNotIn('data-bs-', code)
+        self.assertNotIn('fetch(', code)

@@ -171,17 +171,23 @@ class EquipmentModelForm(forms.ModelForm):
 class FaultTypeForm(forms.ModelForm):
     class Meta:
         model = FaultType
-        fields = ['equipment_model', 'name', 'description', 'complexity']
+        fields = ['equipment_model', 'name', 'description',
+                  'work_description', 'complexity']
         widgets = {
             'equipment_model': forms.Select(attrs={'class': 'form-select'}),
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'work_description': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 3,
+                'placeholder': 'Заменены электролитические конденсаторы в цепи питания',
+            }),
             'complexity': forms.Select(attrs={'class': 'form-select'}),
         }
         labels = {
             'equipment_model': 'Модель оборудования',
             'name': 'Неисправность (коротко, для списков)',
             'description': 'Описание для документов',
+            'work_description': 'Типовые выполненные работы',
             'complexity': 'Сложность ремонта',
         }
 

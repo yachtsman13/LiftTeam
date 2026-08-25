@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}LiftTeam v2.80.0{% endblock %}</title>
+    <title>{% block title %}LiftTeam v2.81.0{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     {% comment %}
@@ -468,7 +468,7 @@
         <div class="navbar-brand d-flex align-items-center">
             <img src="{% static 'img/lift_team_logo.png' %}" alt="LiftTeam" onerror="this.style.display='none'">
             <span class="fw-bold">LiftTeam</span>
-            <span class="ms-auto badge bg-primary">v2.80.0</span>
+            <span class="ms-auto badge bg-primary">v2.81.0</span>
         </div>
         <ul class="nav flex-column flex-grow-1 sidebar-nav">
             <li class="nav-item">
@@ -651,6 +651,12 @@
         Кнопка добавляется вставкой core/_camera_button.html.
     {% endcomment %}
     <script src="{% static 'js/camera-scan.js' %}"></script>
+    {% comment %}
+        Подстановка типовых работ нужна на двух страницах — единицы
+        и предложения, — поэтому скрипт общий, как и остальные. Новое
+        место — кнопка с data-typical-work, без правки скрипта.
+    {% endcomment %}
+    <script src="{% static 'js/typical-work.js' %}"></script>
     <script>
     /*
      * Переход по чек-листу готовности ставит курсор в само поле.

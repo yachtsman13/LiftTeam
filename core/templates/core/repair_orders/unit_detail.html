@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.80.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.81.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -241,6 +241,24 @@ document.addEventListener('DOMContentLoaded', function () {
                     <label class="form-label">{{ form.work_performed.label }}</label>
                     {{ form.work_performed }}
                     {% if form.work_performed.errors %}<div class="text-danger small">{{ form.work_performed.errors.0 }}</div>{% endif %}
+                    {% comment %}
+                        Типовые работы выбранных неисправностей —
+                        подставляются кнопкой, а не сами. Неисправности
+                        выбирают при дефектации, до ремонта: собери
+                        программа акт сама, он оказался бы готов
+                        по неразобранному прибору, и чек-лист показал бы
+                        «работы записаны». То же правило, что у цены
+                        из прайса — предлагается, а не подставляется.
+                    {% endcomment %}
+                    <div class="d-flex gap-2 align-items-center flex-wrap mt-2">
+                        <button type="button" class="btn btn-sm btn-outline-success"
+                                data-typical-work
+                                data-target="{{ form.work_performed.id_for_label }}"
+                                data-lines="{{ order_equipment.typical_work_json }}">
+                            <i class="bi bi-magic me-1"></i>Подставить типовые работы
+                        </button>
+                        <span class="small text-muted typical-work-note"></span>
+                    </div>
                 </div>
                 <div class="row g-3">
                     <div class="col-sm-6">
