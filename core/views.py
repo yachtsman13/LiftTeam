@@ -4342,7 +4342,12 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
             # замороженную не переписываем.
             saved.freeze_list_price()
             messages.success(request, 'Акт дефектации сохранён')
-            return redirect('repair_order_act_defect', order_pk=order_pk, roe_pk=roe_pk)
+            # Возвращаемся на ту же страницу, а не на печатный акт.
+            # Раньше сохранение уводило на документ, и чтобы поправить одну
+            # строку диагноза, приходилось уходить на акт и возвращаться
+            # назад. Документ открывается своей кнопкой, когда он нужен.
+            return redirect('repair_order_defect_act_edit',
+                            order_pk=order_pk, roe_pk=roe_pk)
         messages.error(request, 'Акт не сохранён: проверьте отмеченные поля')
     else:
         form = DefectActForm(instance=order_equipment)

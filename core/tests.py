@@ -3516,13 +3516,37 @@ class DefectActTests(TestCase):
 
         self.assertEqual(model.full_name, 'БУАД-3')
 
-    def test_filling_the_act_opens_it(self):
+    def test_saving_stays_on_the_form(self):
+        """Сохранение больше не уводит на печатный акт.
+
+        Пока уводило, правка одной строки диагноза стоила ухода
+        на документ и возвращения назад. Документ открывается своей
+        кнопкой, когда он нужен.
+        """
         resp = self._fill()
 
-        self.assertRedirects(resp, self._act_url())
+        self.assertRedirects(
+            resp,
+            reverse('repair_order_defect_act_edit',
+                    args=[self.order.pk, self.roe.pk]),
+        )
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.estimated_cost, Decimal('14000'))
         self.assertEqual(self.roe.defect_act_date, datetime.date(2026, 5, 6))
+
+    def test_the_act_is_opened_by_its_own_button(self):
+        """И рядом с ней сказано, что акт печатает сохранённое: молчание
+        здесь означало бы документ заказчику без того, что мастер
+        только что вписал."""
+        html = self.client_http.get(
+            reverse('repair_order_defect_act_edit',
+                    args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn('Открыть акт', html)
+        self.assertIn(self._act_url(), html)
+        self.assertIn('несохранённые правки', html)
+        self.assertNotIn('Сохранить и открыть акт', html)
 
     def test_the_act_carries_diagnosis_codes_and_estimate(self):
         self._fill()

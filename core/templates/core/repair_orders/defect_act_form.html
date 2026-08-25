@@ -1,6 +1,36 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.74.0{% endblock %}
+{% block title %}Дефектация {{ order_equipment.equipment.serial_number }} — LiftTeam v2.75.0{% endblock %}
+
+{% block extra_js %}
+<script>
+/*
+ * Отметка «есть несохранённые правки» рядом с кнопкой «Открыть акт».
+ *
+ * Акт печатает то, что лежит в базе, а не то, что набрано в форме.
+ * Пока сохранение само уводило на акт, разойтись они не могли; теперь
+ * могут — и молчать об этом нельзя: мастер отдаст заказчику документ
+ * без того, что только что вписал.
+ *
+ * Прячется атрибутом hidden, а не классом Bootstrap: он приходит
+ * из интернета и регулярно не приезжает.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.querySelector('form[method="post"]');
+    var note = document.getElementById('defectActDirty');
+    if (!form || !note) return;
+
+    function markDirty() {
+        note.hidden = false;
+    }
+
+    form.addEventListener('input', markDirty);
+    form.addEventListener('change', markDirty);
+    // Отправили — правки уехали в базу, и предупреждать больше не о чем
+    form.addEventListener('submit', function () { note.hidden = true; });
+});
+</script>
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -104,14 +134,31 @@
                             {% endif %}
                         </div>
                     </div>
-                    <div class="mt-4 d-flex gap-2">
+                    {% comment %}
+                        Сохранение оставляет на этой же странице. Раньше оно
+                        уводило на печатный акт, и чтобы поправить строку
+                        диагноза, надо было уехать на документ и вернуться.
+                        Документ открывается своей кнопкой, когда он нужен.
+
+                        Предупреждение о несохранённых правках — строкой
+                        рядом, а не окном: окно пришлось бы закрывать,
+                        а строку видно и так. Общее окно «Несохранённые
+                        изменения» сюда не годится — оно ловит уход
+                        со страницы, а акт открывается в новой вкладке
+                        и со страницы не уводит.
+                    {% endcomment %}
+                    <div class="mt-4 d-flex gap-2 flex-wrap align-items-center">
                         <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-check-lg me-2"></i>Сохранить и открыть акт
+                            <i class="bi bi-check-lg me-2"></i>Сохранить
                         </button>
                         <a href="{% url 'repair_order_act_defect' order.pk order_equipment.pk %}"
-                           class="btn btn-outline-dark" target="_blank">
-                            <i class="bi bi-printer me-2"></i>Акт без сохранения
+                           class="btn btn-outline-dark" id="openDefectAct" target="_blank">
+                            <i class="bi bi-printer me-2"></i>Открыть акт
                         </a>
+                        <span class="text-danger small" id="defectActDirty" hidden>
+                            В форме есть несохранённые правки — в акт они не попадут.
+                            Сначала сохраните.
+                        </span>
                     </div>
                 </form>
             </div>
