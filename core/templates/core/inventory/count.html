@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.72.0{% endblock %}
+{% block title %}Инвентаризация — ввод количеств — LiftTeam v2.73.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -112,6 +112,12 @@ document.addEventListener('DOMContentLoaded', function () {
 {% if not lines %}
 <p class="text-muted">В этой кассетнице нет ни одной размещённой детали.</p>
 {% else %}
+{% comment %}
+    Камера — второй сканер: пересчитывают с планшетом в руках,
+    и USB-сканер к нему не подключён.
+{% endcomment %}
+<div class="mb-3">{% include 'core/_camera_button.html' %}</div>
+
 <form method="post">
     {% csrf_token %}
     <div class="card">

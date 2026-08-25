@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Сканирование — LiftTeam v2.72.0{% endblock %}
+{% block title %}Сканирование — LiftTeam v2.73.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -33,6 +33,13 @@
             и для проверки сканера. Набор руками медленный, слой сканера его
             не перехватывает, поэтому отправляем сами.
         {% endcomment %}
+        {% comment %}
+            Камера — второй сканер: то же чтение, тот же разбор, те же
+            сообщения. Нужна там, где USB-сканера нет под рукой —
+            с планшета у стеллажа.
+        {% endcomment %}
+        <div class="mb-3">{% include 'core/_camera_button.html' %}</div>
+
         <form class="input-group mb-3" id="scanManualForm">
             <input type="text" class="form-control" id="scanManualInput"
                    placeholder="Или наберите код руками: /p/12" autocomplete="off">

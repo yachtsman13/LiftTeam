@@ -1468,6 +1468,117 @@ sudo -u lifteam RCLONE_CONFIG=/opt/lifteam/rclone.conf \
     rclone copy yandex:LiftTeam/backups/media /opt/lifteam/media
 ```
 
+### HTTPS и камера
+
+Нужно ровно для одного: **сканировать коды камерой телефона или планшета**.
+Браузер отдаёт камеру только в защищённом окружении — это его свойство,
+а не настройка, и обойти его нельзя. Всё остальное по http работает
+целиком, USB-сканер от этого не зависит вовсе.
+
+Сертификат выдаёт сама Tailscale — бесплатно и на настоящее имя в зоне
+`ts.net`, так что браузер ему верит без предупреждений.
+
+**Шаг 1. Разрешить выдачу сертификатов.** В админке Tailscale
+(https://login.tailscale.com/admin/dns) включить MagicDNS и HTTPS
+Certificates. Без этого команда ниже откажет.
+
+**Шаг 2. Получить сертификат.** Имя — то же, по которому вы открываете
+программу:
+
+```bash
+sudo mkdir -p /etc/ssl/lifteam
+```
+
+```bash
+sudo tailscale cert \
+    --cert-file /etc/ssl/lifteam/lifteam.crt \
+    --key-file  /etc/ssl/lifteam/lifteam.key \
+    lifteam.taile9b605.ts.net
+```
+
+**Шаг 3. Переключить nginx.** Файл `nginx-lifteam-https.conf` заменяет
+`nginx-lifteam.conf` целиком: в нём и блок 80 (он уводит на 443),
+и блок 443. Впишите в него своё имя и свою подсеть — те же значения,
+что стояли в прежнем файле.
+
+```bash
+sudo cp /opt/lifteam/deploy/nginx-lifteam-https.conf /etc/nginx/sites-available/lifteam
+```
+
+```bash
+sudo nano /etc/nginx/sites-available/lifteam
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Шаг 4. Сказать программе, что снаружи HTTPS.**
+
+```bash
+sudo nano /etc/systemd/system/lifteam.service
+```
+
+```ini
+Environment=SECURE_SSL_REDIRECT=True
+Environment=CSRF_TRUSTED_ORIGINS=https://lifteam.taile9b605.ts.net
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart lifteam
+```
+
+**Шаг 5. Поставить обновление сертификата на расписание.** Сертификат
+живёт около трёх месяцев, и просроченный закрывает программу **целиком**,
+а не только камеру: браузер не пустит на страницу вовсе.
+
+```bash
+sudo cp /opt/lifteam/deploy/lifteam-cert.{service,timer} /etc/systemd/system/
+```
+
+```bash
+sudo nano /etc/systemd/system/lifteam-cert.service
+```
+
+Впишите своё имя в `LIFTEAM_TS_NAME`, затем:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now lifteam-cert.timer
+```
+
+```bash
+systemctl list-timers lifteam-cert.timer
+```
+
+#### О чём предупредить заранее
+
+`SECURE_SSL_REDIRECT=True` включает не только перенаправление, но и HSTS
+на год: браузер, однажды открывший программу по https, **сам откажется**
+открывать её по http — даже если вы вернёте прежнюю настройку. Отменяется
+это очисткой данных сайта в каждом браузере по отдельности. Пока
+не уверены, что HTTPS остаётся насовсем, поставьте на пробу
+`SECURE_HSTS_SECONDS=0` — nginx всё равно уводит на 443, а замок в браузере
+никуда не денется.
+
+Локальный адрес Pi (`192.168.1.50`) сертификатом не покрыт: он выписан
+на имя в Tailscale. Открывать по адресу — по-прежнему через http, и камера
+там не заработает. Это не поломка, а то, как устроены сертификаты.
+
+#### Какие браузеры читают коды камерой
+
+Распознаёт код сам браузер (`BarcodeDetector`), своей библиотеки
+в программе нет: всё стороннее приезжает из интернета, а интернет
+в лаборатории пропадает — ровно тогда, когда сканируют у стеллажа.
+
+- **Chrome на Android** — работает;
+- **Chrome и Edge на компьютере** — работают;
+- **Safari, любые браузеры на iPhone и iPad** — не умеют. Программа
+  говорит об этом прямо и напоминает про USB-сканер.
+
+Кнопка «Сканировать камерой» стоит на страницах «Сканирование»,
+пересчёта инвентаризации и сетки кассетниц. Прочитанный код уходит
+в тот же разбор, что и код с USB-сканера, поэтому ведёт себя одинаково.
+
 ### Папка заказа на Яндекс.Диске
 
 Отдельно от резервного копирования и не через rclone: копии уходят

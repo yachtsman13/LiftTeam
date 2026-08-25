@@ -1,0 +1,34 @@
+# Обновление сертификата Tailscale. Расписание задаёт lifteam-cert.timer.
+#
+# Сертификат живёт около трёх месяцев, и просроченный закрывает программу
+# целиком, а не только камеру: браузер не пустит на страницу вовсе.
+# Поэтому обновление стоит на расписании, а не в памяти у человека.
+#
+# Установка:
+#   sudo cp deploy/lifteam-cert.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-cert.timer
+
+[Unit]
+Description=Обновление сертификата Tailscale для LiftTeam
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+
+# ВПИШИТЕ СВОЁ ИМЯ в Tailscale — то же, что в nginx и в ALLOWED_HOSTS
+Environment=LIFTEAM_TS_NAME=lifteam.taile9b605.ts.net
+
+# Команда безопасна на любом запуске: пока до истечения далеко,
+# tailscale отдаёт тот же сертификат и файлы не меняются
+ExecStart=/usr/bin/tailscale cert \
+    --cert-file /etc/ssl/lifteam/lifteam.crt \
+    --key-file  /etc/ssl/lifteam/lifteam.key \
+    ${LIFTEAM_TS_NAME}
+
+# Перечитать конфигурацию, а не перезапустить: reload не рвёт открытые
+# соединения, в том числе WebSocket на страницах у сотрудников
+ExecStartPost=/bin/systemctl reload nginx
+
+[Install]
+WantedBy=multi-user.target

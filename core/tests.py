@@ -14023,3 +14023,149 @@ class YandexDiskFolderButtonTests(TestCase):
         """Ссылку с этим адресом мог бы открыть кто угодно, включая
         обходчик поисковика."""
         self.assertEqual(self.http.get(self._url()).status_code, 405)
+
+
+# ==================== КАМЕРА КАК ВТОРОЙ СКАНЕР (v2.73.0) ====================
+
+
+class CameraScanTests(SimpleTestCase):
+    """Камера читает код и отдаёт его в тот же слой, что и USB-сканер.
+
+    Ни один экран из-за камеры не менялся: у одного и того же скана
+    не должно быть двух разных поведений.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+    TEMPLATES = Path(__file__).resolve().parent / 'templates' / 'core'
+
+    def _code(self, path):
+        """Сам код, без комментариев: в них как раз и написано, чего
+        здесь быть не должно."""
+        source = path.read_text(encoding='utf-8')
+        source = re.sub(r'/\*.*?\*/', '', source, flags=re.S)
+        return re.sub(r'^\s*//.*$', '', source, flags=re.M)
+
+    @property
+    def script(self):
+        return self._code(self.STATIC / 'js' / 'camera-scan.js')
+
+    def test_loaded_on_every_page(self):
+        base = (self.TEMPLATES / 'base.html').read_text(encoding='utf-8')
+
+        self.assertIn('js/camera-scan.js', base)
+        self.assertIn('css/camera-scan.css', base)
+
+    def test_the_result_goes_into_the_common_scanner_layer(self):
+        """Иначе у камеры завелись бы свои виды кодов, свои сообщения
+        и своё поведение — вторая правда о том же самом."""
+        self.assertIn('LiftTeamScanner.submit(value)', self.script)
+
+    def test_no_third_party_library(self):
+        """Всё стороннее в этом проекте приезжает из интернета, а интернет
+        пропадает ровно тогда, когда сканируют у стеллажа."""
+        self.assertIn('BarcodeDetector', self.script)
+        for forbidden in ('cdn.', 'jsQR', 'zxing', 'import(', 'src ='):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.script)
+
+    def test_no_bootstrap(self):
+        css = self._code(self.STATIC / 'css' / 'camera-scan.css')
+        button = (self.TEMPLATES / '_camera_button.html').read_text(encoding='utf-8')
+
+        self.assertNotIn('data-bs-', self.script + button)
+        self.assertNotIn('bootstrap', self.script)
+        # Панель прячется атрибутом, а не классом Bootstrap
+        self.assertIn('panel.hidden = true', self.script)
+        self.assertIn('.camera-scan[hidden] { display: none; }', css)
+
+    def test_every_refusal_is_spoken(self):
+        """Молчаливое «не получилось» человек примет за поломку кнопки
+        и будет жать её снова."""
+        for reason in ('HTTPS', 'BarcodeDetector', 'Доступ к камере запрещён',
+                       'Камера на этом устройстве не найдена'):
+            with self.subTest(reason=reason):
+                self.assertIn(reason, self.script)
+
+    def test_the_secure_context_is_checked_before_asking(self):
+        """Браузер отдаёт камеру только в защищённом окружении, и сказать
+        об этом надо до запроса, а не после отказа."""
+        self.assertIn('window.isSecureContext', self.script)
+
+    def test_the_camera_is_released_when_the_panel_closes(self):
+        """Иначе индикатор на телефоне горит и после закрытия, и человек
+        справедливо решает, что программа за ним подглядывает."""
+        self.assertIn('track.stop()', self.script)
+        self.assertIn("window.addEventListener('pagehide', stop)", self.script)
+
+    def test_a_code_left_in_frame_is_one_scan(self):
+        """Камера видит наклейку непрерывно: без своего окна повтора
+        она пищала бы, пока код не уберут."""
+        self.assertIn('SAME_CODE_MS = 2500', self.script)
+
+    def test_the_button_is_an_include_used_by_the_working_screens(self):
+        """Новое место — одна вставка, без правки скриптов."""
+        button = (self.TEMPLATES / '_camera_button.html').read_text(encoding='utf-8')
+        self.assertIn('data-camera-scan', button)
+
+        for page in ('scan.html', 'inventory/count.html', 'storage_cells/grid.html'):
+            with self.subTest(page=page):
+                html = (self.TEMPLATES / page).read_text(encoding='utf-8')
+                self.assertIn("include 'core/_camera_button.html'", html)
+
+
+class HttpsDeploymentTests(SimpleTestCase):
+    """HTTPS нужен ровно ради камеры, но включается на всю программу —
+    значит и ломать он не должен ничего."""
+
+    DEPLOY = Path(__file__).resolve().parent.parent / 'deploy'
+
+    @property
+    def https_conf(self):
+        return (self.DEPLOY / 'nginx-lifteam-https.conf').read_text(encoding='utf-8')
+
+    def test_https_config_keeps_the_address_restriction(self):
+        """HTTPS шифрует канал, но никого не отсекает: без allow/deny
+        программа была бы открыта миру, просто по защищённому соединению."""
+        conf = self.https_conf
+
+        self.assertEqual(conf.count('deny all;'), 2)      # и на 80, и на 443
+        self.assertEqual(conf.count('allow 100.64.0.0/10;'), 2)
+
+    def test_http_only_redirects(self):
+        """Отдавать то же самое по http хуже, чем не отдавать: страница
+        открылась бы, камера бы не заработала, и причина осталась неясной."""
+        self.assertIn('return 301 https://$host$request_uri;', self.https_conf)
+
+    def test_websocket_and_media_survive_the_switch(self):
+        conf = self.https_conf
+
+        self.assertIn('location /ws/', conf)
+        self.assertIn("proxy_set_header Upgrade $http_upgrade;", conf)
+        self.assertIn('location /media/', conf)
+        self.assertIn('location /static/', conf)
+
+    def test_the_proto_header_is_passed_on(self):
+        """По нему Django понимает, что снаружи HTTPS, и перестаёт уводить
+        обратно на http."""
+        self.assertIn('proxy_set_header X-Forwarded-Proto $scheme;', self.https_conf)
+
+    def test_the_certificate_renewal_is_scheduled(self):
+        """Сертификат живёт около трёх месяцев, и просроченный закрывает
+        программу целиком, а не только камеру."""
+        service = (self.DEPLOY / 'lifteam-cert.service').read_text(encoding='utf-8')
+        timer = (self.DEPLOY / 'lifteam-cert.timer').read_text(encoding='utf-8')
+
+        self.assertIn('tailscale cert', service)
+        self.assertIn('systemctl reload nginx', service)
+        # Pi выключали — обновление должно пройти при следующем включении
+        self.assertIn('Persistent=true', timer)
+
+    def test_the_app_already_knows_how_to_be_behind_https(self):
+        """Настройки для этого были заведены раньше: включение HTTPS —
+        это правка nginx и одна переменная, а не правка кода."""
+        pi = (Path(__file__).resolve().parent.parent
+              / 'lifteam/settings_pi.py').read_text(encoding='utf-8')
+
+        self.assertIn("SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')", pi)
+        self.assertIn('SECURE_SSL_REDIRECT', pi)
+        self.assertIn('CSRF_TRUSTED_ORIGINS', pi)

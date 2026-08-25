@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.72.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.73.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -249,6 +249,11 @@
         {% endcomment %}
         <div id="gridPartPicker" style="width: 260px;">
             {% include 'core/_part_picker.html' with name='selected_part_picker' value=selected_part.pk value_label=selected_part placeholder='Найти деталь на сетке...' %}
+            {% comment %}
+                Камера — второй сканер: у кассетницы стоят с планшетом,
+                и провод от USB-сканера туда не дотягивается.
+            {% endcomment %}
+            <span class="ms-2">{% include 'core/_camera_button.html' %}</span>
         </div>
     </div>
 </div>
