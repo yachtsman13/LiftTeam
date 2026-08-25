@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 
 import openpyxl
 from channels.db import database_sync_to_async
@@ -36,6 +37,7 @@ from .forms import OrganizationForm, RepairOrderEquipmentForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
+from . import yadisk
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
@@ -13772,3 +13774,252 @@ class ReadinessScreensTests(TestCase):
         self.assertIn('осталась работа по 1 из 1', html)
         # и всё-таки отгрузить даёт
         self.assertNotIn('disabled', html.split('Отгрузить')[0][-200:])
+
+
+# ==================== ЯНДЕКС.ДИСК: ПАПКА ЗАКАЗА (v2.72.0) ====================
+
+
+class FakeDiskResponse:
+    """Ответ Диска для подмены urlopen."""
+
+    def __init__(self, status=201, body=''):
+        self.status = status
+        self._body = body.encode('utf-8')
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _disk_conflict(url):
+    """409 «папка уже есть» — обычный ход дела, а не ошибка."""
+    return urllib_error.HTTPError(
+        url, 409, 'Conflict', {},
+        io.BytesIO(json.dumps({
+            'message': 'Ресурс "/LiftTeam" уже существует.',
+            'error': 'DiskPathPointsToExistentDirectoryError',
+        }).encode('utf-8')),
+    )
+
+
+@override_settings(
+    YANDEX_DISK_TOKEN='test-disk-token',
+    YANDEX_DISK_ROOT='LiftTeam',
+)
+class YandexDiskClientTests(TestCase):
+    """Клиент Диска. На живом Диске не проверен ничего — сайт документации
+    Яндекса из среды разработки недоступен, как и у Точки; здесь
+    проверяется то, что проверить можно: пути, заголовки, разбор ответов
+    и поведение при 409.
+    """
+
+    def setUp(self):
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-DISK-1'
+            ),
+        )
+
+    def _urlopen(self, calls, statuses=None):
+        """Подмена urlopen: складывает запросы и отдаёт заданные ответы."""
+        queue = list(statuses or [])
+
+        def fake(req, timeout=None):
+            calls.append(req)
+            status = queue.pop(0) if queue else 201
+            if status == 409:
+                raise _disk_conflict(req.full_url)
+            return FakeDiskResponse(status)
+
+        return fake
+
+    def test_the_path_is_built_in_one_place(self):
+        """Разойдись он между кнопкой и проверкой — снимки одного ремонта
+        уехали бы в папку другого."""
+        self.assertEqual(
+            yadisk.unit_path(self.roe),
+            'LiftTeam/Заказы/%s/SN-DISK-1' % self.order.order_number,
+        )
+
+    def test_a_slash_in_a_serial_number_does_not_become_a_folder(self):
+        """Косая черта на Диске означает новый уровень пути: она тихо
+        превратила бы одну папку в две."""
+        self.roe.equipment.serial_number = 'SN/12:34'
+        self.roe.equipment.save()
+
+        path = yadisk.unit_path(self.roe)
+
+        self.assertTrue(path.endswith('SN_12_34'), path)
+        self.assertEqual(path.count('/'), 3)
+
+    def test_an_empty_name_still_gives_a_folder(self):
+        self.assertEqual(yadisk.safe_name('   '), 'без-номера')
+        self.assertEqual(yadisk.safe_name('...'), 'без-номера')
+
+    def test_parents_are_created_top_down(self):
+        """Диск родителей сам не заводит."""
+        calls = []
+        with patch('core.yadisk.request.urlopen', self._urlopen(calls)):
+            created = yadisk.ensure_folder('LiftTeam/Заказы/LT-1/SN-1')
+
+        paths = [urllib_parse.parse_qs(urllib_parse.urlsplit(c.full_url).query)['path'][0]
+                 for c in calls]
+        self.assertEqual(paths, [
+            'disk:/LiftTeam',
+            'disk:/LiftTeam/Заказы',
+            'disk:/LiftTeam/Заказы/LT-1',
+            'disk:/LiftTeam/Заказы/LT-1/SN-1',
+        ])
+        self.assertEqual(len(created), 4)
+
+    def test_an_existing_folder_is_not_an_error(self):
+        """Двое мастеров могут нажать кнопку почти одновременно, и вторым
+        ответом будет «уже есть»."""
+        calls = []
+        fake = self._urlopen(calls, statuses=[409, 409, 201, 201])
+        with patch('core.yadisk.request.urlopen', fake):
+            created = yadisk.ensure_folder('LiftTeam/Заказы/LT-1/SN-1')
+
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(created, ['LiftTeam/Заказы/LT-1', 'LiftTeam/Заказы/LT-1/SN-1'])
+
+    def test_the_token_goes_in_the_oauth_header_not_bearer(self):
+        """У Диска свой заголовок: с Bearer он отвечает 401."""
+        calls = []
+        with patch('core.yadisk.request.urlopen', self._urlopen(calls)):
+            yadisk.create_folder('LiftTeam')
+
+        self.assertEqual(calls[0].get_header('Authorization'), 'OAuth test-disk-token')
+        self.assertEqual(calls[0].get_method(), 'PUT')
+
+    def test_a_bad_token_is_named_by_its_reason(self):
+        """401 чаще всего значит просроченный токен, и человек должен
+        понять, что чинить, не читая кода ответа."""
+        def fake(req, timeout=None):
+            raise urllib_error.HTTPError(
+                req.full_url, 401, 'Unauthorized', {},
+                io.BytesIO(b'{"message": "Unauthorized"}'),
+            )
+
+        with patch('core.yadisk.request.urlopen', fake):
+            with self.assertRaises(yadisk.YandexDiskError) as caught:
+                yadisk.create_folder('LiftTeam')
+
+        self.assertIn('не принял токен', str(caught.exception))
+        self.assertIn('YANDEX_DISK_TOKEN', str(caught.exception))
+
+    def test_the_token_never_reaches_the_log_or_the_message(self):
+        """Журнал живёт до ротации и уезжает в резервную копию — токен
+        в нём перестал бы быть секретом."""
+        def fake(req, timeout=None):
+            raise urllib_error.HTTPError(
+                req.full_url, 500, 'Server Error', {},
+                io.BytesIO(b'{"message": "\\u0442\\u043e\\u043a\\u0435\\u043d test-disk-token"}'),
+            )
+
+        with self.assertLogs('core.yadisk', level='INFO') as logs:
+            with patch('core.yadisk.request.urlopen', fake):
+                with self.assertRaises(yadisk.YandexDiskError) as caught:
+                    yadisk.create_folder('LiftTeam')
+
+        self.assertNotIn('test-disk-token', '\n'.join(logs.output))
+        self.assertNotIn('test-disk-token', str(caught.exception))
+
+    def test_there_is_no_way_to_delete_anything(self):
+        """Ни одной функции, стирающей на Диске: та же причина, по которой
+        в банковских модулях нет платёжных поручений."""
+        source = (settings.BASE_DIR / 'core/yadisk.py').read_text(encoding='utf-8')
+
+        self.assertNotIn("'DELETE'", source)
+        self.assertFalse([name for name in dir(yadisk)
+                          if 'delete' in name or 'remove' in name])
+
+
+class YandexDiskFolderButtonTests(TestCase):
+    """Кнопка «завести папку» на карточке заказа."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='disk_button', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-DISK-1'
+            ),
+        )
+
+    def _url(self):
+        return reverse('repair_order_unit_disk_folder',
+                       args=[self.order.pk, self.roe.pk])
+
+    @override_settings(YANDEX_DISK_TOKEN='')
+    def test_without_a_token_it_says_what_is_missing(self):
+        """Молчаливое бездействие человек примет за поломку кнопки."""
+        response = self.http.post(self._url(), follow=True)
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.yandex_disk_folder, '')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('YANDEX_DISK_TOKEN' in t for t in texts), texts)
+
+    @override_settings(YANDEX_DISK_TOKEN='test-disk-token')
+    def test_the_link_is_written_into_the_unit(self):
+        with patch('core.yadisk.request.urlopen',
+                   lambda req, timeout=None: FakeDiskResponse(201)):
+            self.http.post(self._url(), follow=True)
+
+        self.roe.refresh_from_db()
+        self.assertIn('disk.yandex.ru/client/disk/LiftTeam',
+                      self.roe.yandex_disk_folder)
+        self.assertIn('SN-DISK-1', self.roe.yandex_disk_folder)
+
+    @override_settings(YANDEX_DISK_TOKEN='test-disk-token')
+    def test_a_failure_is_reported_and_nothing_is_written(self):
+        def fake(req, timeout=None):
+            raise urllib_error.URLError('нет связи')
+
+        with patch('core.yadisk.request.urlopen', fake):
+            response = self.http.post(self._url(), follow=True)
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.yandex_disk_folder, '')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Папка не создана' in t for t in texts), texts)
+
+    def test_the_button_only_shows_while_there_is_no_folder(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        self.assertIn('diskFolder%d' % self.roe.pk, html)
+
+        self.roe.yandex_disk_folder = 'https://disk.yandex.ru/client/disk/LiftTeam'
+        self.roe.save()
+
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        self.assertNotIn('diskFolder%d' % self.roe.pk, html)
+        self.assertIn('https://disk.yandex.ru/client/disk/LiftTeam', html)
+
+    def test_only_post_creates_a_folder(self):
+        """Ссылку с этим адресом мог бы открыть кто угодно, включая
+        обходчик поисковика."""
+        self.assertEqual(self.http.get(self._url()).status_code, 405)

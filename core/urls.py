@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.71.0
+v2.72.0
 """
 from django.urls import path
 from . import views
@@ -89,6 +89,7 @@ urlpatterns = [
     path('repair-orders/<int:pk>/act/receive/', views.repair_order_act_receive, name='repair_order_act_receive'),
     path('repair-orders/<int:pk>/act/complete/', views.repair_order_act_complete, name='repair_order_act_complete'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/defect/', views.repair_order_defect_act_edit, name='repair_order_defect_act_edit'),
+    path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/disk-folder/', views.repair_order_unit_disk_folder, name='repair_order_unit_disk_folder'),
     path('repair-orders/<int:order_pk>/equipment/<int:roe_pk>/act/defect/', views.repair_order_act_defect, name='repair_order_act_defect'),
 
     # Детали

@@ -57,7 +57,7 @@ from .utils import (
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import invoicing, messengers, notifications, scanning, tbank, updater
+from . import invoicing, messengers, notifications, scanning, tbank, updater, yadisk
 
 
 def _send_stock_update(part):
@@ -4367,6 +4367,43 @@ def repair_order_defect_act_edit(request, order_pk, roe_pk):
         'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
         'version_id': equipment.version_id or '',
     })
+
+
+@login_required
+@require_POST
+def repair_order_unit_disk_folder(request, order_pk, roe_pk):
+    """Завести на Яндекс.Диске папку под снимки этой единицы.
+
+    Одно нажатие вместо похода в веб-интерфейс Диска и ручной вставки
+    ссылки: путь считает одно место (`yadisk.unit_path`), поэтому снимки
+    одного ремонта не могут уехать в папку другого.
+
+    Папка, которая уже есть, ошибкой не считается — ссылка просто
+    записывается заново. Так же ведёт себя повторное нажатие двумя
+    мастерами почти одновременно.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+
+    reason = yadisk.unconfigured_reason()
+    if reason:
+        messages.error(request, f'Папка не создана. {reason}')
+        return redirect('repair_order_detail', pk=order_pk)
+
+    try:
+        url = yadisk.ensure_unit_folder(order_equipment)
+    except yadisk.YandexDiskError as exc:
+        messages.error(request, f'Папка не создана: {exc}')
+        return redirect('repair_order_detail', pk=order_pk)
+
+    # Ссылку записываем и тогда, когда папка уже была: поле могли
+    # очистить руками, а путь от этого не изменился
+    order_equipment.yandex_disk_folder = url
+    order_equipment.save(update_fields=['yandex_disk_folder'])
+    messages.success(
+        request,
+        f'Папка на Яндекс.Диске готова: {yadisk.unit_path(order_equipment)}'
+    )
+    return redirect(f"{reverse('repair_order_detail', args=[order_pk])}#unit-{roe_pk}")
 
 
 @login_required

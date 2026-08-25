@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.71.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.72.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -156,6 +156,17 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="card-body">
                 <form id="equipmentLabelsForm" method="get" target="_blank"
                       action="{% url 'repair_order_equipment_labels' order.pk %}"></form>
+                {% comment %}
+                    Формы кнопок «завести папку» стоят рядом с таблицей,
+                    а не внутри строк: form внутри tbody браузер выносит
+                    наружу сам, и строка разъезжается.
+                {% endcomment %}
+                {% for oe in order_equipments %}
+                {% if not oe.yandex_disk_folder %}
+                <form id="diskFolder{{ oe.pk }}" method="post"
+                      action="{% url 'repair_order_unit_disk_folder' order.pk oe.pk %}">{% csrf_token %}</form>
+                {% endif %}
+                {% endfor %}
                 <div class="table-responsive table-scroll">
                     <table class="table table-sm align-middle equipment-table list-table list-table-select">
                         <thead><tr>
@@ -224,6 +235,18 @@ document.addEventListener('DOMContentLoaded', function () {
                                     <a href="{% url 'repair_order_defect_act_edit' order.pk oe.pk %}" class="btn btn-sm btn-outline-secondary" title="Заполнить дефектацию"><i class="bi bi-clipboard2-plus"></i></a>
                                     {% endif %}
                                     <a href="{% url 'repair_order_equipment_label' order.pk oe.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка" target="_blank"><i class="bi bi-printer"></i></a>
+                                    {% comment %}
+                                        Папка под снимки ремонта. Есть ссылка —
+                                        открываем, нет — заводим папку одним
+                                        нажатием: путь считает программа,
+                                        и снимки одного ремонта не могут
+                                        уехать в папку другого.
+                                    {% endcomment %}
+                                    {% if oe.yandex_disk_folder %}
+                                    <a href="{{ oe.yandex_disk_folder }}" class="btn btn-sm btn-outline-info" title="Папка со снимками на Яндекс.Диске" target="_blank" rel="noopener"><i class="bi bi-folder2-open"></i></a>
+                                    {% else %}
+                                    <button type="submit" form="diskFolder{{ oe.pk }}" class="btn btn-sm btn-outline-secondary" title="Завести папку на Яндекс.Диске"><i class="bi bi-folder-plus"></i></button>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% empty %}

@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.71.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.72.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -367,6 +367,26 @@ TOCHKA_API_VERSION = os.getenv('TOCHKA_API_VERSION', 'v1.0')
 # Свой выключатель выставления счетов, как и у Т-Банка: счёт уходит
 # заказчику от лица фирмы, и включаться сам собой он не должен
 TOCHKA_INVOICE_ENABLED = os.getenv('TOCHKA_INVOICE_ENABLED', 'False').lower() == 'true'
+
+# ==================== ЯНДЕКС.ДИСК ====================
+# Папка под снимки ремонта у каждой единицы в заказе. Программа заводит
+# её по единому пути и записывает ссылку — раньше это делали руками
+# в веб-интерфейсе, и снимки одного ремонта уезжали в папку другого.
+#
+# Токен выдаёт приложение OAuth Яндекса, заведённое владельцем
+# (см. DEPLOY.md). Прав достаточно на чтение и запись в папке приложения
+# или всего Диска; удалять программа не умеет вовсе.
+YANDEX_DISK_TOKEN = os.getenv('YANDEX_DISK_TOKEN', '')
+
+# Корневая папка программы. Отдельная, а не весь Диск: там же лежит
+# личное владельца, и мы туда не ходим.
+YANDEX_DISK_ROOT = os.getenv('YANDEX_DISK_ROOT', 'LiftTeam')
+
+# Адрес API — в настройках по той же причине, что у банков: переезд
+# должен чиниться правкой .env, а не кодом
+YANDEX_DISK_API_URL = os.getenv(
+    'YANDEX_DISK_API_URL', 'https://cloud-api.yandex.net/v1/disk'
+)
 
 # Ряд номеров счетов один на всю программу и при двух юрлицах — начало
 # ряда задаётся прежней TBANK_INVOICE_NUMBER_START. Здесь только срок оплаты
