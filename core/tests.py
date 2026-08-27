@@ -17172,3 +17172,64 @@ class ListSettingsRoundTripTests(EnvFileMixin, TestCase):
 
         self.assertIn('lifteam.ts.net,testserver', field)
         self.assertNotIn('[', field)
+
+
+class TBankAccountListTests(SimpleTestCase):
+    """Разбор списка счетов — одно место на команду и на проверку связи.
+
+    Какой из вариантов ответа приходит на живом счёте, не подтверждено:
+    сайт документации банка из среды разработки недоступен. Поэтому
+    принимаются оба, и принимаются одинаково — второй разбор сказал бы
+    «счетов доступно: 0» на исправном токене, пока команда рядом
+    печатала бы их все.
+    """
+
+    ACCOUNT = {'accountNumber': '40802810700006096146', 'name': 'Расчётный'}
+
+    def test_a_bare_list_is_understood(self):
+        self.assertEqual(tbank.account_list([self.ACCOUNT]), [self.ACCOUNT])
+
+    def test_a_wrapped_list_is_understood(self):
+        for key in ('accounts', 'bankAccounts', 'items', 'data', 'result'):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    tbank.account_list({key: [self.ACCOUNT]}), [self.ACCOUNT]
+                )
+
+    def test_anything_else_gives_nothing_instead_of_an_error(self):
+        for payload in (None, 42, 'счета', {}, {'accounts': 'нет'}):
+            with self.subTest(payload=payload):
+                self.assertEqual(tbank.account_list(payload), [])
+
+    def test_the_numbers_are_pulled_out_for_a_human(self):
+        self.assertEqual(
+            tbank.account_numbers({'accounts': [
+                self.ACCOUNT, {'number': '40802810700006096147'}, {'name': 'без номера'},
+            ]}),
+            ['40802810700006096146', '40802810700006096147'],
+        )
+
+
+class TBankCheckTests(EnvFileTestCase):
+    """Что видит владелец, нажав «Проверить» у токена Т-Банка."""
+
+    def test_a_wrapped_answer_is_not_reported_as_zero_accounts(self):
+        """«Счетов доступно: 0» на исправном токене читается как отказ."""
+        self.write('TBANK_TOKEN=t1.demo\n')
+
+        with patch.object(tbank, 'get_accounts',
+                          return_value={'accounts': [
+                              {'accountNumber': '40802810700006096146'}]}):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertTrue(result.ok)
+        self.assertIn('40802810700006096146', result.message)
+
+    def test_an_empty_answer_says_what_to_do_next(self):
+        self.write('TBANK_TOKEN=t1.demo\n')
+
+        with patch.object(tbank, 'get_accounts', return_value={}):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertTrue(result.ok)
+        self.assertIn('tbank_statement --accounts', result.message)

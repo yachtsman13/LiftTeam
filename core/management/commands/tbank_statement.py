@@ -88,15 +88,16 @@ class Command(BaseCommand):
             self.stderr.write(f'Счета не получены: {exc}')
             return
 
-        accounts = payload if isinstance(payload, list) else payload.get('accounts', [])
+        # Разбор — в core/tbank.py: его же читает проверка связи
+        # на странице настроек, и разойтись им нельзя
+        accounts = tbank.account_list(payload)
         if not accounts:
             self.stdout.write('Банк не вернул ни одного счёта')
             return
         for account in accounts:
-            if isinstance(account, dict):
-                number = account.get('accountNumber') or account.get('number') or '?'
-                name = account.get('name') or account.get('accountType') or ''
-                self.stdout.write(f'{number} {name}'.strip())
+            number = account.get('accountNumber') or account.get('number') or '?'
+            name = account.get('name') or account.get('accountType') or ''
+            self.stdout.write(f'{number} {name}'.strip())
 
     def _store(self, operations):
         added = 0

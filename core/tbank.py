@@ -142,6 +142,35 @@ def get_accounts(timeout=30):
     return _call(ACCOUNTS_PATH, timeout=timeout)
 
 
+def account_list(payload):
+    """Счета из ответа банка — одним местом.
+
+    Банк отвечает то списком, то объектом со списком внутри; какой
+    из вариантов приходит на живом счёте, не подтверждено. Разбирать
+    это в каждом месте по-своему нельзя: проверка связи сказала бы
+    «счетов доступно: 0» на исправном токене, а команда рядом
+    напечатала бы их все.
+    """
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ('accounts', 'bankAccounts', 'items', 'data', 'result'):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def account_numbers(payload):
+    """Номера счетов из ответа банка — для показа человеку."""
+    numbers = []
+    for account in account_list(payload):
+        number = account.get('accountNumber') or account.get('number')
+        if number:
+            numbers.append(str(number))
+    return numbers
+
+
 def get_statement(date_from, date_to, account=None, timeout=60):
     """Выписка за период. Даты — объекты date."""
     account = account or account_number()

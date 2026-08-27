@@ -1,6 +1,6 @@
 """
 ASGI config for lifteam project.
-v2.88.1
+v2.88.2
 """
 import os
 from django.core.asgi import get_asgi_application

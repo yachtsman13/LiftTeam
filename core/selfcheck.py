@@ -77,8 +77,19 @@ def _check_tbank():
         answer = tbank.get_accounts()
     except Exception as error:
         return _fail('Т-Банк не ответил: %s' % _explain(error))
-    count = len(answer) if isinstance(answer, list) else 0
-    return _ok('Т-Банк принял токен, счетов доступно: %d' % count)
+    # Разбор ответа — тот же, что у команды `tbank_statement --accounts`:
+    # банк отвечает то списком, то объектом со списком внутри, и второй
+    # разбор сказал бы «счетов доступно: 0» на исправном токене
+    numbers = tbank.account_numbers(answer)
+    if numbers:
+        return _ok('Т-Банк принял токен. Счета: %s' % ', '.join(numbers))
+    if tbank.account_list(answer):
+        return _ok('Т-Банк принял токен, счета получены.')
+    return _ok(
+        'Т-Банк принял токен, но ни одного счёта не назвал. Номер для '
+        'выписки можно посмотреть командой '
+        'manage.py tbank_statement --accounts.'
+    )
 
 
 def _check_tochka():
