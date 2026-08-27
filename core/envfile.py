@@ -111,6 +111,113 @@ SECRET_TITLES = {
 SECRETS_NEEDING_RESTART = frozenset({'EMAIL_HOST_PASSWORD'})
 
 
+# Что правится страницей настроек. Список **явный**, а не «всё, что
+# не секрет»: в файле лежат и вещи, которые Django читает при запуске
+# (ALLOWED_HOSTS, SECRET_KEY), и поле для них означало бы «поправил,
+# а ничего не изменилось». Каждой строке — раздел, подпись и пояснение;
+# читать их будет владелец, а не программист.
+#
+# `kind` — как рисовать поле: 'text', 'flag' (да/нет), 'number', 'choice'.
+# `restart` — правда, если значение подхватывается только после перезапуска.
+EDITABLE = (
+    ('Оповещения', (
+        ('NOTIFICATIONS_ENABLED', 'Отправка включена', 'flag',
+         'Главный выключатель. Пока выключен, события копятся в очереди, '
+         'но письма не уходят.', None),
+        ('NOTIFY_CLIENTS', 'Письма заказчикам', 'flag',
+         'Уведомления о приёме, готовности и отгрузке. Уходят от лица фирмы.',
+         None),
+        ('NOTIFY_DEBTS', 'Напоминания о долгах', 'flag',
+         'Требование денег от лица фирмы — включается отдельно от прочих '
+         'писем заказчикам.', None),
+        ('NOTIFY_LOW_STOCK', 'Дефицит деталей сотрудникам', 'flag',
+         'Внутреннее, заказчик его не видит.', None),
+        ('NOTIFY_ORDER_OVERDUE', 'Зависшие заказы', 'flag',
+         'Тоже внутреннее: заказ слишком долго стоит в одном статусе.', None),
+        ('NOTIFY_MAX', 'Дублировать в MAX', 'flag', '', None),
+        ('MAX_GROUP_CHAT_ID', 'Чат MAX', 'text',
+         'Куда шлём складские оповещения. Узнать номер помогает '
+         'manage.py max_updates.', None),
+        ('NOTIFY_TELEGRAM', 'Дублировать в Telegram', 'flag', '', None),
+        ('TELEGRAM_GROUP_CHAT_ID', 'Чат Telegram', 'text',
+         'Узнать номер помогает manage.py telegram_updates.', None),
+        ('DEBT_OVERDUE_DAYS', 'Долг просрочен через, дней', 'number',
+         'Считается от даты счёта.', None),
+    )),
+    ('Почта', (
+        ('EMAIL_HOST', 'Сервер', 'text', '', None),
+        ('EMAIL_PORT', 'Порт', 'number', '', None),
+        ('EMAIL_USE_SSL', 'Шифрование SSL', 'flag', '', None),
+        ('EMAIL_HOST_USER', 'Ящик', 'text',
+         'От него уходят письма. Пароль задаётся у Pi командой '
+         'manage.py setsecret EMAIL_HOST_PASSWORD.', None),
+    )),
+    ('Счета Т-Банка', (
+        ('TBANK_INVOICE_ENABLED', 'Выставление счетов включено', 'flag',
+         'Счёт уходит заказчику от лица фирмы, поэтому включается отдельно '
+         'от чтения выписки.', None),
+        ('TBANK_ACCOUNT', 'Расчётный счёт', 'text',
+         'С какого счёта берётся выписка и выставляются счета.', None),
+        ('TBANK_API_URL', 'Адрес API', 'text',
+         'Банк уже переезжал с tinkoff.ru на tbank.ru — следующий переезд '
+         'чинится здесь, а не в коде.', None),
+        ('TBANK_INVOICE_NUMBER_START', 'Первый номер счёта', 'number',
+         'Нумерация сквозная и одна на всю программу, даже при двух '
+         'юрлицах.', None),
+        ('TBANK_INVOICE_DUE_DAYS', 'Срок оплаты, дней', 'number', '', None),
+        ('TBANK_INVOICE_UNIT', 'Единица измерения', 'text', '', None),
+        ('TBANK_INVOICE_VAT', 'НДС', 'text',
+         'Значение из справочника банка. «None» — без НДС.', None),
+        ('TBANK_STATEMENT_DAYS', 'Глубина выписки, дней', 'number', '', None),
+    )),
+    ('Счета Точки', (
+        ('TOCHKA_INVOICE_ENABLED', 'Выставление счетов включено', 'flag',
+         'На живом счёте не проверялось — первый счёт выставляйте '
+         'под присмотром.', None),
+        ('TOCHKA_CUSTOMER_CODE', 'Код клиента', 'text', '', None),
+        ('TOCHKA_ACCOUNT_ID', 'Идентификатор счёта', 'text', '', None),
+        ('TOCHKA_API_URL', 'Адрес API', 'text', '', None),
+        ('TOCHKA_INVOICE_DUE_DAYS', 'Срок оплаты, дней', 'number', '', None),
+        ('TOCHKA_INVOICE_UNIT', 'Единица измерения', 'text', '', None),
+        ('TOCHKA_INVOICE_NDS', 'НДС', 'text',
+         'Значение из справочника банка. «without_nds» — без НДС.', None),
+    )),
+    ('Уведомления от банков', (
+        ('WEBHOOKS_TBANK_ENABLED', 'Принимать от Т-Банка', 'flag',
+         'Секрет к ним задаётся у Pi: manage.py setsecret '
+         'WEBHOOKS_TBANK_SECRET. Пустой секрет означает отказ.', None),
+        ('WEBHOOKS_TOCHKA_ENABLED', 'Принимать от Точки', 'flag',
+         'Проверка подлинности для Точки не написана — приём всё равно '
+         'откажет и скажет, чего не хватает.', None),
+    )),
+    ('Яндекс.Диск', (
+        ('YANDEX_DISK_ROOT', 'Корневая папка', 'text',
+         'Внутри неё программа заводит «Заказы/<номер>/<серийный номер>».',
+         None),
+        ('YANDEX_DISK_API_URL', 'Адрес API', 'text', '', None),
+    )),
+    ('Работа', (
+        ('WARRANTY_MONTHS', 'Гарантия, месяцев', 'number',
+         'Ноль — гарантия не ведётся.', None),
+        ('QUOTE_VALID_DAYS', 'Предложение действует, дней', 'number', '', None),
+        ('LABEL_BASE_URL', 'Адрес для QR-кодов', 'text',
+         'Куда ведут наклейки. Из него же на старте собираются ALLOWED_HOSTS '
+         'и CSRF_TRUSTED_ORIGINS, поэтому после смены нужен перезапуск.',
+         True),
+    )),
+)
+
+# Плоский указатель: имя → его описание. Собирается здесь, а не в каждом
+# месте, где надо проверить «а это вообще правится страницей»
+EDITABLE_BY_NAME = {
+    row[0]: {
+        'name': row[0], 'title': row[1], 'kind': row[2],
+        'help': row[3], 'restart': bool(row[4]),
+    }
+    for _section, rows in EDITABLE for row in rows
+}
+
+
 class EnvFileError(Exception):
     """Файл настроек не прочитать или не записать. Текст годится человеку
     у Pi: он же и будет его читать."""
@@ -244,6 +351,37 @@ def describe_secret(name):
     }
 
 
+def describe_editable(name):
+    """Правимая настройка со своим нынешним значением.
+
+    Значение показывается то же, что действует: из файла, если его
+    правили, иначе из настроек Django. Иначе страница показывала бы
+    одно, а программа пользовалась другим.
+    """
+    row = dict(EDITABLE_BY_NAME[name])
+    row['value'] = setting(name, '')
+    row['in_file'] = name in values()
+    return row
+
+
+def editable_sections():
+    """Правимые настройки по разделам — в том порядке, в каком они
+    перечислены в EDITABLE: порядок значимый, разделы читаются подряд."""
+    return [
+        (title, [describe_editable(row[0]) for row in rows])
+        for title, rows in EDITABLE
+    ]
+
+
+def as_text(value):
+    """Значение настройки строкой — так, как оно ляжет в файл."""
+    if isinstance(value, bool):
+        return 'True' if value else 'False'
+    if isinstance(value, (list, tuple)):
+        return ','.join(str(item) for item in value)
+    return '' if value is None else str(value)
+
+
 def set_value(name, value, allow_secrets=False):
     """Записать настройку в файл.
 
@@ -266,6 +404,15 @@ def set_value(name, value, allow_secrets=False):
             '%s — секрет, и через веб-интерфейс он не правится. '
             'Задать его можно у самого Raspberry Pi: '
             'python manage.py setsecret %s' % (name, name)
+        )
+    if not allow_secrets and name not in EDITABLE_BY_NAME:
+        # Список правимого явный, и это не перестраховка: в файле лежат
+        # и настройки, которые Django читает один раз при запуске, —
+        # поле для них означало бы «поправил, а ничего не изменилось»
+        raise EnvFileError(
+            '%s не правится из программы. Такие настройки меняются '
+            'в файле на Raspberry Pi, и части из них нужен перезапуск '
+            'службы.' % name
         )
     target = path()
     if not str(target):

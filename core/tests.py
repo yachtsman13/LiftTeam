@@ -52,7 +52,8 @@ from .models import (
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
-    StorageCell, TechCard, TechCardStep, WebhookDelivery, complexity_css,
+    SettingChange, StorageCell, TechCard, TechCardStep, WebhookDelivery,
+    complexity_css,
     parse_layout, plural_genitive, format_spec,
 )
 
@@ -16329,14 +16330,19 @@ class OrderFaultDescriptionMigrationTests(TransactionTestCase):
 # ============ ЖИВЫЕ НАСТРОЙКИ: ФАЙЛ .env КАК ХРАНИЛИЩЕ (v2.86.0) ============
 
 
-class EnvFileTestCase(SimpleTestCase):
+class EnvFileMixin:
     """Общая оснастка: свой файл настроек во временном каталоге.
 
     Своё окружение обязательно: настоящий `.env` разработчика не должен
     ни читаться, ни тем более правиться тестами.
+
+    Примешивается, а не наследуется: части проверок база не нужна вовсе
+    (SimpleTestCase), а странице настроек нужна — и её `TestCase` обязан
+    откатывать записи между проверками сам.
     """
 
     def setUp(self):
+        super().setUp()
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.path = Path(self.dir.name) / '.env'
@@ -16350,6 +16356,10 @@ class EnvFileTestCase(SimpleTestCase):
         self.path.write_text(text, encoding='utf-8')
         self.path.chmod(mode)
         envfile.forget()
+
+
+class EnvFileTestCase(EnvFileMixin, SimpleTestCase):
+    """Проверки самого файла настроек — базы им не нужно."""
 
 
 class EnvFileReadingTests(EnvFileTestCase):
@@ -16740,3 +16750,175 @@ class EnvSettingsGoThroughEnvFileTests(SimpleTestCase):
         пояснения ему ничего не говорит."""
         for name in envfile.SECRET_NAMES:
             self.assertIn(name, envfile.SECRET_TITLES)
+
+
+class SettingsPageTests(EnvFileMixin, TestCase):
+    """Страница настроек: правимое правится, секреты только видны."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = Employee.objects.create_superuser(
+            username='settings_admin', full_name='Администратор', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.url = reverse('admin_settings')
+
+    def test_only_an_admin_gets_in(self):
+        """Здесь токены и адреса банков — мастеру тут делать нечего."""
+        master = Employee.objects.create_user(
+            username='settings_master', full_name='Мастер', password='pass',
+            role='master',
+        )
+        other = TestClient()
+        other.force_login(master)
+
+        response = other.get(self.url)
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_a_secret_is_shown_as_a_length_and_never_as_a_value(self):
+        self.write('TBANK_TOKEN=t1.очень-секретное\n')
+
+        html = self.http.get(self.url).content.decode()
+
+        self.assertIn('задан', html)
+        self.assertIn('18 знаков', html)
+        self.assertNotIn('очень-секретное', html)
+
+    def test_there_is_no_input_for_a_secret(self):
+        """Поле ввода означало бы, что токен идёт по сети из браузера —
+        а по локальному адресу браузер идёт без сертификата."""
+        html = self.http.get(self.url).content.decode()
+
+        for name in envfile.SECRET_NAMES:
+            self.assertNotIn('name="%s"' % name, html)
+
+    def test_saving_writes_only_what_changed(self):
+        self.write('QUOTE_VALID_DAYS=14\nWARRANTY_MONTHS=12\n')
+
+        self.http.post(reverse('admin_settings_save'), {
+            'QUOTE_VALID_DAYS': '21',
+            'WARRANTY_MONTHS': '12',
+        })
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['QUOTE_VALID_DAYS'], '21')
+        self.assertEqual(
+            list(SettingChange.objects.values_list('name', flat=True)),
+            ['QUOTE_VALID_DAYS'],
+        )
+
+    def test_an_unchecked_flag_means_no_and_not_silence(self):
+        """Невыбранный флажок в запрос не попадает вовсе — принять это
+        за «поле не показывали» значило бы, что выключить нельзя ничего."""
+        self.write('NOTIFY_TELEGRAM=True\n')
+
+        self.http.post(reverse('admin_settings_save'),
+                       {'flag': 'NOTIFY_TELEGRAM'})
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['NOTIFY_TELEGRAM'], 'False')
+
+    def test_a_flag_missing_from_the_form_is_left_alone(self):
+        """Отличить «снял галочку» от «поля на форме не было» по одному
+        отсутствию имени нельзя, а молча выключить оповещения нельзя
+        тем более."""
+        self.write('NOTIFY_TELEGRAM=True\n')
+
+        self.http.post(reverse('admin_settings_save'),
+                       {'QUOTE_VALID_DAYS': '21'})
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['NOTIFY_TELEGRAM'], 'True')
+
+    def test_the_change_takes_effect_without_a_restart(self):
+        self.http.post(reverse('admin_settings_save'),
+                       {'YANDEX_DISK_ROOT': 'Другая-папка'})
+
+        self.assertEqual(yadisk.root(), 'Другая-папка')
+
+    def test_the_journal_keeps_who_and_when_but_not_the_value(self):
+        self.http.post(reverse('admin_settings_save'),
+                       {'MAX_GROUP_CHAT_ID': '-100500'})
+
+        change = SettingChange.objects.get()
+        self.assertEqual(change.name, 'MAX_GROUP_CHAT_ID')
+        self.assertEqual(change.changed_by, self.admin)
+        self.assertNotIn('100500', repr(change.__dict__))
+
+    def test_a_setting_outside_the_list_is_not_written(self):
+        """Подсунуть в запрос можно что угодно, а список правимого явный:
+        ALLOWED_HOSTS Django читает при запуске, и поле для него значило бы
+        «поправил, а ничего не изменилось»."""
+        self.http.post(reverse('admin_settings_save'),
+                       {'ALLOWED_HOSTS': 'злоумышленник.example'})
+
+        envfile.forget()
+        self.assertNotIn('ALLOWED_HOSTS', envfile.values())
+        self.assertFalse(SettingChange.objects.exists())
+
+    def test_a_secret_slipped_into_the_request_is_not_written(self):
+        self.http.post(reverse('admin_settings_save'),
+                       {'TBANK_TOKEN': 'через-браузер'})
+
+        envfile.forget()
+        self.assertNotIn('TBANK_TOKEN', envfile.values())
+
+    def test_settings_needing_a_restart_say_so(self):
+        response = self.http.post(
+            reverse('admin_settings_save'),
+            {'LABEL_BASE_URL': 'http://новое-имя.ts.net'},
+            follow=True,
+        )
+        html = response.content.decode()
+
+        self.assertIn('перезапуск', html)
+
+    def test_the_check_button_answers_with_the_shared_verdict(self):
+        """Кнопка и команда у Pi обязаны говорить об одной службе одно
+        и то же — проверку держит одно место."""
+        with patch.object(selfcheck, 'check',
+                          return_value=selfcheck.CheckResult('ok', 'принял')):
+            response = self.http.post(reverse('admin_settings_check'),
+                                      {'name': 'TBANK_TOKEN'})
+
+        self.assertEqual(response.json(), {'state': 'ok', 'message': 'принял'})
+
+    def test_the_check_refuses_an_unknown_name(self):
+        response = self.http.post(reverse('admin_settings_check'),
+                                  {'name': 'ALLOWED_HOSTS'})
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_saving_is_post_only(self):
+        response = self.http.get(reverse('admin_settings_save'))
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_a_cyrillic_letter_in_a_token_is_named_out_loud(self):
+        """«с» вместо «c» видно только так: сообщение самого исключения
+        («latin-1 codec can't encode») не говорит об этом ничего."""
+        self.write('TBANK_TOKEN=t1.токен\n')
+        error = UnicodeEncodeError('latin-1', 'т', 0, 1, 'ordinal not in range')
+
+        with patch.object(tbank, 'get_accounts', side_effect=error):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertIn('кириллическая', result.message)
+
+
+class SettingsPageIsListedTests(TestCase):
+    """Пункт меню: страница, до которой нельзя дойти, всё равно что
+    её нет."""
+
+    def test_an_admin_sees_the_link(self):
+        admin = Employee.objects.create_superuser(
+            username='menu_admin', full_name='Администратор', password='pass',
+        )
+        http = TestClient()
+        http.force_login(admin)
+
+        html = http.get(reverse('dashboard')).content.decode()
+
+        self.assertIn(reverse('admin_settings'), html)

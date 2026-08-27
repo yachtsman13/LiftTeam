@@ -1,6 +1,6 @@
 """
 Management command: setsecret
-LiftTeam v2.86.0
+LiftTeam v2.87.0
 
 Ввод секретов у самого Raspberry Pi.
 

@@ -1,0 +1,227 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Настройки — LiftTeam v2.87.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-sliders me-2"></i>Настройки</h2>
+    <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle me-2"></i>
+    Настройки хранятся в файле <code>{{ env_path }}</code> на самом
+    Raspberry Pi{% if not env_exists %} <strong>(файла пока нет — он будет создан
+    при первом сохранении)</strong>{% endif %}. Не в базе: базу увозит ночная
+    выгрузка в облако, а этот файл остаётся на устройстве. Правки действуют
+    сразу, перезапускать ничего не нужно — кроме отмеченного значком
+    <span class="badge bg-warning text-dark">перезапуск</span>.
+</div>
+
+{% comment %}
+    Секреты стоят первыми: за ними сюда заходят чаще всего — посмотреть,
+    задан ли токен и отвечает ли банк. Правятся они не здесь, и сказать
+    об этом надо до того, как человек начнёт искать поле ввода.
+{% endcomment %}
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center">
+        <h5 class="mb-0"><i class="bi bi-key me-2"></i>Токены и пароли</h5>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">
+            Здесь их не вводят и не показывают. Страница открывается с любого
+            устройства в Tailscale, а по локальному адресу браузер идёт без
+            сертификата — токен ушёл бы по сети открытым текстом. Вводятся
+            они у самого Pi:
+            <code>python manage.py setsecret ИМЯ</code> — скрытым вводом,
+            без следа в истории команд.
+        </p>
+        <div class="table-scroll">
+            <table class="table list-table mb-0">
+                <thead>
+                    <tr>
+                        <th>Что это</th><th>Переменная</th><th>Состояние</th>
+                        <th class="text-end">Связь</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for secret in secrets %}
+                    <tr>
+                        <td data-label="Что это">
+                            {{ secret.title }}
+                            {% if secret.needs_restart %}
+                            <span class="badge bg-warning text-dark"
+                                  title="Читается почтовым слоем Django, а не нашим кодом">перезапуск</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Переменная"><code>{{ secret.name }}</code></td>
+                        <td data-label="Состояние">
+                            {% if secret.filled %}
+                            {% comment %}
+                                Длина вместо значения: по ней видно, что токен
+                                вставлен целиком, а восстановить по ней нечего.
+                            {% endcomment %}
+                            <span class="badge bg-success">задан, {{ secret.length }} знаков</span>
+                            {% if secret.source == 'settings' %}
+                            <span class="text-muted small">не из файла — из окружения службы</span>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-muted">не задан</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end col-actions">
+                            <button type="button" class="btn btn-sm btn-outline-primary"
+                                    data-check-secret="{{ secret.name }}">
+                                <i class="bi bi-plug me-1"></i>Проверить
+                            </button>
+                            <div class="small mt-1 check-result" data-result-for="{{ secret.name }}"></div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<form method="post" action="{% url 'admin_settings_save' %}">
+    {% csrf_token %}
+    {% for title, rows in sections %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">{{ title }}</h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                {% for row in rows %}
+                <div class="{% if row.kind == 'flag' %}col-12{% else %}col-md-6{% endif %}">
+                    {% if row.kind == 'flag' %}
+                    {% comment %}
+                        Скрытое поле рядом с каждым флажком: снятая галочка
+                        в запрос не попадает вовсе, и без этого списка
+                        неполный запрос молча выключил бы все оповещения.
+                    {% endcomment %}
+                    <input type="hidden" name="flag" value="{{ row.name }}">
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input"
+                               id="set_{{ row.name }}" name="{{ row.name }}"
+                               {% if row.value %}checked{% endif %}>
+                        <label class="form-check-label" for="set_{{ row.name }}">
+                            {{ row.title }}
+                            {% if row.restart %}
+                            <span class="badge bg-warning text-dark">перезапуск</span>
+                            {% endif %}
+                        </label>
+                        {% if row.help %}<div class="form-text">{{ row.help }}</div>{% endif %}
+                    </div>
+                    {% else %}
+                    <label class="form-label" for="set_{{ row.name }}">
+                        {{ row.title }}
+                        {% if row.restart %}
+                        <span class="badge bg-warning text-dark">перезапуск</span>
+                        {% endif %}
+                    </label>
+                    <input type="{% if row.kind == 'number' %}number{% else %}text{% endif %}"
+                           class="form-control" id="set_{{ row.name }}"
+                           name="{{ row.name }}" value="{{ row.value }}">
+                    <div class="form-text">
+                        <code>{{ row.name }}</code>{% if row.help %} — {{ row.help }}{% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="mb-4 d-flex gap-2 align-items-center flex-wrap">
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-lg me-2"></i>Сохранить
+        </button>
+        <span class="text-muted small">
+            Записывается только изменённое; перед записью рядом остаётся
+            копия <code>.env.bak</code>.
+        </span>
+    </div>
+</form>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Последние правки</h5>
+    </div>
+    <div class="card-body">
+        {% if history %}
+        {% comment %}
+            Значений в журнале нет намеренно: чтобы понять, после чьей
+            правки перестало работать выставление счетов, довольно имени
+            настройки и времени. Копия значений в базе уехала бы
+            в облако вместе с ней.
+        {% endcomment %}
+        <div class="table-scroll">
+            <table class="table list-table mb-0">
+                <thead><tr><th>Настройка</th><th>Кто</th><th>Когда</th></tr></thead>
+                <tbody>
+                    {% for change in history %}
+                    <tr>
+                        <td data-label="Настройка"><code>{{ change.name }}</code></td>
+                        <td data-label="Кто">{{ change.changed_by.full_name|default:"—" }}</td>
+                        <td data-label="Когда">{{ change.changed_at|date:"d.m.Y H:i" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p class="text-muted small mb-0 mt-2">
+            Значения в журнал не пишутся — только что и когда правили.
+        </p>
+        {% else %}
+        <p class="text-muted mb-0">Из программы настройки ещё не правили.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="alert alert-secondary">
+    <strong>Чего здесь нет.</strong> Ключ приложения, список адресов
+    (<code>ALLOWED_HOSTS</code>), доверенные источники и режим отладки —
+    их Django читает один раз при запуске, и поле для них означало бы
+    «поправил, а ничего не изменилось». Список адресов Т-Банка тоже:
+    те же адреса стоят в настройках nginx, а nginx в этот файл не смотрит —
+    правка в одном месте развела бы их молча. Всё это меняется в файле
+    на Pi, порядок — в DEPLOY.md.
+</div>
+
+<script>
+// Проверка связи — свой запрос, чтобы страница не уезжала и набранное
+// в полях не терялось. Через LiftTeamWS.fetch: иначе обрыв связи выглядел
+// бы как «служба не отвечает» вместо общей полосы вверху страницы.
+document.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-check-secret]');
+    if (!button) { return; }
+    const name = button.dataset.checkSecret;
+    const box = document.querySelector('[data-result-for="' + name + '"]');
+    const token = document.querySelector('[name=csrfmiddlewaretoken]');
+    button.disabled = true;
+    box.textContent = 'Проверяю…';
+    box.className = 'small mt-1 check-result text-muted';
+    const body = new FormData();
+    body.append('name', name);
+    body.append('csrfmiddlewaretoken', token ? token.value : '');
+    LiftTeamWS.fetch('{% url "admin_settings_check" %}', {method: 'POST', body: body})
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+            box.textContent = data.message;
+            box.className = 'small mt-1 check-result ' + (
+                data.state === 'ok' ? 'text-success'
+                : data.state === 'fail' ? 'text-danger' : 'text-muted'
+            );
+        })
+        .catch(function () {
+            // Молчаливого «не получилось» быть не должно
+            box.textContent = 'Проверить не удалось: запрос не ушёл.';
+            box.className = 'small mt-1 check-result text-danger';
+        })
+        .finally(function () { button.disabled = false; });
+});
+</script>
+{% endblock %}

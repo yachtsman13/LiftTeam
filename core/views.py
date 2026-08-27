@@ -37,7 +37,7 @@ from .models import (
     SparePart, StorageCell, StockMovement, StockAllocation, OrderCost, RepairOrderDetail,
     OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
-    InventorySession, InventorySessionLine,
+    InventorySession, InventorySessionLine, SettingChange,
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
@@ -58,7 +58,10 @@ from .utils import (
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import envfile, invoicing, messengers, notifications, scanning, tbank, updater, yadisk
+from . import (
+    envfile, invoicing, messengers, notifications, scanning, selfcheck, tbank,
+    updater, yadisk,
+)
 
 
 def _send_stock_update(part):
@@ -4290,6 +4293,104 @@ def admin_notification_retry(request, pk):
 
     messages.success(request, f'Оповещение для {notification.recipient} возвращено в очередь')
     return redirect('admin_notifications')
+
+
+# ==================== НАСТРОЙКИ ====================
+
+@role_required('admin')
+def admin_settings(request):
+    """Страница настроек: правимое — здесь, секреты — только состоянием.
+
+    Хранилище — файл `.env` на самом Pi, а не база: базу увозит ночная
+    выгрузка в облако. Правка действует сразу, без перезапуска, —
+    за исключением того, что Django читает при старте; такие настройки
+    помечены прямо на странице.
+
+    Секретов на странице нет и быть не может. Она открывается с любого
+    устройства в Tailscale, а по локальному адресу браузер идёт
+    без сертификата — токен ушёл бы открытым текстом. Их вводят у Pi:
+    manage.py setsecret. Здесь видно только «задан, столько-то знаков».
+    """
+    return render(request, 'core/admin/settings.html', {
+        'sections': envfile.editable_sections(),
+        'secrets': [envfile.describe_secret(name)
+                    for name in envfile.SECRET_NAMES],
+        'env_path': envfile.path(),
+        'env_exists': envfile.exists(),
+        'history': SettingChange.objects.select_related('changed_by')[:20],
+    })
+
+
+@role_required('admin')
+@require_POST
+def admin_settings_save(request):
+    """Записать правимые настройки в файл.
+
+    Пишется только то, что действительно изменилось: каждая запись
+    перекладывает файл целиком и оставляет копию, и делать это ради
+    неизменившегося поля незачем. Заодно в журнале не появляется
+    правок, которых не было.
+    """
+    # Невыбранный флажок в запрос не попадает вовсе, и отличить «снял
+    # галочку» от «поля на форме не было» по одному его отсутствию нельзя.
+    # Поэтому форма присылает список показанных флажков: молча выключить
+    # оповещения неполный запрос не должен
+    shown_flags = set(request.POST.getlist('flag'))
+    saved, failed = [], []
+    for name, row in envfile.EDITABLE_BY_NAME.items():
+        if row['kind'] == 'flag':
+            if name not in shown_flags:
+                continue
+            value = 'True' if request.POST.get(name) else 'False'
+        else:
+            if name not in request.POST:
+                continue
+            value = (request.POST.get(name) or '').strip()
+        if value == envfile.as_text(envfile.setting(name, '')):
+            continue
+        try:
+            envfile.set_value(name, value)
+        except envfile.EnvFileError as error:
+            failed.append(str(error))
+            continue
+        saved.append(name)
+        SettingChange.objects.create(name=name, changed_by=request.user)
+
+    for text in failed:
+        messages.error(request, text)
+    if saved:
+        restart = [name for name in saved
+                   if envfile.EDITABLE_BY_NAME[name]['restart']]
+        messages.success(
+            request, 'Сохранено настроек: %d. Действуют сразу.' % len(saved)
+        )
+        if restart:
+            messages.warning(
+                request,
+                'Этим настройкам нужен перезапуск службы, иначе изменения '
+                'не подхватятся: %s' % ', '.join(
+                    envfile.EDITABLE_BY_NAME[name]['title'] for name in restart
+                )
+            )
+    elif not failed:
+        messages.info(request, 'Менять было нечего — всё осталось как было.')
+    return redirect('admin_settings')
+
+
+@role_required('admin')
+@require_POST
+def admin_settings_check(request):
+    """Проверить связь со службой. Отвечает JSON — страница не уезжает.
+
+    Проверку держит одно место (`core/selfcheck.py`): команда у Pi
+    и эта кнопка обязаны говорить об одной службе одно и то же.
+    """
+    name = (request.POST.get('name') or '').strip().upper()
+    if name not in envfile.SECRET_NAMES:
+        return JsonResponse({'state': 'fail', 'message': 'Неизвестная служба.'},
+                            status=400)
+    result = selfcheck.check(name)
+    return JsonResponse({'state': result.state, 'message': result.message})
 
 
 # ==================== ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ ====================

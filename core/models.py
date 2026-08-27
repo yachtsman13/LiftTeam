@@ -3451,3 +3451,34 @@ class WebhookDelivery(models.Model):
 
     def __str__(self):
         return f'{self.get_provider_display()} → {self.dedup_key} ({self.get_status_display()})'
+
+
+class SettingChange(models.Model):
+    """Кто и когда правил настройку из программы.
+
+    Значения здесь **нет** и быть не должно. Журнал нужен, чтобы понять,
+    после чьей правки перестало работать выставление счетов, — а для
+    этого достаточно имени настройки и времени. Хранить же значения
+    означало бы завести вторую копию настроек, и, что хуже, копию
+    в базе: базу увозит ночная выгрузка в облако, и однажды туда уехал бы
+    чат бота или адрес API вместе с историей их смен.
+
+    Секреты сюда не попадают вовсе — их правит команда у самого Pi,
+    а не программа.
+    """
+    name = models.CharField('Настройка', max_length=100, db_index=True)
+    changed_at = models.DateTimeField('Когда', auto_now_add=True)
+    # SET_NULL: уволенного сотрудника из справочника убирают, а след
+    # правки остаётся — иначе журнал начнёт врать задним числом
+    changed_by = models.ForeignKey(
+        'Employee', on_delete=models.SET_NULL, null=True, blank=True,
+        verbose_name='Кто', related_name='setting_changes',
+    )
+
+    class Meta:
+        verbose_name = 'Правка настройки'
+        verbose_name_plural = 'Правки настроек'
+        ordering = ['-changed_at']
+
+    def __str__(self):
+        return f'{self.name} — {self.changed_at:%d.%m.%Y %H:%M}'

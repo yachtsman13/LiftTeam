@@ -42,6 +42,22 @@ class CheckResult:
         return 'CheckResult(%r, %r)' % (self.state, self.message)
 
 
+def _explain(error):
+    """Ошибку — словами, годными владельцу.
+
+    UnicodeEncodeError отдельно: он означает, что в токене есть знаки
+    не из латиницы. Так выглядит вставленный из письма токен, в который
+    затесалась кириллическая буква — «с» вместо «c» видно только так.
+    Сообщение самого исключения («'latin-1' codec can't encode») об этом
+    не говорит ничего.
+    """
+    if isinstance(error, UnicodeEncodeError):
+        return ('в значении есть знаки не из латиницы. Так бывает, когда '
+                'при вставке в токен попадает кириллическая буква — '
+                'наберите значение заново')
+    return str(error)
+
+
 def _ok(message):
     return CheckResult(CheckResult.OK, message)
 
@@ -60,7 +76,7 @@ def _check_tbank():
     try:
         answer = tbank.get_accounts()
     except Exception as error:
-        return _fail('Т-Банк не ответил: %s' % error)
+        return _fail('Т-Банк не ответил: %s' % _explain(error))
     count = len(answer) if isinstance(answer, list) else 0
     return _ok('Т-Банк принял токен, счетов доступно: %d' % count)
 
@@ -83,7 +99,7 @@ def _check_yadisk():
     try:
         return _ok(yadisk.check_access())
     except Exception as error:
-        return _fail('Яндекс.Диск не ответил: %s' % error)
+        return _fail('Яндекс.Диск не ответил: %s' % _explain(error))
 
 
 def _check_max():
@@ -92,7 +108,7 @@ def _check_max():
     try:
         messengers.get_max_updates(limit=1)
     except Exception as error:
-        return _fail('MAX не ответил: %s' % error)
+        return _fail('MAX не ответил: %s' % _explain(error))
     return _ok('MAX принял токен бота.')
 
 
@@ -102,7 +118,7 @@ def _check_telegram():
     try:
         messengers.get_telegram_updates(limit=1)
     except Exception as error:
-        return _fail('Telegram не ответил: %s' % error)
+        return _fail('Telegram не ответил: %s' % _explain(error))
     return _ok('Telegram принял токен бота.')
 
 
@@ -114,7 +130,7 @@ def _check_email():
     try:
         connection.open()
     except Exception as error:
-        return _fail('Почтовый сервер не ответил: %s' % error)
+        return _fail('Почтовый сервер не ответил: %s' % _explain(error))
     finally:
         try:
             connection.close()
