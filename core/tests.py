@@ -14876,6 +14876,40 @@ class UnitEditTests(TestCase):
         self.assertIn('Конденсаторы потеряли ёмкость.',
                       self.roe.diagnosis_document_text)
 
+    def test_complexity_is_set_by_hand_on_the_unit_page(self):
+        """До v2.84.0 сложность правилась только в форме предложения —
+        то есть нигде, пока предложение не понадобится, и цвет сложности
+        в списке единиц заказа не появлялся ни у одной строки."""
+        self._post(repair_complexity='complex')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.repair_complexity, 'complex')
+        self.assertEqual(self.roe.effective_complexity_css, 'bg-danger')
+
+    def test_empty_complexity_means_derive_it_from_the_faults(self):
+        """Пусто — не «простой», а «не задавали»: тогда сложность
+        считается по выбранным неисправностям."""
+        self.fault.complexity = 'complex'
+        self.fault.save()
+
+        self._post(repair_complexity='', faults=[str(self.fault.pk)])
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.repair_complexity, '')
+        self.assertEqual(self.roe.effective_complexity, 'complex')
+        self.assertTrue(self.roe.complexity_is_derived)
+
+    def test_the_empty_choice_says_what_it_means(self):
+        """«---------» не говорит ничего, а разница между «простой»
+        и «не задавали» — это разница между записанным решением
+        и подсчётом по неисправностям."""
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn('По неисправностям', html)
+        self.assertNotIn('---------', html)
+
     def test_a_bad_cost_saves_nothing(self):
         response = self._post(repair_cost='дорого')
 

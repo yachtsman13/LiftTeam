@@ -390,6 +390,7 @@ class RepairOrderEquipmentForm(forms.ModelForm):
             'equipment': 'Оборудование',
             'fault_description': 'Неисправность',
             'faults': 'Типовые неисправности',
+            'repair_complexity': 'Сложность ремонта',
             'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'initial_condition': 'Начальное состояние',
@@ -440,7 +441,7 @@ class RepairOrderIntakeForm(RepairOrderForm):
     """Заказ в момент приёма: от кого прибор.
 
     Общего описания неисправности здесь больше нет — оно убрано целиком
-    с v2.83.0. Его заполняли вместо описания по прибору, то есть про одно
+    с v2.84.0. Его заполняли вместо описания по прибору, то есть про одно
     и то же спрашивали дважды; описание пишется у каждой единицы, и оно же
     печатается в акте приёма.
     """
@@ -978,13 +979,14 @@ class UnitEditForm(forms.ModelForm):
         model = RepairOrderEquipment
         fields = [
             'fault_description', 'initial_condition', 'faults',
-            'work_performed', 'seal_numbers', 'repair_cost',
-            'yandex_disk_folder',
+            'repair_complexity', 'work_performed', 'seal_numbers',
+            'repair_cost', 'yandex_disk_folder',
         ]
         widgets = {
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
             'initial_condition': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
             'faults': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 6}),
+            'repair_complexity': forms.Select(attrs={'class': 'form-select'}),
             'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
             'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
@@ -997,6 +999,7 @@ class UnitEditForm(forms.ModelForm):
             'fault_description': 'Со слов заказчика',
             'initial_condition': 'Начальное состояние',
             'faults': 'Типовые неисправности',
+            'repair_complexity': 'Сложность ремонта',
             'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'repair_cost': 'Стоимость ремонта, ₽',
@@ -1015,6 +1018,17 @@ class UnitEditForm(forms.ModelForm):
         self.fields['faults'].help_text = (
             'Их описания идут в акт дефектации и в предложение, а рецепт '
             'деталей применяется кнопкой ниже.'
+        )
+        # Пусто — не «простой», а «не задавали»: тогда сложность выводится
+        # из выбранных неисправностей. Поэтому в списке стоит не «---------»,
+        # а сказано вслух, что будет при пустом значении
+        self.fields['repair_complexity'].choices = [
+            ('', 'По неисправностям'),
+            *self._meta.model._meta.get_field('repair_complexity').choices,
+        ]
+        self.fields['repair_complexity'].help_text = (
+            'Оставьте «по неисправностям» — сложен хотя бы один вид поломки, '
+            'сложен весь ремонт. Здесь это правило перебивается вручную.'
         )
 
 

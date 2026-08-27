@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.83.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.84.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -225,7 +225,24 @@ document.addEventListener('DOMContentLoaded', function () {
                 </ul>
                 {% endif %}
 
-                <button type="button" class="btn btn-sm btn-outline-warning mt-1"
+                {% comment %}
+                    Сложность правится здесь, рядом с неисправностями,
+                    из которых она выводится: пустое значение означает
+                    не «простой», а «считай по неисправностям». До v2.84.0
+                    это поле правилось только в форме предложения —
+                    то есть нигде, пока предложение не понадобится,
+                    и цвет сложности в списке единиц не появлялся.
+                {% endcomment %}
+                <div class="mt-3" style="max-width: 22rem;">
+                    <label class="form-label" for="{{ form.repair_complexity.id_for_label }}">
+                        <strong>{{ form.repair_complexity.label }}</strong>
+                    </label>
+                    {{ form.repair_complexity }}
+                    {% if form.repair_complexity.errors %}<div class="text-danger small">{{ form.repair_complexity.errors.0 }}</div>{% endif %}
+                    <div class="form-text">{{ form.repair_complexity.help_text }}</div>
+                </div>
+
+                <button type="button" class="btn btn-sm btn-outline-warning mt-3"
                         id="applyRecipe"
                         data-url="{% url 'repair_order_apply_fault_template' order.pk %}"
                         data-equipment="{{ equipment.pk }}">
