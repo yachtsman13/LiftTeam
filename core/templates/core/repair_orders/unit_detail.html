@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.82.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.83.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -171,7 +171,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     <div class="col-sm-4"><strong>Гарантийный случай:</strong>
                         {{ order_equipment.get_warranty_case_display|default:"не указан" }}</div>
                     <div class="col-sm-4"><strong>Сложность:</strong>
-                        {{ order_equipment.effective_complexity_display|default:"—" }}
+                        {% if order_equipment.effective_complexity_display %}
+                        <span class="badge {{ order_equipment.effective_complexity_css }}">{{ order_equipment.effective_complexity_display }}</span>
+                        {% else %}—{% endif %}
                         {% if order_equipment.complexity_is_derived %}
                         <span class="text-muted small">(по неисправностям)</span>
                         {% endif %}

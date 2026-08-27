@@ -324,20 +324,15 @@ class RepairOrderForm(forms.ModelForm):
     """Форма заказа на ремонт. Поле status исключено — статус меняется через отдельный механизм."""
     class Meta:
         model = RepairOrder
-        fields = [
-            'client', 'fault_description', 'invoice_number', 'invoice_date',
-            'payment_status'
-        ]
+        fields = ['client', 'invoice_number', 'invoice_date', 'payment_status']
         widgets = {
             'client': forms.Select(attrs={'class': 'form-select'}),
-            'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
             'invoice_number': forms.TextInput(attrs={'class': 'form-control'}),
             'invoice_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'),
             'payment_status': forms.Select(attrs={'class': 'form-select'}),
         }
         labels = {
             'client': 'Заказчик',
-            'fault_description': 'Общее описание неисправности',
             'invoice_number': 'Номер счёта',
             'invoice_date': 'Дата счёта',
             'payment_status': 'Статус оплаты',
@@ -442,13 +437,15 @@ class RepairOrderEquipmentForm(forms.ModelForm):
 # выставлении.
 
 class RepairOrderIntakeForm(RepairOrderForm):
-    """Заказ в момент приёма: заказчик и что он рассказал.
+    """Заказ в момент приёма: от кого прибор.
 
-    Общее описание остаётся: оно печатается в акте приёма строкой
-    «Со слов заказчика» — то есть это как раз поле приёмки, а не работы.
+    Общего описания неисправности здесь больше нет — оно убрано целиком
+    с v2.83.0. Его заполняли вместо описания по прибору, то есть про одно
+    и то же спрашивали дважды; описание пишется у каждой единицы, и оно же
+    печатается в акте приёма.
     """
     class Meta(RepairOrderForm.Meta):
-        fields = ['client', 'fault_description']
+        fields = ['client']
 
 
 class RepairOrderEquipmentIntakeForm(RepairOrderEquipmentForm):
@@ -941,8 +938,8 @@ class CabinetForm(forms.ModelForm):
 
 
 class OrderInfoForm(forms.ModelForm):
-    """Заказчик и общее описание — то немногое, что относится к заказу
-    целиком, а не к прибору.
+    """Заказчик — единственное, что относится к заказу целиком, а не
+    к прибору.
 
     Раньше это правилось на отдельной странице вместе с полями всех
     единиц разом, номером счёта и статусом оплаты. Счёт заполняется
@@ -953,18 +950,11 @@ class OrderInfoForm(forms.ModelForm):
 
     class Meta:
         model = RepairOrder
-        fields = ['client', 'fault_description']
+        fields = ['client']
         widgets = {
             'client': forms.Select(attrs={'class': 'form-select'}),
-            'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
         }
-        labels = {
-            'client': 'Заказчик',
-            'fault_description': 'Общее описание неисправности',
-        }
-        help_texts = {
-            'fault_description': 'Печатается в акте приёма строкой «Со слов заказчика».',
-        }
+        labels = {'client': 'Заказчик'}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

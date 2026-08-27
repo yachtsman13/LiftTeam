@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.82.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.83.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -162,8 +162,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 </form>
 
                 {% comment %}
-                    Заказчик и общее описание — то немногое, что относится
-                    к заказу целиком, а не к прибору. Отдельная форма,
+                    Заказчик — единственное, что относится к заказу
+                    целиком, а не к прибору. Отдельная форма,
                     а не общая со статусом: смена статуса пишет историю
                     и шлёт оповещение заказчику, и складывать её
                     с правкой полей нельзя.
@@ -177,20 +177,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 <form method="post" action="{% url 'repair_order_edit_info' order.pk %}">
                     {% csrf_token %}
                     <div class="row g-2">
-                        <div class="col-md-4">
+                        <div class="col-md-8">
                             <label class="form-label small mb-1">{{ info_form.client.label }}</label>
                             {{ info_form.client }}
                             {% if info_form.client.errors %}<div class="text-danger small">{{ info_form.client.errors.0 }}</div>{% endif %}
                         </div>
-                        <div class="col-md-5">
-                            <label class="form-label small mb-1">{{ info_form.fault_description.label }}</label>
-                            {{ info_form.fault_description }}
-                            <div class="form-text">{{ info_form.fault_description.help_text }}</div>
-                        </div>
-                        <div class="col-md-3 align-self-start">
-                            <label class="form-label small mb-1 d-none d-md-block">&nbsp;</label>
+                        <div class="col-md-4 align-self-end">
                             <button type="submit" class="btn btn-outline-primary w-100">
-                                <i class="bi bi-check-lg me-2"></i>Сохранить
+                                <i class="bi bi-check-lg me-2"></i>Сохранить заказчика
                             </button>
                         </div>
                     </div>
@@ -235,7 +229,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <input type="checkbox" class="form-check-input" id="equipmentCheckAll"
                                        title="Отметить всё" aria-label="Отметить всё оборудование">
                             </th>
-                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Готовность</th><th class="text-end">Действия</th>
+                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Сложность</th><th>Готовность</th><th class="text-end">Действия</th>
                         </tr></thead>
                         <tbody>
                             {% for oe in order_equipments %}
@@ -284,6 +278,20 @@ document.addEventListener('DOMContentLoaded', function () {
                                 {% endcomment %}
                                 <td data-label="Неисправность">{{ oe.fault_description|default:"—"|truncatechars:60 }}</td>
                                 <td data-label="Выполнено">{{ oe.work_performed|default:"—"|truncatechars:60 }}</td>
+                                {% comment %}
+                                    Сложность — цветом: зелёный простой,
+                                    красный сложный. Пусто означает
+                                    «не задавали», и красить его незачем.
+                                    Цвет считается одним местом
+                                    (models.complexity_css), а не цепочкой
+                                    условий в каждом шаблоне: так уже
+                                    разъехались статусы заказа.
+                                {% endcomment %}
+                                <td data-label="Сложность">
+                                    {% if oe.effective_complexity_display %}
+                                    <span class="badge {{ oe.effective_complexity_css }}">{{ oe.effective_complexity_display }}</span>
+                                    {% else %}<span class="text-muted">—</span>{% endif %}
+                                </td>
                                 {% comment %}
                                     Отметка короткая: что именно осталось,
                                     перечислено ниже отдельной карточкой —
@@ -350,7 +358,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="8" class="text-center text-muted">Оборудование не добавлено</td></tr>
+                            <tr><td colspan="9" class="text-center text-muted">Оборудование не добавлено</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>

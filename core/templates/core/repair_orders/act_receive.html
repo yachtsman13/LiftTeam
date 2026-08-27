@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт приёма {{ order.order_number }} — LiftTeam v2.82.0{% endblock %}
+{% block title %}Акт приёма {{ order.order_number }} — LiftTeam v2.83.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2">
@@ -51,7 +51,7 @@
                 <td>{{ oe.equipment.serial_number }}</td>
                 <td>{{ oe.seal_numbers|default:"—" }}</td>
                 <td>{{ oe.initial_condition|default:"—" }}</td>
-                <td>{{ oe.fault_description|default:order.fault_description|default:"—" }}</td>
+                <td>{{ oe.fault_description|default:"—" }}</td>
             </tr>
             {% empty %}
             <tr><td colspan="6">Оборудование в заказе не указано</td></tr>
@@ -59,10 +59,12 @@
         </tbody>
     </table>
 
-    {% if order.fault_description %}
-    <div class="act-note"><strong>Со слов заказчика:</strong> {{ order.fault_description }}</div>
-    {% endif %}
-
+{% comment %}
+        Отдельной строки «Со слов заказчика» здесь больше нет: она печатала
+        общее описание заказа, которое дублировало описания по приборам.
+        Заявленная неисправность стоит в таблице у каждой единицы —
+        там, где её и читают.
+    {% endcomment %}
     <div class="act-note">
         Стоимость и срок ремонта определяются после диагностики и согласуются
         с Заказчиком. Оборудование принято без комплектующих и принадлежностей,

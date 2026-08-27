@@ -88,6 +88,23 @@ def format_spec(value):
     return f'{number:f}'
 
 
+def complexity_css(value):
+    """Цвет сложности — один на всю программу.
+
+    Раскраска разъезжается быстрее всего: цепочка `{% if %}` в шаблоне
+    копируется в соседний шаблон, там её правят, и одно и то же начинает
+    выглядеть по-разному. Так уже вышло со статусами заказа.
+
+    Пусто — цвета нет: «не задавали» это не сложность, и красить его
+    незачем.
+    """
+    if value == 'complex':
+        return 'bg-danger'
+    if value == 'simple':
+        return 'bg-success'
+    return ''
+
+
 def plural_genitive(word):
     """Родительный падеж множественного числа: «резистор» → «резисторов».
 
@@ -1047,6 +1064,11 @@ class FaultType(models.Model):
         return self.description.strip()
 
     @property
+    def complexity_css(self):
+        """Цвет значка сложности. Считается одним местом на всю программу."""
+        return complexity_css(self.complexity)
+
+    @property
     def work_text(self):
         """Типовые работы этой неисправности — то, что подставляется в заказ.
 
@@ -1356,7 +1378,6 @@ class RepairOrder(models.Model):
         related_name='repair_orders', verbose_name='Оборудование'
     )
     date_received = models.DateTimeField('Дата приёма', auto_now_add=True)
-    fault_description = models.TextField('Описание неисправности', blank=True)
     date_completed = models.DateTimeField('Дата завершения', null=True, blank=True)
     shipping_date = models.DateTimeField('Дата отгрузки', null=True, blank=True)
     tracking_number = models.CharField('Трек-номер', max_length=100, blank=True)
@@ -1959,9 +1980,12 @@ class RepairOrderEquipment(models.Model):
         'Предлагаемые работы', blank=True,
         help_text='Что предлагаем сделать. Идёт в коммерческое предложение.'
     )
+    # Значений два, как и у неисправности: «среднего» ремонта не бывает —
+    # так решил владелец, и до v2.83.0 третий вариант просто висел в списке
+    # неиспользованным. Пусто означает не «простой», а «не задавали»
     repair_complexity = models.CharField(
         'Сложность ремонта', max_length=20, blank=True,
-        choices=[('simple', 'Простой'), ('medium', 'Средний'), ('complex', 'Сложный')]
+        choices=[('simple', 'Простой'), ('complex', 'Сложный')]
     )
     # Цена, которую предложил прайс в тот момент, когда назначали
     # стоимость. Хранится отдельно от согласованной (`estimated_cost`),
@@ -2191,6 +2215,12 @@ class RepairOrderEquipment(models.Model):
     def complexity_is_derived(self):
         """Сложность выведена из неисправностей, а не проставлена руками."""
         return not self.repair_complexity and bool(self.derived_complexity)
+
+    @property
+    def effective_complexity_css(self):
+        """Цвет значка сложности единицы — по той сложности, которая
+        и показывается: проставленной руками либо выведенной."""
+        return complexity_css(self.effective_complexity)
 
     @property
     def effective_complexity_display(self):

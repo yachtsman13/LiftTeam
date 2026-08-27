@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Типовые неисправности — LiftTeam v2.82.0{% endblock %}
+{% block title %}Типовые неисправности — LiftTeam v2.83.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -36,7 +36,9 @@
                             <div class="small text-danger">Без описания — в документы эта неисправность не попадёт</div>
                             {% endif %}
                         </td>
-                        <td data-label="Сложность">{{ fault.get_complexity_display }}</td>
+                        <td data-label="Сложность">
+                            <span class="badge {{ fault.complexity_css }}">{{ fault.get_complexity_display }}</span>
+                        </td>
                         <td data-label="Рецепт деталей">
                             {% for line in fault.parts.all %}
                             <span class="badge bg-secondary fw-normal">{{ line.part.name }} ×{{ line.quantity }}{% if line.version %} — только {{ line.version.name }}{% endif %}</span>

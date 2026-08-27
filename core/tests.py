@@ -47,7 +47,7 @@ from .models import (
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
-    StorageCell, TechCard, TechCardStep, WebhookDelivery,
+    StorageCell, TechCard, TechCardStep, WebhookDelivery, complexity_css,
     parse_layout, plural_genitive, format_spec,
 )
 
@@ -260,7 +260,7 @@ class RepairOrderIntakeFormTests(TestCase):
     def test_intake_asks_only_what_is_known_on_arrival(self):
         page = self.http.get('/repair-orders/create/')
         form_fields = list(page.context['form'].fields)
-        self.assertEqual(form_fields, ['client', 'fault_description'])
+        self.assertEqual(form_fields, ['client'])
         # id, DELETE и repair_order — служебные поля набора форм, их
         # добавляет Django, а не мы.
         unit_fields = [name for name in page.context['formset'].empty_form.fields
@@ -313,7 +313,6 @@ class RepairOrderIntakeFormTests(TestCase):
     def test_intake_saves_the_order_and_the_unit(self):
         response = self.http.post('/repair-orders/create/', {
             'client': self.client_obj.pk,
-            'fault_description': 'Не включается после грозы',
             'equipments-TOTAL_FORMS': '1',
             'equipments-INITIAL_FORMS': '0',
             'equipments-MIN_NUM_FORMS': '0',
@@ -324,7 +323,6 @@ class RepairOrderIntakeFormTests(TestCase):
         })
         self.assertEqual(response.status_code, 302)
         order = RepairOrder.objects.get()
-        self.assertEqual(order.fault_description, 'Не включается после грозы')
         # Оплата и счёт остаются в состоянии «ещё не было», а не пустыми
         # по недосмотру: значение берётся из модели, а не из формы.
         self.assertEqual(order.payment_status, 'unpaid')
@@ -1596,11 +1594,11 @@ class OrderSearchTests(TestCase):
         self.order_a = RepairOrder.objects.create(
             client=self.alpha, status='repair', payment_status='unpaid',
             invoice_number='СЧ-100', tracking_number='TRK-777',
-            fault_description='Не запускается двигатель',
         )
         RepairOrderEquipment.objects.create(
             repair_order=self.order_a,
             equipment=Equipment.objects.create(model=self.buad, serial_number='БУАД-1234'),
+            fault_description='Не запускается двигатель',
         )
 
         self.order_b = RepairOrder.objects.create(
@@ -1635,11 +1633,10 @@ class OrderSearchTests(TestCase):
     def test_search_by_tracking_number(self):
         self.assertEqual(self._found('?q=TRK-777'), {self.order_a.pk})
 
-    def test_search_by_order_fault_description(self):
-        self.assertEqual(self._found('?q=двигатель'), {self.order_a.pk})
-
     def test_search_by_unit_fault_description(self):
-        """Неисправность может быть записана у единицы, а не у заказа."""
+        """Неисправность записана у единицы: общего описания у заказа
+        больше нет — его заполняли вместо описания по прибору."""
+        self.assertEqual(self._found('?q=двигатель'), {self.order_a.pk})
         self.assertEqual(self._found('?q=скрип'), {self.order_b.pk})
 
     def test_search_by_equipment_model(self):
@@ -2358,7 +2355,7 @@ class EquipmentHistoryExportTests(TestCase):
         self.other = Equipment.objects.create(model=model, serial_number='SN-200')
 
         self.order = RepairOrder.objects.create(
-            client=self.client_obj, status='shipped', fault_description='Общая неисправность'
+            client=self.client_obj, status='shipped'
         )
         RepairOrder.objects.filter(pk=self.order.pk).update(
             date_completed=timezone.now() - datetime.timedelta(days=5)
@@ -11607,12 +11604,16 @@ class RepairComplexityDerivationTests(TestCase):
         self.assertEqual(self.roe.effective_complexity_display, 'Сложный')
 
     def test_a_manual_value_survives_the_derivation(self):
+        """Проставленное руками не перебивается выведенным: мастер видит
+        прибор, а справочник — нет."""
         self.roe.faults.set([self.simple_fault, self.complex_fault])
-        self.roe.repair_complexity = 'medium'
+        self.roe.repair_complexity = 'simple'
         self.roe.save(update_fields=['repair_complexity'])
 
-        self.assertEqual(self.roe.effective_complexity, 'medium')
-        self.assertEqual(self.roe.effective_complexity_display, 'Средний')
+        # Из неисправностей вышло бы «сложный» — сложна хотя бы одна
+        self.assertEqual(self.roe.derived_complexity, 'complex')
+        self.assertEqual(self.roe.effective_complexity, 'simple')
+        self.assertEqual(self.roe.effective_complexity_display, 'Простой')
         self.assertFalse(self.roe.complexity_is_derived)
 
     def test_the_quote_prints_the_derived_value(self):
@@ -15023,14 +15024,12 @@ class OrderEditPageIsGoneTests(TestCase):
     def test_the_client_is_changed_from_the_order_card(self):
         response = self.http.post(
             reverse('repair_order_edit_info', args=[self.order.pk]),
-            {'client': str(self.second.pk),
-             'fault_description': 'Не включается после грозы'},
+            {'client': str(self.second.pk)},
         )
 
         self.order.refresh_from_db()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.order.client, self.second)
-        self.assertEqual(self.order.fault_description, 'Не включается после грозы')
 
     def test_the_card_does_not_offer_the_invoice_fields_twice(self):
         """Счёт заполняется при выставлении, статус оплаты — своей формой
@@ -15934,3 +15933,233 @@ class AutogrowTests(SimpleTestCase):
         """У скрытого поля нулевая высота содержимого, и подгонка
         схлопнула бы его в ничто."""
         self.assertIn('if (!field.offsetParent && field.offsetHeight === 0) return;', self.code)
+
+
+# ============ ЦВЕТ СЛОЖНОСТИ, ОБЩЕЕ ОПИСАНИЕ УБРАНО (v2.83.0) ============
+
+
+class ComplexityColourTests(TestCase):
+    """Сложность помечена цветом, и цвет считается одним местом.
+
+    Раскраска разъезжается быстрее всего: цепочка условий в шаблоне
+    копируется в соседний, там её правят, и одно и то же начинает
+    выглядеть по-разному. Так уже вышло со статусами заказа.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='complexity_colour', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.simple = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            complexity='simple',
+        )
+        self.hard = FaultType.objects.create(
+            equipment_model=self.model, name='прошивка процессора',
+            complexity='complex',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-CC-1'
+            ),
+        )
+
+    def test_the_colour_is_decided_in_one_place(self):
+        self.assertEqual(complexity_css('simple'), 'bg-success')
+        self.assertEqual(complexity_css('complex'), 'bg-danger')
+        self.assertEqual(complexity_css(''), '')
+
+    def test_a_fault_and_a_unit_agree_on_the_colour(self):
+        self.roe.faults.add(self.hard)
+
+        self.assertEqual(self.hard.complexity_css, 'bg-danger')
+        self.assertEqual(self.roe.effective_complexity_css, 'bg-danger')
+
+    def test_not_set_is_not_painted(self):
+        """«Не задавали» — это не сложность, и красить его незачем."""
+        self.assertEqual(self.roe.effective_complexity, '')
+        self.assertEqual(self.roe.effective_complexity_css, '')
+
+    def test_the_units_list_shows_it(self):
+        """Владелец попросил цвет и здесь."""
+        self.roe.faults.add(self.hard)
+
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        cell = html.split('data-label="Сложность"')[1].split('</td>')[0]
+
+        self.assertIn('bg-danger', cell)
+        self.assertIn('Сложный', cell)
+
+    def test_the_fault_list_shows_it(self):
+        html = self.http.get(reverse('fault_type_list')).content.decode()
+
+        self.assertIn('bg-success', html)
+        self.assertIn('bg-danger', html)
+
+
+class MediumComplexityIsGoneTests(TestCase):
+    """«Среднего» ремонта не бывает — решение владельца."""
+
+    def test_only_two_values_are_offered(self):
+        field = RepairOrderEquipment._meta.get_field('repair_complexity')
+
+        self.assertEqual(
+            [code for code, _ in field.choices], ['simple', 'complex']
+        )
+
+    def test_the_unit_and_the_fault_speak_the_same_language(self):
+        """Сложность единицы выводится из неисправностей: разойдись
+        наборы значений, вывод дал бы код, которого нет в списке."""
+        unit = {code for code, _ in
+                RepairOrderEquipment._meta.get_field('repair_complexity').choices}
+        fault = {code for code, _ in
+                 FaultType._meta.get_field('complexity').choices}
+
+        self.assertEqual(unit, fault)
+
+
+class OrderFaultDescriptionIsGoneTests(TestCase):
+    """Общее описание неисправности у заказа убрано.
+
+    Его заполняли вместо описания по прибору — то есть про одно и то же
+    спрашивали дважды. По базе владельца оно не было заполнено ни в одном
+    заказе из восьми.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='no_common_fault', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-NC-1'
+            ),
+            fault_description='Не открывает двери',
+        )
+
+    def test_the_field_is_gone_from_the_model(self):
+        self.assertFalse(
+            [f.name for f in RepairOrder._meta.get_fields()
+             if f.name == 'fault_description']
+        )
+
+    def test_intake_asks_only_for_the_client(self):
+        html = self.http.get(reverse('repair_order_create')).content.decode()
+        head = html.split('equipments-0')[0]
+
+        self.assertNotIn('name="fault_description"', head)
+
+    def test_the_order_card_asks_only_for_the_client(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        form = html.split('edit-info/')[1].split('</form>')[0]
+
+        self.assertIn('name="client"', form)
+        self.assertNotIn('name="fault_description"', form)
+
+    def test_the_intake_act_prints_the_units_own_text(self):
+        """Заявленная неисправность стоит в таблице у каждой единицы —
+        там, где её и читают."""
+        html = self.http.get(
+            reverse('repair_order_act_receive', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('Не открывает двери', html)
+        self.assertNotIn('Со слов заказчика:', html)
+
+    def test_search_still_finds_the_text(self):
+        found = self.http.get(
+            reverse('repair_order_list'), {'q': 'двери'}
+        ).context['orders']
+
+        self.assertEqual([o.pk for o in found], [self.order.pk])
+
+
+class OrderFaultDescriptionMigrationTests(TransactionTestCase):
+    """Перед удалением столбца текст перекладывается в единицы.
+
+    Ровно так его и печатал акт приёма: описание единицы, а если его нет —
+    общее по заказу. Так что ничей текст не пропадает, а оказывается там,
+    где его и читали.
+    """
+
+    BEFORE = '0046_faulttype_work_description'
+    AFTER = '0047_drop_order_fault_description'
+
+    available_apps = None
+
+    def _migrate(self, target):
+        from django.db import connection as db_connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(db_connection)
+        executor.loader.build_graph()
+        return executor.migrate([('core', target)])
+
+    def tearDown(self):
+        from django.db.migrations.loader import MigrationLoader
+        names = sorted(
+            name for app, name in
+            MigrationLoader(None, ignore_no_migrations=True).disk_migrations
+            if app == 'core'
+        )
+        self._migrate(names[-1])
+
+    def test_the_text_moves_to_units_without_their_own(self):
+        old_state = self._migrate(self.BEFORE)
+
+        OldClient = old_state.apps.get_model('core', 'Client')
+        OldModel = old_state.apps.get_model('core', 'EquipmentModel')
+        OldEquipment = old_state.apps.get_model('core', 'Equipment')
+        OldOrder = old_state.apps.get_model('core', 'RepairOrder')
+        OldUnit = old_state.apps.get_model('core', 'RepairOrderEquipment')
+
+        model = OldModel.objects.create(name='БУАД-МИГР')
+        order = OldOrder.objects.create(
+            client=OldClient.objects.create(name='ООО Миграция', inn='7700000906'),
+            order_number='FD-1',
+            fault_description='Общее: не работает после грозы',
+        )
+        silent = OldUnit.objects.create(
+            repair_order=order,
+            equipment=OldEquipment.objects.create(model=model, serial_number='FD-SILENT'),
+        )
+        speaking = OldUnit.objects.create(
+            repair_order=order,
+            equipment=OldEquipment.objects.create(model=model, serial_number='FD-OWN'),
+            fault_description='Своё: гудит',
+        )
+        # И единица «среднего» ремонта — такого больше не бывает
+        speaking.repair_complexity = 'medium'
+        speaking.save()
+
+        self._migrate(self.AFTER)
+
+        silent = RepairOrderEquipment.objects.get(pk=silent.pk)
+        speaking = RepairOrderEquipment.objects.get(pk=speaking.pk)
+
+        self.assertEqual(silent.fault_description, 'Общее: не работает после грозы')
+        # Своё не перебито общим
+        self.assertEqual(speaking.fault_description, 'Своё: гудит')
+        # «Средний» переведён в «сложный»: занизить сложность значит
+        # занизить цену по прайсу, а завысить — попросить перечитать
+        self.assertEqual(speaking.repair_complexity, 'complex')

@@ -562,7 +562,7 @@ def equipment_history_export(request, pk):
             excel_datetime(order.date_received),
             excel_datetime(order.date_completed),
             order.client.name,
-            visit.fault_description or order.fault_description,
+            visit.fault_description,
             visit.initial_condition,
             visit.seal_numbers,
             visit.repair_cost if visit.repair_cost is not None else '',
@@ -1055,7 +1055,6 @@ def _filter_orders(request):
             Q(client__inn__icontains=search) |
             Q(invoice_number__icontains=search) |
             Q(tracking_number__icontains=search) |
-            Q(fault_description__icontains=search) |
             Q(order_equipments__fault_description__icontains=search) |
             Q(order_equipments__equipment__serial_number__icontains=search) |
             Q(order_equipments__equipment__model__name__icontains=search)
