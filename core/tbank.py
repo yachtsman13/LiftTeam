@@ -20,15 +20,24 @@ v3 bank-accounts живут одновременно). Ошибиться в и�
 тихо потерять поступление, поэтому лучше перебрать кандидатов и, если ни один
 не подошёл, честно вернуть операцию без этого поля — сотрудник увидит её
 в списке и разнесёт руками.
+
+Про даты периода. Границы выписки уходят **моментом времени с часовым
+поясом** (RFC 3339), а не датой: на дату банк отвечает 400 —
+«Value '2026-07-29' is not a valid date-time (schema: query.from)».
+Это проверено на живом счёте, а не выведено из документации. Смещение
+берётся местное, не UTC: границы периода — это границы рабочего дня,
+и от полуночи UTC при UTC+3 период съезжал бы на три часа, теряя
+операции на краях.
 """
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal, InvalidOperation
 from urllib import error, parse, request
 
 from django.conf import settings
+from django.utils import timezone
 
 from . import envfile
 
@@ -171,16 +180,46 @@ def account_numbers(payload):
     return numbers
 
 
+def _moment(value, end_of_day=False):
+    """Дата — в момент времени с часовым поясом, как просит банк.
+
+    Одну дату он не принимает: «Value '2026-07-29' is not a valid
+    date-time (schema: query.from)». Нужен RFC 3339 — дата, время
+    и смещение.
+
+    Смещение берётся **местное** (`TIME_ZONE`), а не UTC. Граница
+    периода — это границы рабочего дня: у нас UTC+3, и запрос
+    от полуночи UTC начинался бы с трёх часов ночи предыдущего дня,
+    то есть период тихо съезжал бы на три часа. На краях выписки
+    из-за этого терялись бы или задваивались операции.
+
+    Конец дня — 23:59:59, а не полночь следующего: `till` у банка,
+    судя по названию, включающий, и полночь следующего дня захватила бы
+    лишний день целиком.
+    """
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        moment = datetime.combine(
+            value, time(23, 59, 59) if end_of_day else time(0, 0, 0)
+        )
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment)
+    # timespec='seconds': доли секунды банку не нужны, а в запросе
+    # они только удлиняют строку
+    return moment.isoformat(timespec='seconds')
+
+
 def get_statement(date_from, date_to, account=None, timeout=60):
-    """Выписка за период. Даты — объекты date."""
+    """Выписка за период. Даты — объекты date либо datetime."""
     account = account or account_number()
     if not account:
         raise TBankError('Не задан TBANK_ACCOUNT — номер расчётного счёта')
 
     return _call(STATEMENT_PATH, {
         'accountNumber': account,
-        'from': date_from.isoformat(),
-        'till': date_to.isoformat(),
+        'from': _moment(date_from),
+        'till': _moment(date_to, end_of_day=True),
     }, timeout=timeout)
 
 

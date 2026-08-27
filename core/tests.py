@@ -5203,8 +5203,10 @@ class TBankTransportTests(TestCase):
         sent = calls[0]
         self.assertIn('/openapi/api/v1/statement?', sent.full_url)
         self.assertIn('accountNumber=40802810700006096146', sent.full_url)
-        self.assertIn('from=2026-08-01', sent.full_url)
-        self.assertIn('till=2026-08-13', sent.full_url)
+        # Банк требует не дату, а момент времени: одну дату он отвергает
+        # с «Value '2026-07-29' is not a valid date-time (schema: query.from)»
+        self.assertIn('from=2026-08-01T00%3A00%3A00', sent.full_url)
+        self.assertIn('till=2026-08-13T23%3A59%3A59', sent.full_url)
 
     @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146')
     def test_token_goes_as_bearer(self):
@@ -5235,6 +5237,50 @@ class TBankTransportTests(TestCase):
                 tbank.get_statement(datetime.date(2026, 8, 1), datetime.date(2026, 8, 2))
 
         self.assertIn('TBANK_TOKEN', str(caught.exception))
+
+
+class TBankStatementPeriodTests(TestCase):
+    """Границы периода выписки. Живой банк отверг одну дату — здесь
+    закреплено то, что он принял."""
+
+    def test_a_plain_date_is_refused_by_the_bank_so_we_send_a_moment(self):
+        moment = tbank._moment(datetime.date(2026, 7, 29))
+
+        self.assertTrue(moment.startswith('2026-07-29T00:00:00'))
+        self.assertNotEqual(moment, '2026-07-29')
+
+    def test_the_offset_is_local_and_not_utc(self):
+        """Граница периода — это границы рабочего дня. От полуночи UTC
+        при нашем UTC+3 период начинался бы с трёх ночи предыдущего дня,
+        и на краях выписки операции терялись бы."""
+        with override_settings(TIME_ZONE='Europe/Moscow', USE_TZ=True):
+            moment = tbank._moment(datetime.date(2026, 7, 29))
+
+        self.assertTrue(moment.endswith('+03:00'), moment)
+
+    def test_the_end_of_the_period_is_the_end_of_the_day(self):
+        """`till`, судя по названию, включающий: полночь следующего дня
+        захватила бы лишний день целиком."""
+        moment = tbank._moment(datetime.date(2026, 7, 29), end_of_day=True)
+
+        self.assertTrue(moment.startswith('2026-07-29T23:59:59'), moment)
+
+    def test_a_datetime_is_taken_as_it_is(self):
+        given = timezone.make_aware(
+            datetime.datetime(2026, 7, 29, 14, 30, 5)
+        )
+
+        self.assertEqual(tbank._moment(given), given.isoformat(timespec='seconds'))
+
+    def test_the_offset_survives_the_query_string(self):
+        """Плюс в адресе без кодирования читается как пробел, и банк
+        снова ответил бы «не date-time»."""
+        query = urllib_parse.urlencode(
+            {'from': tbank._moment(datetime.date(2026, 7, 29))}
+        )
+
+        self.assertIn('%2B03%3A00', query)
+        self.assertNotIn('+03', query)
 
 
 class TBankParsingTests(TestCase):
