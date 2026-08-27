@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.84.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.85.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -229,7 +229,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <input type="checkbox" class="form-check-input" id="equipmentCheckAll"
                                        title="Отметить всё" aria-label="Отметить всё оборудование">
                             </th>
-                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Сложность</th><th>Готовность</th><th class="text-end">Действия</th>
+                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Стоимость</th><th>Готовность</th><th class="text-end">Действия</th>
                         </tr></thead>
                         <tbody>
                             {% for oe in order_equipments %}
@@ -279,18 +279,29 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <td data-label="Неисправность">{{ oe.fault_description|default:"—"|truncatechars:60 }}</td>
                                 <td data-label="Выполнено">{{ oe.work_performed|default:"—"|truncatechars:60 }}</td>
                                 {% comment %}
-                                    Сложность — цветом: зелёный простой,
-                                    красный сложный. Пусто означает
-                                    «не задавали», и красить его незачем.
-                                    Цвет считается одним местом
-                                    (models.complexity_css), а не цепочкой
-                                    условий в каждом шаблоне: так уже
-                                    разъехались статусы заказа.
+                                    Стоимость и сложность — один столбец:
+                                    цифра, ради которой в него смотрят,
+                                    и цвет, несущий сложность (зелёный
+                                    простой, красный сложный). Слово
+                                    показывается, только пока цифры нет.
+                                    Отдельного столбца сложности больше
+                                    нет: строка и так широкая, а два
+                                    значка рядом читаются хуже одного.
+
+                                    Что именно окажется в ячейке, решает
+                                    одно место — `cost_cell`, а не цепочка
+                                    условий здесь: на телефоне эта же
+                                    строка рисуется карточкой, и разойтись
+                                    двум видам нельзя.
                                 {% endcomment %}
-                                <td data-label="Сложность">
-                                    {% if oe.effective_complexity_display %}
-                                    <span class="badge {{ oe.effective_complexity_css }}">{{ oe.effective_complexity_display }}</span>
-                                    {% else %}<span class="text-muted">—</span>{% endif %}
+                                <td data-label="Стоимость">
+                                    {% with cell=oe.cost_cell %}
+                                    {% if cell.css %}
+                                    <span class="badge {{ cell.css }}">{{ cell.text }}</span>
+                                    {% elif cell.muted %}
+                                    <span class="text-muted">{{ cell.text }}</span>
+                                    {% else %}{{ cell.text }}{% endif %}
+                                    {% endwith %}
                                 </td>
                                 {% comment %}
                                     Отметка короткая: что именно осталось,
@@ -301,7 +312,15 @@ document.addEventListener('DOMContentLoaded', function () {
                                 {% endcomment %}
                                 <td data-label="Готовность">
                                     {% if oe.is_ready %}
-                                    <span class="badge bg-success">Готова</span>
+                                    {% comment %}
+                                        Слово берётся из `readiness_label`
+                                        и здесь тоже: вписанное отдельно,
+                                        оно разъезжается с ним при первой же
+                                        правке — так и вышло с «Готова»,
+                                        которое согласовано с «единицей»,
+                                        а читается про прибор.
+                                    {% endcomment %}
+                                    <span class="badge bg-success">{{ oe.readiness_label }}</span>
                                     {% else %}
                                     <a href="#readiness" class="badge bg-warning text-dark text-decoration-none"
                                        title="Что осталось — в чек-листе ниже">{{ oe.readiness_label }}</a>

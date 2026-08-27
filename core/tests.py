@@ -13660,7 +13660,7 @@ class UnitReadinessTests(TestCase):
         self._finish()
 
         self.assertTrue(self.roe.is_ready)
-        self.assertEqual(self.roe.readiness_label, 'Готова')
+        self.assertEqual(self.roe.readiness_label, 'Готов')
 
     def test_a_warranty_repair_is_not_asked_for_a_price(self):
         """«Назначьте стоимость» на гарантийном ремонте — ложная тревога,
@@ -13787,7 +13787,7 @@ class ReadinessScreensTests(TestCase):
         ).content.decode()
 
         self.assertIn('заполнено всё', html.lower())
-        self.assertIn('Готова', html)
+        self.assertIn('Готов', html)
 
     def test_shipping_warns_but_does_not_forbid(self):
         """Мастер видит прибор, а программа нет. Запрет означал бы, что
@@ -16023,13 +16023,15 @@ class ComplexityColourTests(TestCase):
         self.assertEqual(self.roe.effective_complexity_css, '')
 
     def test_the_units_list_shows_it(self):
-        """Владелец попросил цвет и здесь."""
+        """Владелец попросил цвет и здесь. Столбец называется
+        «Стоимость»: пока цифры нет, в нём стоит слово, а цвет
+        одинаков в обоих случаях."""
         self.roe.faults.add(self.hard)
 
         html = self.http.get(
             reverse('repair_order_detail', args=[self.order.pk])
         ).content.decode()
-        cell = html.split('data-label="Сложность"')[1].split('</td>')[0]
+        cell = html.split('data-label="Стоимость"')[1].split('</td>')[0]
 
         self.assertIn('bg-danger', cell)
         self.assertIn('Сложный', cell)
@@ -16039,6 +16041,126 @@ class ComplexityColourTests(TestCase):
 
         self.assertIn('bg-success', html)
         self.assertIn('bg-danger', html)
+
+
+class UnitCostCellTests(TestCase):
+    """Столбец «Стоимость» в списке единиц заказа.
+
+    Стоимость и сложность слиты в один столбец: цифра — то, ради чего
+    в него смотрят, цвет несёт сложность. Слово показывается, только
+    пока цифры нет.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='cost_cell', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.hard = FaultType.objects.create(
+            equipment_model=self.model, name='пробит модуль', complexity='complex',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-COST-1'
+            ),
+        )
+
+    def _cell(self):
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+        return html.split('data-label="Стоимость"')[1].split('</td>')[0]
+
+    def test_the_amount_carries_the_complexity_colour(self):
+        """Есть цифра — показывается она, а сложность остаётся цветом."""
+        self.roe.repair_cost = Decimal('18500.00')
+        self.roe.repair_complexity = 'complex'
+        self.roe.save()
+
+        cell = self.roe.cost_cell
+
+        # Пробел в сумме неразрывный: перенос строки посреди числа
+        # превращает 18 500 в «18» и «500» на разных строках
+        self.assertEqual(cell['text'], '18\u00a0500 \u20bd')
+        self.assertEqual(cell['css'], 'bg-danger')
+        self.assertIn('18\u00a0500', self._cell())
+        self.assertNotIn('Сложный', self._cell())
+
+    def test_an_amount_without_complexity_is_not_painted(self):
+        """«Не задавали» — это не сложность, и красить её незачем."""
+        self.roe.repair_cost = Decimal('4500.00')
+        self.roe.save()
+
+        self.assertEqual(self.roe.cost_cell['css'], '')
+
+    def test_the_word_stands_in_until_the_amount_appears(self):
+        self.roe.faults.add(self.hard)
+
+        cell = self.roe.cost_cell
+
+        self.assertEqual(cell['text'], 'Сложный')
+        self.assertEqual(cell['css'], 'bg-danger')
+
+    def test_a_warranty_repair_says_so_instead_of_a_dash(self):
+        """Прочерк означает «не проставили», а на гарантии проставлять
+        нечего — по той же причине пункт стоимости выпадает
+        из готовности."""
+        self.roe.warranty_case = 'warranty'
+        self.roe.save()
+
+        self.assertEqual(self.roe.cost_cell['text'], 'по гарантии')
+        self.assertIn('по гарантии', self._cell())
+
+    def test_nothing_filled_is_a_dash(self):
+        self.assertEqual(self.roe.cost_cell['text'], '—')
+        self.assertTrue(self.roe.cost_cell['muted'])
+
+    def test_the_estimate_never_shows_up_here(self):
+        """Решение владельца: в одном столбце две разные цифры путали бы,
+        а какая из них перед глазами, из списка не видно."""
+        self.roe.estimated_cost = Decimal('12000.00')
+        self.roe.save()
+
+        self.assertEqual(self.roe.cost_cell['text'], '—')
+        self.assertNotIn('12\u00a0000', self._cell())
+
+    def test_there_is_no_separate_complexity_column_any_more(self):
+        """Строка и так широкая, а два значка рядом читаются хуже
+        одного."""
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertNotIn('data-label="Сложность"', html)
+
+
+class UnitReadinessLabelTests(TestCase):
+    """«Готов», а не «Готова»: слово согласовано с прибором, а не
+    со строкой заказа, и берётся из одного места."""
+
+    def test_the_label_agrees_with_the_device(self):
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-LABEL-1'
+            ),
+            diagnosis='Пробит модуль', work_performed='Заменён модуль',
+            repair_cost=Decimal('5000.00'),
+        )
+
+        self.assertTrue(roe.is_ready)
+        self.assertEqual(roe.readiness_label, 'Готов')
 
 
 class MediumComplexityIsGoneTests(TestCase):

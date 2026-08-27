@@ -2181,7 +2181,7 @@ class RepairOrderEquipment(models.Model):
         """Короткая отметка для списка единиц."""
         pending = self.readiness_pending
         if not pending:
-            return 'Готова'
+            return 'Готов'
         return 'Осталось %d' % len(pending)
 
     # --- Сложность ремонта ---
@@ -2230,6 +2230,45 @@ class RepairOrderEquipment(models.Model):
             return ''
         names = dict(self._meta.get_field('repair_complexity').choices)
         return names.get(value, value)
+
+    @property
+    def cost_cell(self):
+        """Что стоит в столбце «Стоимость» списка единиц заказа.
+
+        Стоимость и сложность слиты в один столбец: цифра — то, ради чего
+        в столбец и смотрят, а цвет значка несёт сложность. Слово
+        («Простой», «Сложный») показывается только пока цифры нет:
+        когда есть сумма, сложность и так видна цветом, а два значка
+        в одной ячейке — это уже не список, а мозаика.
+
+        Показывается **фактическая** стоимость (`repair_cost`) — та,
+        по которой считается сумма заказа и выставляется счёт, и та же,
+        что проверяет готовность. Оценка из дефектации сюда не попадает
+        (решение владельца): в одном столбце две разные цифры путали бы,
+        а какая из них перед глазами, из списка не видно.
+
+        Собирается здесь, а не цепочкой `{% if %}` в шаблоне: столбец
+        читают ещё и на телефоне, где строка становится карточкой,
+        и разъехаться этим двум видам нельзя.
+        """
+        if self.repair_cost is not None:
+            return {
+                'text': '%s ₽' % format_amount(self.repair_cost),
+                'css': self.effective_complexity_css,
+                'muted': False,
+            }
+        # Гарантийный ремонт денег не стоит, и прочерк здесь врал бы:
+        # он означает «не проставили», а тут проставлять нечего.
+        # По той же причине пункт стоимости выпадает из готовности
+        if self.warranty_case == 'warranty':
+            return {'text': 'по гарантии', 'css': '', 'muted': True}
+        if self.effective_complexity_display:
+            return {
+                'text': self.effective_complexity_display,
+                'css': self.effective_complexity_css,
+                'muted': False,
+            }
+        return {'text': '—', 'css': '', 'muted': True}
 
     @property
     def error_code_lines(self):
