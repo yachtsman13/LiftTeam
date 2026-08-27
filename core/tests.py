@@ -14953,13 +14953,16 @@ class UnitQuickActionsTests(TestCase):
 
         self.assertIn(expected, self.html)
 
-    def test_using_a_part_points_at_the_form_below(self):
-        """Форма списания стоит на этой же странице — уводить с неё
-        незачем."""
+    def test_using_a_part_leads_to_the_parts_of_that_unit(self):
+        """На странице единицы её не надо выбирать — она известна.
+        Форма на карточке заказа осталась для «на заказ целиком»."""
         html = self.html
 
-        self.assertIn('use-part-here', html)
-        self.assertIn('data-unit="%d"' % self.roe.pk, html)
+        self.assertIn(
+            reverse('repair_order_unit_detail',
+                    args=[self.order.pk, self.roe.pk]) + '#parts',
+            html,
+        )
         self.assertIn('id="usePartForm"', html)
 
     def test_the_row_does_not_carry_a_page_button_any_more(self):
@@ -15448,7 +15451,8 @@ class ReadinessButtonsTests(TestCase):
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_work_performed',
             'planned_parts': reverse(
-                'repair_order_detail', args=[self.order.pk]) + '#parts',
+                'repair_order_unit_detail',
+                args=[self.order.pk, self.roe.pk]) + '#parts',
             'repair_cost': reverse(
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_repair_cost',
@@ -15678,3 +15682,255 @@ class TypicalWorkScriptTests(SimpleTestCase):
 
         self.assertNotIn('data-bs-', code)
         self.assertNotIn('fetch(', code)
+
+
+# ============ ВЫБОР НЕИСПРАВНОСТЕЙ, ДЕТАЛИ, РАСТУЩИЕ ПОЛЯ (v2.82.0) ============
+
+
+class FaultPickerTests(TestCase):
+    """Неисправности выбираются из списка и добавляются кнопкой.
+
+    Раньше это был список с множественным выбором — тот, где надо держать
+    Ctrl. На планшете он почти неработоспособен, а при десятке
+    неисправностей не видно, что вообще выбрано.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+    TEMPLATES = Path(__file__).resolve().parent / 'templates' / 'core'
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='fault_picker', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.simple = FaultType.objects.create(
+            equipment_model=self.model, name='высохли конденсаторы',
+            complexity='simple',
+        )
+        self.hard = FaultType.objects.create(
+            equipment_model=self.model, name='прошивка процессора',
+            complexity='complex',
+        )
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-FP-1'
+            ),
+        )
+
+    def _url(self):
+        return reverse('repair_order_unit_detail',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_the_multiple_select_is_gone(self):
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertNotIn('multiple', html.split('fault-picker')[0][-400:])
+        self.assertIn('fault-picker-add', html)
+        self.assertIn('Добавить', html)
+
+    def test_the_name_stays_the_same_so_the_view_did_not_change(self):
+        """Наружу уходят те же поля под тем же именем — тот же приём,
+        что у выбора детали."""
+        self.roe.faults.add(self.simple)
+
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertIn('name="faults" value="%d"' % self.simple.pk, html)
+
+    def test_chosen_faults_are_drawn_by_the_server(self):
+        """Страница показывает выбранное и до того, как отработал скрипт."""
+        self.roe.faults.add(self.simple, self.hard)
+
+        html = self.http.get(self._url()).content.decode()
+        chosen = html.split('fault-picker-chosen')[1].split('fault-picker-empty')[0]
+
+        self.assertIn('высохли конденсаторы', chosen)
+        self.assertIn('прошивка процессора', chosen)
+
+    def test_complexity_is_coloured(self):
+        """Сложный — красный, простой — зелёный. Значений всего два."""
+        self.roe.faults.add(self.simple, self.hard)
+
+        html = self.http.get(self._url()).content.decode()
+        chosen = html.split('fault-picker-chosen')[1].split('fault-picker-empty')[0]
+
+        self.assertIn('bg-success', chosen)
+        self.assertIn('bg-danger', chosen)
+
+    def test_saving_the_choice_still_works(self):
+        self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            {'fault_description': '', 'initial_condition': '',
+             'work_performed': '', 'seal_numbers': '', 'repair_cost': '',
+             'yandex_disk_folder': '', 'faults': [str(self.hard.pk)]},
+        )
+
+        self.assertEqual(list(self.roe.faults.all()), [self.hard])
+
+    def test_the_script_is_shared_and_bootstrap_free(self):
+        base = (self.TEMPLATES / 'base.html').read_text(encoding='utf-8')
+        code = (self.STATIC / 'js' / 'fault-picker.js').read_text(encoding='utf-8')
+
+        self.assertIn('js/fault-picker.js', base)
+        self.assertNotIn('data-bs-', code)
+        self.assertNotIn('bootstrap', code)
+
+    def test_an_added_fault_leaves_the_dropdown(self):
+        """Второй раз ту же неисправность не добавить."""
+        code = (self.STATIC / 'js' / 'fault-picker.js').read_text(encoding='utf-8')
+
+        self.assertIn('option.hidden = taken.indexOf(option.value) >= 0', code)
+
+
+class PartsOnUnitPageTests(TestCase):
+    """Детали правятся со страницы единицы: там её не надо выбирать."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='parts_on_unit', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-PU-1'
+            ),
+        )
+        self.other = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, serial_number='SN-PU-2'
+            ),
+        )
+        self.part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=10
+        )
+
+    def _unit_url(self):
+        return reverse('repair_order_unit_detail',
+                       args=[self.order.pk, self.roe.pk])
+
+    def test_the_form_is_on_the_unit_page(self):
+        html = self.http.get(self._unit_url()).content.decode()
+
+        self.assertIn('name="order_equipment" value="%d"' % self.roe.pk, html)
+        self.assertIn('Списать', html)
+        self.assertIn('В план', html)
+
+    def test_a_part_written_off_here_lands_on_this_unit(self):
+        response = self.http.post(
+            reverse('repair_order_add_detail', args=[self.order.pk]),
+            {'part': str(self.part.pk), 'quantity_used': '2',
+             'order_equipment': str(self.roe.pk),
+             'next': self._unit_url() + '#parts'},
+        )
+
+        detail = RepairOrderDetail.objects.get()
+        self.assertEqual(detail.order_equipment, self.roe)
+        self.assertEqual(detail.quantity_used, 2)
+        # И возвращает туда, откуда пришли: три детали подряд — три
+        # раза уезжать в заказ незачем
+        self.assertEqual(response['Location'], self._unit_url() + '#parts')
+
+    def test_a_foreign_return_address_is_refused(self):
+        response = self.http.post(
+            reverse('repair_order_add_detail', args=[self.order.pk]),
+            {'part': str(self.part.pk), 'quantity_used': '1',
+             'order_equipment': str(self.roe.pk), 'next': 'https://example.com/'},
+        )
+
+        self.assertEqual(
+            response['Location'],
+            reverse('repair_order_detail', args=[self.order.pk]),
+        )
+
+    def test_the_order_card_still_writes_off_to_the_order_as_a_whole(self):
+        """Там списывают припой, стяжки, промывку — то, что к прибору
+        не привязано. Убери форму — списывать общее станет негде."""
+        html = self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+        self.assertIn('id="usePartForm"', html)
+        self.assertIn('На заказ целиком', html)
+
+    def test_planned_parts_are_written_off_from_here(self):
+        planned = RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=self.part, quantity_used=3, is_planned=True,
+        )
+
+        html = self.http.get(self._unit_url()).content.decode()
+        self.assertIn(
+            reverse('repair_order_write_off_detail',
+                    args=[self.order.pk, planned.pk]), html)
+
+        self.http.post(
+            reverse('repair_order_write_off_detail',
+                    args=[self.order.pk, planned.pk]),
+            {'next': self._unit_url() + '#parts'},
+        )
+
+        detail = RepairOrderDetail.objects.get()
+        self.assertFalse(detail.is_planned)
+        self.assertEqual(detail.order_equipment, self.roe)
+
+    def test_parts_of_another_unit_are_not_shown(self):
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.other,
+            part=self.part, quantity_used=1,
+        )
+
+        html = self.http.get(self._unit_url()).content.decode()
+        block = html.split('Детали на эту единицу')[1]
+
+        self.assertIn('деталей не списано', block)
+
+
+class AutogrowTests(SimpleTestCase):
+    """Многострочные поля ростом по содержимому.
+
+    Раньше высота стояла в разметке: под однострочный ответ отводилось
+    три строки пустоты, а под настоящий абзац всё равно не хватало.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+
+    @property
+    def code(self):
+        return (self.STATIC / 'js' / 'autogrow.js').read_text(encoding='utf-8')
+
+    def test_loaded_for_every_page(self):
+        base = (settings.BASE_DIR / 'core/templates/core/base.html'
+                ).read_text(encoding='utf-8')
+
+        self.assertIn('js/autogrow.js', base)
+
+    def test_no_form_needs_editing(self):
+        """Скрипт находит поля сам — иначе про него забыли бы
+        в первой же новой форме."""
+        self.assertIn("querySelectorAll('textarea')", self.code)
+        self.assertIn("event.target.tagName === 'TEXTAREA'", self.code)
+
+    def test_it_stops_growing_somewhere(self):
+        """Страница не должна уезжать из-за одного поля."""
+        self.assertIn('MAX_ROWS = 12', self.code)
+        self.assertIn("field.style.overflowY = 'auto'", self.code)
+
+    def test_a_hidden_field_is_left_alone(self):
+        """У скрытого поля нулевая высота содержимого, и подгонка
+        схлопнула бы его в ничто."""
+        self.assertIn('if (!field.offsetParent && field.offsetHeight === 0) return;', self.code)

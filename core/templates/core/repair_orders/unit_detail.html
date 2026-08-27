@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.81.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.82.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -206,14 +206,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 {% endcomment %}
                 <hr>
                 <label class="form-label"><strong>{{ form.faults.label }}</strong></label>
-                {{ form.faults }}
-                <div class="form-text">{{ form.faults.help_text }}</div>
+                {% include 'core/_fault_picker.html' with field=form.faults selected=faults %}
                 {% if form.faults.errors %}<div class="text-danger small">{{ form.faults.errors.0 }}</div>{% endif %}
 
+                {% comment %}
+                    Полные описания — те, что идут в документы. Показываем
+                    их отдельно от выбора: в строке выбора стоит короткое
+                    название, а в акт уходит описание, и увидеть,
+                    что именно уйдёт, надо здесь.
+                {% endcomment %}
                 {% if faults %}
                 <ul class="mt-2 mb-2 small text-muted">
                     {% for fault in faults %}
-                    <li>{{ fault.name }} — {{ fault.get_complexity_display|lower }}{% if fault.description %}: {{ fault.description }}{% endif %}</li>
+                    {% if fault.description %}<li>{{ fault.description }}</li>{% endif %}
                     {% endfor %}
                 </ul>
                 {% endif %}
@@ -303,14 +308,43 @@ document.addEventListener('DOMContentLoaded', function () {
         {% endcomment %}
         <div class="card mb-4">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Детали на эту единицу</h5>
+                <h5 class="mb-0" id="parts"><i class="bi bi-cpu me-2"></i>Детали на эту единицу</h5>
             </div>
             <div class="card-body">
+                {% comment %}
+                    Списание прямо здесь: единицу выбирать не надо, она
+                    известна. Раньше за этим уходили на карточку заказа
+                    и там ещё раз указывали, в какую железку.
+
+                    Форма на карточке заказа при этом осталась: там
+                    списывают то, что к прибору не привязано, — припой,
+                    стяжки, промывку, то есть «на заказ целиком».
+
+                    `next` возвращает сюда же: мастер списывает три детали
+                    подряд, и уезжать в заказ после каждой незачем.
+                {% endcomment %}
+                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-2 mb-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_equipment" value="{{ order_equipment.pk }}">
+                    <input type="hidden" name="next" value="{{ request.path }}#parts">
+                    <div class="col-md-6">{% include 'core/_part_picker.html' with name=detail_form.part.html_name placeholder='Деталь не выбрана' %}</div>
+                    <div class="col-md-2">{{ detail_form.quantity_used }}</div>
+                    <div class="col-md-4 d-flex gap-2">
+                        <button type="submit" class="btn btn-primary flex-fill">
+                            <i class="bi bi-plus-lg me-1"></i>Списать
+                        </button>
+                        <button type="submit" name="plan" value="1" class="btn btn-outline-primary flex-fill"
+                                title="Нужна, но со склада ещё не берём">
+                            <i class="bi bi-clock me-1"></i>В план
+                        </button>
+                    </div>
+                </form>
+
                 {% if details %}
                 <div class="table-responsive table-scroll">
                     <table class="table table-sm list-table align-middle">
                         <thead class="table-light">
-                            <tr><th>Артикул</th><th>Название</th><th class="text-end">Кол-во</th><th class="text-end">Себестоимость</th></tr>
+                            <tr><th>Артикул</th><th>Название</th><th class="text-end">Кол-во</th><th class="text-end">Себестоимость</th><th class="col-actions"></th></tr>
                         </thead>
                         <tbody>
                             {% for detail in details %}
@@ -325,6 +359,36 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <td class="text-end" data-label="Кол-во">{{ detail.quantity_used }}</td>
                                 <td class="text-end" data-label="Себестоимость">
                                     {% if detail.cost is not None %}{{ detail.cost|floatformat:2 }}{% else %}—{% endif %}
+                                </td>
+                                <td class="col-actions">
+                                    {% comment %}
+                                        Запланированную либо списывают
+                                        со склада, либо убирают из плана.
+                                        Списанную — возвращают в те партии,
+                                        из которых брали.
+                                    {% endcomment %}
+                                    {% if detail.is_planned %}
+                                    <form method="post" action="{% url 'repair_order_write_off_detail' order.pk detail.pk %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="next" value="{{ request.path }}#parts">
+                                        <button type="submit" class="btn btn-sm btn-outline-primary" title="Списать со склада"><i class="bi bi-box-arrow-down"></i></button>
+                                    </form>
+                                    <form method="post" action="{% url 'repair_order_cancel_planned_detail' order.pk detail.pk %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="next" value="{{ request.path }}#parts">
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary" title="Убрать из плана"><i class="bi bi-x-lg"></i></button>
+                                    </form>
+                                    {% elif detail.returnable %}
+                                    <form method="post" action="{% url 'repair_order_return_detail' order.pk detail.pk %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="next" value="{{ request.path }}#parts">
+                                        <input type="number" name="quantity" value="{{ detail.quantity_used }}"
+                                               min="1" max="{{ detail.quantity_used }}"
+                                               class="form-control form-control-sm d-inline-block" style="width: 4.5rem;"
+                                               aria-label="Сколько вернуть">
+                                        <button type="submit" class="btn btn-sm btn-outline-warning" title="Вернуть на склад"><i class="bi bi-arrow-return-left"></i></button>
+                                    </form>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endfor %}

@@ -1483,6 +1483,25 @@ def apply_fault_templates(order, fault_types, employee, version=None,
     return added, shortages
 
 
+def _back_after_detail(request, order_pk):
+    """Куда вернуться после работы с деталями заказа.
+
+    Детали списывают из двух мест: на карточке заказа (там же — «на заказ
+    целиком») и на странице единицы, где не надо выбирать, в какую железку.
+    Возвращаться надо туда, откуда пришли, иначе мастер, списавший три
+    детали подряд, три раза уезжает в заказ.
+
+    Адрес принимается только свой: чужой превратил бы форму в способ
+    увести человека на постороннюю страницу.
+    """
+    target = request.POST.get('next') or ''
+    if target and url_has_allowed_host_and_scheme(
+        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        return redirect(target)
+    return redirect('repair_order_detail', pk=order_pk)
+
+
 @login_required
 @require_POST
 def repair_order_add_detail(request, pk):
@@ -1509,7 +1528,7 @@ def repair_order_add_detail(request, pk):
             messages.success(
                 request, f'{part.name} x{quantity} запланирована — склад не тронут'
             )
-            return redirect('repair_order_detail', pk=pk)
+            return _back_after_detail(request, pk)
 
         if part.current_stock < quantity:
             messages.warning(request,
@@ -1526,7 +1545,7 @@ def repair_order_add_detail(request, pk):
         messages.success(request, f'Деталь {part.name} добавлена в заказ')
     else:
         messages.error(request, 'Ошибка при добавлении детали')
-    return redirect('repair_order_detail', pk=pk)
+    return _back_after_detail(request, pk)
 
 
 @login_required
@@ -1567,7 +1586,7 @@ def repair_order_write_off_detail(request, pk, detail_pk):
         )
 
     messages.success(request, f'{part.name} x{quantity} списана со склада')
-    return redirect('repair_order_detail', pk=order.pk)
+    return _back_after_detail(request, order.pk)
 
 
 @login_required
@@ -1581,7 +1600,7 @@ def repair_order_cancel_planned_detail(request, pk, detail_pk):
     name = detail.part.name
     detail.delete()
     messages.success(request, f'{name} убрана из плана')
-    return redirect('repair_order_detail', pk=order.pk)
+    return _back_after_detail(request, order.pk)
 
 
 @login_required
@@ -1611,7 +1630,7 @@ def repair_order_return_detail(request, pk, detail_pk):
         messages.success(
             request, f'{detail.part.name}: возвращено {raw} шт. на склад'
         )
-    return redirect('repair_order_detail', pk=order.pk)
+    return _back_after_detail(request, order.pk)
 
 
 @login_required
@@ -4431,6 +4450,9 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
         # целиком» сюда не попадают намеренно: программа не знает,
         # в какую железку они ушли, и приписывать их наугад нельзя
         'details': order_equipment.details.select_related('part').order_by('id'),
+        # Форма списания на самой странице: единицу выбирать не надо,
+        # она известна — в этом и выигрыш перед формой на карточке заказа
+        'detail_form': RepairOrderDetailForm(),
         'materials': equipment.model.materials_for(equipment.version),
         'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
         'repairs_count': equipment.repair_orders.count(),

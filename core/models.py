@@ -2139,9 +2139,9 @@ class RepairOrderEquipment(models.Model):
             return unit + '#id_work_performed'
         if code == 'repair_cost':
             return unit + '#id_repair_cost'
-        # Запланированную деталь списывают из списка деталей заказа:
-        # там же лежат и списанные «на заказ целиком»
-        return reverse('repair_order_detail', args=[self.repair_order_id]) + '#parts'
+        # Запланированные детали этой единицы лежат на её странице —
+        # там же их и списывают, не выбирая, в какую железку
+        return unit + '#parts'
 
     @property
     def readiness_pending(self):

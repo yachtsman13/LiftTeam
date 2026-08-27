@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.81.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.82.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -314,14 +314,15 @@ document.addEventListener('DOMContentLoaded', function () {
                                     {% endcomment %}
                                     <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#repair" class="btn btn-sm btn-outline-primary" title="Записать выполненные работы и пломбы"><i class="bi bi-pencil-square"></i></a>
                                     {% comment %}
-                                        «Списать деталь» — не переход:
-                                        форма списания стоит на этой же
-                                        странице ниже, кнопка только
-                                        подставляет в неё эту единицу
-                                        и доводит до неё.
+                                        «Списать деталь» ведёт на страницу
+                                        единицы, к её деталям: там единицу
+                                        выбирать не надо, она известна.
+                                        Форма ниже на этой странице
+                                        осталась для того, что к прибору
+                                        не привязано, — «на заказ целиком».
                                     {% endcomment %}
-                                    <button type="button" class="btn btn-sm btn-outline-warning use-part-here"
-                                            data-unit="{{ oe.pk }}" title="Списать деталь на эту единицу"><i class="bi bi-cpu"></i></button>
+                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#parts"
+                                       class="btn btn-sm btn-outline-warning" title="Детали этой единицы"><i class="bi bi-cpu"></i></a>
                                     {% comment %}
                                         Пока дефектации нет — ведём на заполнение,
                                         потом на сам акт: печатать пустой бланк
@@ -458,32 +459,6 @@ document.addEventListener('DOMContentLoaded', function () {
         var selection = window.getSelection();
         if (selection && String(selection).length) return;
         window.location.href = row.dataset.href;
-    });
-})();
-
-/*
- * «Списать деталь на эту единицу»: форма списания стоит ниже на этой же
- * странице, и уводить с неё незачем — кнопка подставляет единицу
- * и доводит до формы, курсор встаёт в выбор детали.
- *
- * Выбор единицы в форме показывается только когда приборов в заказе
- * несколько (когда он один, программа привязывает деталь сама).
- * Поэтому список может отсутствовать — и это не повод ронять переход.
- */
-(function () {
-    'use strict';
-    document.addEventListener('click', function (event) {
-        var button = event.target.closest('.use-part-here');
-        if (!button) return;
-        var form = document.getElementById('usePartForm');
-        if (!form) return;
-
-        var select = form.querySelector('select[name="order_equipment"]');
-        if (select) select.value = button.dataset.unit;
-
-        form.scrollIntoView({block: 'center', behavior: 'smooth'});
-        var picker = form.querySelector('.part-picker input, .part-picker button');
-        if (picker) picker.focus();
     });
 })();
 

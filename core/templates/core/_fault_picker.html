@@ -1,0 +1,64 @@
+{% comment %}
+    Выбор типовых неисправностей: выпадающий список и кнопка «Добавить».
+
+    Раньше здесь стоял список с множественным выбором — тот, где надо
+    держать Ctrl. На планшете он почти неработоспособен, а при десятке
+    неисправностей не видно, что вообще выбрано.
+
+    Наружу уходят скрытые поля с номерами под тем же именем, что было
+    у прежнего списка, поэтому представление и проверки формы не менялись.
+
+    Как вставить:
+        {% include 'core/_fault_picker.html' with field=form.faults selected=faults %}
+
+    `selected` — то, что уже выбрано (набор неисправностей единицы).
+    Скрипт убирает их из выпадающего списка: второй раз ту же
+    неисправность не добавить.
+{% endcomment %}
+<div class="fault-picker" data-name="{{ field.html_name }}">
+    <div class="input-group">
+        <select class="form-select fault-picker-select" aria-label="{{ field.label }}">
+            <option value="">Выберите неисправность…</option>
+            {% for fault in field.field.queryset %}
+            <option value="{{ fault.pk }}"
+                    data-complexity="{{ fault.complexity }}"
+                    data-complexity-label="{{ fault.get_complexity_display }}">{{ fault.name }}</option>
+            {% endfor %}
+        </select>
+        <button type="button" class="btn btn-outline-primary fault-picker-add">
+            <i class="bi bi-plus-lg me-1"></i>Добавить
+        </button>
+    </div>
+
+    <div class="fault-picker-chosen mt-2">
+        {% for fault in selected %}
+        <div class="fault-picker-row d-flex align-items-center gap-2 border-bottom py-1" data-id="{{ fault.pk }}">
+            <input type="hidden" name="{{ field.html_name }}" value="{{ fault.pk }}">
+            <span class="badge {% if fault.complexity == 'complex' %}bg-danger{% else %}bg-success{% endif %}">{{ fault.get_complexity_display }}</span>
+            <span class="flex-grow-1">{{ fault.name }}</span>
+            <button type="button" class="btn btn-sm btn-outline-danger fault-picker-remove"
+                    title="Убрать неисправность"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="form-text fault-picker-empty"{% if selected %} hidden{% endif %}>
+        Ни одной не выбрано. Их описания идут в акт дефектации и в предложение,
+        из них выводится сложность, а рецепт деталей применяется кнопкой ниже.
+    </div>
+
+    {% comment %}
+        Заготовка строки. Копируется скриптом, разметка та же, что
+        у нарисованных сервером: разойдись они, добавленная строка
+        отличалась бы от уже стоящих.
+    {% endcomment %}
+    <template class="fault-picker-template">
+        <div class="fault-picker-row d-flex align-items-center gap-2 border-bottom py-1" data-id="">
+            <input type="hidden" name="{{ field.html_name }}" value="">
+            <span class="badge"></span>
+            <span class="flex-grow-1"></span>
+            <button type="button" class="btn btn-sm btn-outline-danger fault-picker-remove"
+                    title="Убрать неисправность"><i class="bi bi-x-lg"></i></button>
+        </div>
+    </template>
+</div>
