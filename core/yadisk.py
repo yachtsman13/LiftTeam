@@ -229,8 +229,14 @@ def check_access(timeout=15):
     что токен принят, не оставляя следов. Возвращает короткое описание
     для человека; неверный токен приводит к YandexDiskError с текстом
     от Диска.
+
+    Порядок распаковки — как у `_call`: сначала код, потом тело.
+    Перепутанные местами, они дают «'int' object has no attribute
+    'get'» — сообщение, по которому владелец решит, что дело в токене.
     """
-    body, _status = _call('GET', '')
+    _code, body = _call('GET', '', timeout=timeout)
+    if not isinstance(body, dict):
+        return 'Диск отвечает'
     total = body.get('total_space')
     used = body.get('used_space')
     if isinstance(total, int) and isinstance(used, int):

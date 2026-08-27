@@ -16694,19 +16694,28 @@ class SelfCheckTests(EnvFileTestCase):
         self.assertIn('не написано', result.message)
 
     def test_the_disk_check_only_reads(self):
-        """Проверка связи не должна оставлять следов на Диске."""
-        self.write('YANDEX_DISK_TOKEN=диск\n')
-        seen = {}
+        """Проверка связи не должна оставлять следов на Диске.
 
-        def fake_call(method, path, params=None, timeout=30):
-            seen['method'] = method
-            return {'total_space': 10 * 2 ** 30, 'used_space': 2 ** 30}, 200
+        Подменяется `urlopen`, а не `_call`: подменяя `_call`, я уже
+        записал в заглушку своё представление о том, что он возвращает,
+        — и оно разошлось с настоящим. Живой Диск отвечал
+        «'int' object has no attribute 'get'», а тест был зелёным.
+        """
+        self.write('YANDEX_DISK_TOKEN=disk-token\n')
+        seen = []
 
-        with patch.object(yadisk, '_call', fake_call):
+        def fake(req, timeout=None):
+            seen.append(req)
+            return FakeDiskResponse(200, json.dumps({
+                'total_space': 10 * 2 ** 30, 'used_space': 2 ** 30,
+            }))
+
+        with patch('core.yadisk.request.urlopen', fake):
             result = selfcheck.check('YANDEX_DISK_TOKEN')
 
-        self.assertEqual(seen['method'], 'GET')
-        self.assertTrue(result.ok)
+        self.assertEqual(seen[0].method, 'GET')
+        self.assertTrue(result.ok, result.message)
+        self.assertIn('занято 1 ГБ из 10', result.message)
 
     def test_a_secret_without_a_check_says_so_plainly(self):
         """Секрет вебхука подтверждает только сам банк, когда пришлёт
