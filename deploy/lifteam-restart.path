@@ -1,0 +1,24 @@
+# Следит за появлением заявки на перезапуск из веб-интерфейса.
+#
+# Способ тот же, что у обновления: приложению не нужен sudo — оно просто
+# создаёт файл, а привилегированную работу выполняет отдельная служба.
+# Давать веб-приложению root нельзя: тогда любая уязвимость в нём
+# означала бы root на устройстве.
+#
+# Установка:
+#   sudo cp deploy/lifteam-restart.{path,service} /etc/systemd/system/
+#   sudo cp deploy/lifteam-restart-runner.sh /usr/local/sbin/lifteam-restart
+#   sudo chown root:root /usr/local/sbin/lifteam-restart
+#   sudo chmod 755 /usr/local/sbin/lifteam-restart
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-restart.path
+
+[Unit]
+Description=Ожидание заявки на перезапуск LiftTeam
+
+[Path]
+PathExists=/opt/lifteam/.restart-request
+Unit=lifteam-restart.service
+
+[Install]
+WantedBy=multi-user.target

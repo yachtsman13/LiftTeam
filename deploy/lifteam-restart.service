@@ -1,0 +1,23 @@
+# Перезапускает LiftTeam по заявке из веб-интерфейса.
+# Запускается не по расписанию, а по появлению файла — см. lifteam-restart.path
+#
+# Установка описана в lifteam-restart.path. Скрипт обязан лежать вне
+# каталога приложения и принадлежать root: каталог /opt/lifteam принадлежит
+# пользователю, от которого работает веб-приложение, и скрипт оттуда
+# взломщик подменил бы, получив выполнение от root.
+
+[Unit]
+Description=Перезапуск LiftTeam по заявке из интерфейса
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lifteam-restart
+
+# Служба перезапускает lifteam, поэтому не должна быть его частью:
+# иначе перезапуск оборвал бы её саму на середине
+KillMode=process
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

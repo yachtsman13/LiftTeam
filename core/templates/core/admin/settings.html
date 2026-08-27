@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Настройки — LiftTeam v2.87.0{% endblock %}
+{% block title %}Настройки — LiftTeam v2.88.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -146,6 +146,64 @@
     </div>
 </form>
 
+{% comment %}
+    «Нужен перезапуск» нигде не хранится: это вывод из того, что в файле
+    лежит не то, с чем программа запускалась. Флаг пришлось бы гасить
+    руками, и однажды он начал бы врать — то же правило, что у готовности
+    единицы оборудования.
+{% endcomment %}
+<div class="card mb-4 {% if restart_needed %}border-warning{% endif %}">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-arrow-clockwise me-2"></i>Перезапуск службы</h5>
+    </div>
+    <div class="card-body">
+        {% if restart_needed %}
+        <p class="mb-3">
+            <strong>Эти настройки поправлены, но ещё не действуют</strong> —
+            их программа читает один раз при запуске:
+            {{ restart_needed|join:", " }}.
+        </p>
+        {% else %}
+        <p class="text-muted">
+            Всё поправленное уже действует. Перезапуск сейчас ничего
+            не изменит — он нужен только настройкам со значком
+            <span class="badge bg-warning text-dark">перезапуск</span>.
+        </p>
+        {% endif %}
+
+        {% if restart_pending %}
+        <div class="alert alert-info mb-3">
+            Заявка подана и ждёт службу. Если через минуту ничего
+            не произошло, перезапуск из программы, скорее всего,
+            не настроен — порядок в DEPLOY.md.
+        </div>
+        {% endif %}
+
+        {% if restart_available %}
+        <form method="post" action="{% url 'admin_settings_restart' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn {% if restart_needed %}btn-warning{% else %}btn-outline-secondary{% endif %}">
+                <i class="bi bi-arrow-clockwise me-2"></i>Перезапустить службу
+            </button>
+            <div class="form-text">
+                Связь оборвётся на несколько секунд; полоса вверху страницы
+                скажет, когда она вернётся. Незавершённые действия других
+                сотрудников при этом прервутся — перезапускайте, когда
+                в программе никто не работает.
+            </div>
+        </form>
+        {% else %}
+        <p class="mb-0 text-muted">
+            Перезапуск из программы не настроен: приложение работает от
+            своего пользователя и root не имеет намеренно, а привилегированный
+            скрипт на этом устройстве не установлен. Порядок установки —
+            в DEPLOY.md; пока его нет, перезапуск делается по SSH:
+            <code>sudo systemctl restart lifteam</code>.
+        </p>
+        {% endif %}
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-header">
         <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Последние правки</h5>
@@ -182,13 +240,14 @@
 </div>
 
 <div class="alert alert-secondary">
-    <strong>Чего здесь нет.</strong> Ключ приложения, список адресов
-    (<code>ALLOWED_HOSTS</code>), доверенные источники и режим отладки —
-    их Django читает один раз при запуске, и поле для них означало бы
-    «поправил, а ничего не изменилось». Список адресов Т-Банка тоже:
-    те же адреса стоят в настройках nginx, а nginx в этот файл не смотрит —
-    правка в одном месте развела бы их молча. Всё это меняется в файле
-    на Pi, порядок — в DEPLOY.md.
+    <strong>Чего здесь нет.</strong> Ключ приложения — его заводят один раз
+    при установке, а смена разлогинивает всех и обесценивает подписанные
+    ссылки. Режим отладки: включённый, он показывает в браузере
+    подробности об устройстве программы вместе с настройками, и делать это
+    в один щелчок не следует. Список адресов Т-Банка: те же адреса стоят
+    в настройках nginx, а nginx в этот файл не смотрит — правка в одном
+    месте развела бы их молча. Всё это меняется в файле на Pi, порядок —
+    в DEPLOY.md.
 </div>
 
 <script>

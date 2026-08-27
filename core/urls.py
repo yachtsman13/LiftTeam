@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.87.0
+v2.88.0
 """
 from django.urls import path
 from . import views
@@ -206,6 +206,7 @@ urlpatterns = [
     path('management/settings/', views.admin_settings, name='admin_settings'),
     path('management/settings/save/', views.admin_settings_save, name='admin_settings_save'),
     path('management/settings/check/', views.admin_settings_check, name='admin_settings_check'),
+    path('management/settings/restart/', views.admin_settings_restart, name='admin_settings_restart'),
     path('management/update/', views.admin_update, name='admin_update'),
     path('management/update/status/', views.admin_update_status, name='admin_update_status'),
 ]

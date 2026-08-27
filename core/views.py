@@ -59,8 +59,8 @@ from .utils import (
 )
 from .decorators import role_required
 from . import (
-    envfile, invoicing, messengers, notifications, scanning, selfcheck, tbank,
-    updater, yadisk,
+    envfile, invoicing, messengers, notifications, restarter, scanning,
+    selfcheck, tbank, updater, yadisk,
 )
 
 
@@ -4317,6 +4317,12 @@ def admin_settings(request):
                     for name in envfile.SECRET_NAMES],
         'env_path': envfile.path(),
         'env_exists': envfile.exists(),
+        # Ничего не хранится: «нужен перезапуск» выводится из того,
+        # что в файле лежит не то, с чем программа запускалась
+        'restart_needed': [envfile.title_of(name)
+                           for name in envfile.restart_needed()],
+        'restart_available': restarter.is_available(),
+        'restart_pending': restarter.pending(),
         'history': SettingChange.objects.select_related('changed_by')[:20],
     })
 
@@ -4337,6 +4343,7 @@ def admin_settings_save(request):
     # оповещения неполный запрос не должен
     shown_flags = set(request.POST.getlist('flag'))
     saved, failed = [], []
+    kept_host = None
     for name, row in envfile.EDITABLE_BY_NAME.items():
         if row['kind'] == 'flag':
             if name not in shown_flags:
@@ -4346,6 +4353,8 @@ def admin_settings_save(request):
             if name not in request.POST:
                 continue
             value = (request.POST.get(name) or '').strip()
+            if name == 'ALLOWED_HOSTS':
+                value, kept_host = _keep_current_host(request, value)
         if value == envfile.as_text(envfile.setting(name, '')):
             continue
         try:
@@ -4358,6 +4367,13 @@ def admin_settings_save(request):
 
     for text in failed:
         messages.error(request, text)
+    if kept_host:
+        messages.warning(
+            request,
+            'Адрес %s возвращён в список: вы работаете по нему, и без него '
+            'следующий же переход упёрся бы в «400 Bad Request». Убрать его '
+            'можно, открыв программу по другому адресу.' % kept_host
+        )
     if saved:
         restart = [name for name in saved
                    if envfile.EDITABLE_BY_NAME[name]['restart']]
@@ -4367,13 +4383,61 @@ def admin_settings_save(request):
         if restart:
             messages.warning(
                 request,
-                'Этим настройкам нужен перезапуск службы, иначе изменения '
-                'не подхватятся: %s' % ', '.join(
+                'Эти настройки подхватятся только после перезапуска службы: '
+                '%s. Кнопка внизу страницы.' % ', '.join(
                     envfile.EDITABLE_BY_NAME[name]['title'] for name in restart
                 )
             )
     elif not failed:
         messages.info(request, 'Менять было нечего — всё осталось как было.')
+    return redirect('admin_settings')
+
+
+def _keep_current_host(request, value):
+    """Не дать вычеркнуть адрес, по которому админ сейчас работает.
+
+    `ALLOWED_HOSTS` — единственная настройка, ошибка в которой закрывает
+    программу целиком: Django ответит «400 Bad Request» на каждый запрос,
+    и починить это можно будет только по SSH. Поэтому свой адрес
+    возвращается в список молча, а сказано об этом вслух.
+
+    Убрать его всё-таки можно — открыв программу по другому адресу
+    из списка. Тогда «свой» будет уже другой.
+    """
+    host = request.get_host().split(':')[0]
+    hosts = [part.strip() for part in value.split(',') if part.strip()]
+    if not hosts or host in hosts or '*' in hosts:
+        return value, None
+    return ','.join([*hosts, host]), host
+
+
+@role_required('admin')
+@require_POST
+def admin_settings_restart(request):
+    """Заявка на перезапуск службы.
+
+    Сам перезапуск делает служба systemd от root — приложение работает
+    от своего пользователя и root не имеет намеренно (`core/restarter.py`).
+    Об обрыве связи и о возвращении её обратно скажет обычная полоса
+    вверху страницы: своего слежения за ходом перезапуска заводить
+    не надо.
+    """
+    if not restarter.is_available():
+        messages.error(
+            request,
+            'Перезапуск из программы не настроен: на Raspberry Pi нет '
+            'скрипта /usr/local/sbin/lifteam-restart. Порядок установки — '
+            'в DEPLOY.md. Пока его нет, перезапуск делается по SSH: '
+            'sudo systemctl restart lifteam'
+        )
+        return redirect('admin_settings')
+
+    restarter.request_restart(requested_by=request.user.username)
+    messages.info(
+        request,
+        'Заявка на перезапуск подана. Связь на несколько секунд оборвётся — '
+        'полоса вверху страницы скажет, когда она вернётся.'
+    )
     return redirect('admin_settings')
 
 

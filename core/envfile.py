@@ -196,6 +196,18 @@ EDITABLE = (
          None),
         ('YANDEX_DISK_API_URL', 'Адрес API', 'text', '', None),
     )),
+    ('Доступ к программе', (
+        ('ALLOWED_HOSTS', 'Адреса, по которым открывают программу', 'text',
+         'Через запятую: локальный адрес Pi и имя в Tailscale. Адрес, '
+         'с которого вы сейчас работаете, из списка не пропадёт — '
+         'программа вернёт его обратно, иначе следующий же переход '
+         'упёрся бы в «400 Bad Request».', True),
+        ('CSRF_TRUSTED_ORIGINS', 'Доверенные источники', 'text',
+         'Через запятую, вместе со схемой: https://имя.ts.net. Пусто — '
+         'собирается из адреса для QR-кодов.', True),
+        ('TIME_ZONE', 'Часовой пояс', 'text', 'Например, Europe/Moscow.',
+         True),
+    )),
     ('Работа', (
         ('WARRANTY_MONTHS', 'Гарантия, месяцев', 'number',
          'Ноль — гарантия не ведётся.', None),
@@ -351,6 +363,38 @@ def describe_secret(name):
     }
 
 
+def restart_needed():
+    """Настройки, которые правили, но которые ещё не подхвачены.
+
+    Ничего не хранится: это чистая функция от файла и от снимка,
+    снятого при запуске. Настройка помечена «перезапуск» и в файле
+    лежит не то, что было при старте, — значит, программа работает
+    со старым значением. После перезапуска снимок совпадёт с файлом,
+    и список опустеет сам.
+
+    Хранить вместо этого флаг «нужен перезапуск» нельзя по той же
+    причине, по которой у единицы оборудования нет поля «готова»:
+    его пришлось бы гасить руками, и однажды он начал бы врать.
+    """
+    names = [
+        name for name, row in EDITABLE_BY_NAME.items()
+        if row['restart'] and changed_since_start(name)
+    ]
+    names += [
+        name for name in SECRETS_NEEDING_RESTART
+        if changed_since_start(name)
+    ]
+    return names
+
+
+def title_of(name):
+    """Как настройка называется на странице. Для сообщений о перезапуске:
+    «LABEL_BASE_URL» владельцу ничего не говорит."""
+    if name in EDITABLE_BY_NAME:
+        return EDITABLE_BY_NAME[name]['title']
+    return SECRET_TITLES.get(name, name)
+
+
 def describe_editable(name):
     """Правимая настройка со своим нынешним значением.
 
@@ -359,7 +403,12 @@ def describe_editable(name):
     одно, а программа пользовалась другим.
     """
     row = dict(EDITABLE_BY_NAME[name])
-    row['value'] = setting(name, '')
+    value = setting(name, '')
+    # Флажку нужно само значение (рисуется галочкой), остальным — строка.
+    # Без `as_text` списочная настройка попала бы в поле ввода списком
+    # Python («['имя.ts.net']»), а оттуда — обратно в файл: разбор при
+    # следующем запуске принял бы скобки и кавычки за часть адреса
+    row['value'] = value if row['kind'] == 'flag' else as_text(value)
     row['in_file'] = name in values()
     return row
 

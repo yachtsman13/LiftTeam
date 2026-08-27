@@ -37,8 +37,8 @@ from django.utils import timezone
 from django import forms
 
 from . import (
-    envfile, invoicing, messengers, net, notifications, scanning, selfcheck,
-    tbank, tochka, views, webhooks, yadisk,
+    envfile, invoicing, messengers, net, notifications, restarter, scanning,
+    selfcheck, tbank, tochka, views, webhooks, yadisk,
 )
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -16848,14 +16848,15 @@ class SettingsPageTests(EnvFileMixin, TestCase):
         self.assertNotIn('100500', repr(change.__dict__))
 
     def test_a_setting_outside_the_list_is_not_written(self):
-        """Подсунуть в запрос можно что угодно, а список правимого явный:
-        ALLOWED_HOSTS Django читает при запуске, и поле для него значило бы
-        «поправил, а ничего не изменилось»."""
+        """Подсунуть в запрос можно что угодно, а список правимого явный.
+        `DEBUG` в нём нет намеренно: включённый, он показывает в браузере
+        устройство программы вместе с настройками."""
         self.http.post(reverse('admin_settings_save'),
-                       {'ALLOWED_HOSTS': 'злоумышленник.example'})
+                       {'DEBUG': 'True', 'SECRET_KEY': 'подменённый'})
 
         envfile.forget()
-        self.assertNotIn('ALLOWED_HOSTS', envfile.values())
+        self.assertNotIn('DEBUG', envfile.values())
+        self.assertNotIn('SECRET_KEY', envfile.values())
         self.assertFalse(SettingChange.objects.exists())
 
     def test_a_secret_slipped_into_the_request_is_not_written(self):
@@ -16922,3 +16923,243 @@ class SettingsPageIsListedTests(TestCase):
         html = http.get(reverse('dashboard')).content.decode()
 
         self.assertIn(reverse('admin_settings'), html)
+
+
+class RestartFromTheInterfaceTests(EnvFileMixin, TestCase):
+    """Перезапуск службы по заявке: приложение root не имеет и иметь
+    не должно."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = Employee.objects.create_superuser(
+            username='restart_admin', full_name='Администратор', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.request_file = Path(self.dir.name) / '.restart-request'
+        patcher = patch.object(restarter, 'REQUEST_FILE', self.request_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _available(self, yes=True):
+        return patch.object(restarter, 'is_available', return_value=yes)
+
+    def test_the_request_is_a_file_and_not_a_command(self):
+        """Приложение работает от своего пользователя: дай ему sudo —
+        и любая уязвимость в нём означала бы root на устройстве."""
+        with self._available():
+            self.http.post(reverse('admin_settings_restart'))
+
+        self.assertTrue(self.request_file.exists())
+        self.assertIn('restart_admin',
+                      self.request_file.read_text(encoding='utf-8'))
+
+    def test_without_the_privileged_script_nothing_is_promised(self):
+        """Заявка легла бы и осталась лежать, а страница обещала бы
+        перезапуск, которого не будет."""
+        with self._available(False):
+            response = self.http.post(reverse('admin_settings_restart'),
+                                      follow=True)
+
+        self.assertFalse(self.request_file.exists())
+        self.assertIn('не настроен', response.content.decode())
+
+    def test_only_an_admin_may_ask(self):
+        master = Employee.objects.create_user(
+            username='restart_master', full_name='Мастер', password='pass',
+            role='master',
+        )
+        other = TestClient()
+        other.force_login(master)
+
+        with self._available():
+            other.post(reverse('admin_settings_restart'))
+
+        self.assertFalse(self.request_file.exists())
+
+    def test_it_is_post_only(self):
+        response = self.http.get(reverse('admin_settings_restart'))
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_the_need_for_a_restart_is_derived_and_not_stored(self):
+        """Флаг «нужен перезапуск» пришлось бы гасить руками, и однажды
+        он начал бы врать — то же правило, что у готовности единицы."""
+        self.assertEqual(envfile.restart_needed(), [])
+
+        self.write('TIME_ZONE=Asia/Novosibirsk\n')
+
+        self.assertIn('TIME_ZONE', envfile.restart_needed())
+
+    def test_a_live_setting_does_not_ask_for_a_restart(self):
+        self.write('QUOTE_VALID_DAYS=21\n')
+
+        self.assertEqual(envfile.restart_needed(), [])
+
+    def test_the_list_empties_itself_after_a_restart(self):
+        """После перезапуска снимок в окружении совпадёт с файлом —
+        и выводить будет нечего, гасить ничего не надо."""
+        self.write('TIME_ZONE=Asia/Novosibirsk\n')
+
+        with patch.dict(os.environ, {'TIME_ZONE': 'Asia/Novosibirsk'}):
+            self.assertEqual(envfile.restart_needed(), [])
+
+    def test_the_page_says_what_is_waiting_for_a_restart(self):
+        self.write('TIME_ZONE=Asia/Novosibirsk\n')
+
+        html = self.http.get(reverse('admin_settings')).content.decode()
+
+        self.assertIn('Часовой пояс', html)
+        self.assertIn('ещё не действуют', html)
+
+
+class AllowedHostsSafetyTests(EnvFileMixin, TestCase):
+    """`ALLOWED_HOSTS` — единственная настройка, ошибка в которой закрывает
+    программу целиком: Django ответит «400 Bad Request» на всё, и починить
+    это можно будет только по SSH."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = Employee.objects.create_superuser(
+            username='hosts_admin', full_name='Администратор', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def test_the_current_address_is_put_back(self):
+        response = self.http.post(
+            reverse('admin_settings_save'),
+            {'ALLOWED_HOSTS': 'lifteam.example.ts.net'},
+            follow=True,
+        )
+
+        envfile.forget()
+        self.assertIn('testserver', envfile.values()['ALLOWED_HOSTS'])
+        self.assertIn('lifteam.example.ts.net', envfile.values()['ALLOWED_HOSTS'])
+        self.assertIn('возвращён в список', response.content.decode())
+
+    def test_an_address_that_is_already_there_is_not_doubled(self):
+        self.http.post(reverse('admin_settings_save'),
+                       {'ALLOWED_HOSTS': 'testserver,lifteam.example.ts.net'})
+
+        envfile.forget()
+        self.assertEqual(
+            envfile.values()['ALLOWED_HOSTS'],
+            'testserver,lifteam.example.ts.net',
+        )
+
+    def test_an_empty_list_is_left_empty(self):
+        """Пусто — это не «закрылись от себя», а «вернуть встроенное»."""
+        self.write('ALLOWED_HOSTS=что-то\n')
+
+        self.http.post(reverse('admin_settings_save'), {'ALLOWED_HOSTS': ''})
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['ALLOWED_HOSTS'], '')
+
+
+class RestartRunnerScriptTests(SimpleTestCase):
+    """Привилегированный скрипт: он выполняется от root, и цена ошибки
+    в нём — всё устройство."""
+
+    def setUp(self):
+        self.script = (Path(__file__).resolve().parent.parent / 'deploy'
+                       / 'lifteam-restart-runner.sh').read_text(encoding='utf-8')
+
+    def test_it_reads_nothing_from_the_request(self):
+        """Файл пишет веб-приложение. У обновления из него читается версия,
+        и её приходится проверять; здесь читать нечего — значит, и подставить
+        нечего."""
+        self.assertNotIn('$(python3', self.script.replace('\n', ''))
+        self.assertNotIn('cat "$REQUEST_FILE"', self.script)
+        self.assertNotIn('eval', self.script)
+
+    def test_the_request_is_removed_before_the_restart(self):
+        """Перезапуск обрывает и сам скрипт: оставленный файл заставил бы
+        службу сработать снова, и приложение ушло бы в бесконечный
+        перезапуск."""
+        body = self.script
+        self.assertLess(body.index('rm -f "$REQUEST_FILE"'),
+                        body.index('systemctl restart'))
+
+    def test_the_unit_watches_the_same_file_the_program_writes(self):
+        unit = (Path(__file__).resolve().parent.parent / 'deploy'
+                / 'lifteam-restart.path').read_text(encoding='utf-8')
+
+        self.assertIn('PathExists=/opt/lifteam/.restart-request', unit)
+        self.assertIn('.restart-request', self.script)
+        self.assertEqual(restarter.REQUEST_FILE.name, '.restart-request')
+
+    def test_the_script_lives_outside_the_application_directory(self):
+        """Каталог приложения принадлежит его пользователю: скрипт оттуда
+        взломщик подменил бы и получил выполнение от root."""
+        self.assertTrue(str(restarter.RUNNER).startswith('/usr/local/sbin/'))
+
+
+class ListSettingsRoundTripTests(EnvFileMixin, TestCase):
+    """Списочные настройки: в поле ввода — строка через запятую, а не
+    список Python.
+
+    Ошибка стоила бы дорого: `['имя.ts.net']` уходит из поля обратно
+    в файл, и при следующем запуске скобки с кавычками становятся частью
+    адреса — программа перестаёт открываться по своему же имени.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.admin = Employee.objects.create_superuser(
+            username='list_admin', full_name='Администратор', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def test_a_list_is_shown_as_a_comma_separated_line(self):
+        with override_settings(ALLOWED_HOSTS=['127.0.0.1', 'lifteam.ts.net']):
+            row = envfile.describe_editable('ALLOWED_HOSTS')
+
+        self.assertEqual(row['value'], '127.0.0.1,lifteam.ts.net')
+
+    def test_an_empty_list_is_shown_as_an_empty_line(self):
+        with override_settings(CSRF_TRUSTED_ORIGINS=[]):
+            row = envfile.describe_editable('CSRF_TRUSTED_ORIGINS')
+
+        self.assertEqual(row['value'], '')
+
+    def test_an_untouched_empty_list_is_not_written_at_all(self):
+        """Показали пустым, вернули пустым — правки не было, и в файле
+        появляться нечему."""
+        self.http.post(reverse('admin_settings_save'),
+                       {'CSRF_TRUSTED_ORIGINS': ''})
+
+        envfile.forget()
+        self.assertNotIn('CSRF_TRUSTED_ORIGINS', envfile.values())
+        self.assertFalse(SettingChange.objects.exists())
+
+    def test_what_the_page_shows_is_what_comes_back(self):
+        """Полный оборот: страница → форма → файл → страница."""
+        with override_settings(CSRF_TRUSTED_ORIGINS=[]):
+            self.http.post(
+                reverse('admin_settings_save'),
+                {'CSRF_TRUSTED_ORIGINS': 'https://lifteam.ts.net,https://192.168.1.50'},
+            )
+            envfile.forget()
+            row = envfile.describe_editable('CSRF_TRUSTED_ORIGINS')
+
+        self.assertEqual(
+            row['value'], 'https://lifteam.ts.net,https://192.168.1.50'
+        )
+        self.assertEqual(
+            envfile.setting('CSRF_TRUSTED_ORIGINS', []),
+            ['https://lifteam.ts.net', 'https://192.168.1.50'],
+        )
+
+    def test_the_field_carries_no_brackets(self):
+        # 'testserver' в списке обязателен: без него Django ответит
+        # «400 Bad Request» самому тесту — ровно то, от чего бережёт
+        # возврат своего адреса в AllowedHostsSafetyTests
+        with override_settings(ALLOWED_HOSTS=['lifteam.ts.net', 'testserver']):
+            html = self.http.get(reverse('admin_settings')).content.decode()
+        field = html.split('id="set_ALLOWED_HOSTS"')[1].split('>')[0]
+
+        self.assertIn('lifteam.ts.net,testserver', field)
+        self.assertNotIn('[', field)

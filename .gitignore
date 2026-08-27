@@ -16,6 +16,11 @@ backups/
 # Конфигурация rclone содержит токены доступа к облачному хранилищу
 rclone.conf
 
+# Заявки службам systemd: рабочее состояние конкретной установки
+.update-request
+.update-status
+.restart-request
+
 # Django
 staticfiles/
 media/
