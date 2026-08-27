@@ -60,6 +60,8 @@ from urllib import error, request
 
 from django.conf import settings
 
+from . import envfile
+
 from .net import explain, redact, safe_headers
 
 logger = logging.getLogger(__name__)
@@ -86,23 +88,23 @@ class TochkaError(Exception):
 
 
 def token():
-    return getattr(settings, 'TOCHKA_TOKEN', '')
+    return envfile.setting('TOCHKA_TOKEN', '')
 
 
 def customer_code():
-    return getattr(settings, 'TOCHKA_CUSTOMER_CODE', '')
+    return envfile.setting('TOCHKA_CUSTOMER_CODE', '')
 
 
 def account_id():
-    return getattr(settings, 'TOCHKA_ACCOUNT_ID', '')
+    return envfile.setting('TOCHKA_ACCOUNT_ID', '')
 
 
 def api_url():
-    return getattr(settings, 'TOCHKA_API_URL', DEFAULT_API_URL).rstrip('/')
+    return envfile.setting('TOCHKA_API_URL', DEFAULT_API_URL).rstrip('/')
 
 
 def api_version():
-    return getattr(settings, 'TOCHKA_API_VERSION', DEFAULT_API_VERSION)
+    return envfile.setting('TOCHKA_API_VERSION', DEFAULT_API_VERSION)
 
 
 def is_configured():
@@ -116,7 +118,7 @@ def invoice_enabled():
     Отдельным выключателем, как и у Т-Банка: счёт уходит заказчику
     от лица фирмы, и включаться сам собой после обновления он не должен.
     """
-    return bool(getattr(settings, 'TOCHKA_INVOICE_ENABLED', False)) and is_configured()
+    return bool(envfile.setting('TOCHKA_INVOICE_ENABLED', False)) and is_configured()
 
 
 def missing_settings():
@@ -200,7 +202,7 @@ def _amount(value):
     выбор оставлен настройкой, а не зашит в код.
     """
     quantized = Decimal(str(value)).quantize(Decimal('0.01'))
-    if getattr(settings, 'TOCHKA_INVOICE_AMOUNTS_AS_STRING', False):
+    if envfile.setting('TOCHKA_INVOICE_AMOUNTS_AS_STRING', False):
         return str(quantized)
     return float(quantized)
 
@@ -227,7 +229,7 @@ def build_invoice(number, items, payer=None, invoice_date=None, due_date=None,
     в имена полей Точки.
     """
     payer = payer or {}
-    nds = getattr(settings, 'TOCHKA_INVOICE_NDS', 'without_nds')
+    nds = envfile.setting('TOCHKA_INVOICE_NDS', 'without_nds')
     if nds not in NDS_KINDS:
         raise TochkaError(
             f'Неизвестная ставка НДС «{nds}» в TOCHKA_INVOICE_NDS. '
@@ -237,7 +239,7 @@ def build_invoice(number, items, payer=None, invoice_date=None, due_date=None,
     # Единицу берём свою, а не из позиции: в позициях стоит значение
     # TBANK_INVOICE_UNIT, а списки допустимых единиц у банков разные,
     # и настройка одного банка не должна уезжать в запрос к другому
-    unit = getattr(settings, 'TOCHKA_INVOICE_UNIT', 'шт.')
+    unit = envfile.setting('TOCHKA_INVOICE_UNIT', 'шт.')
 
     positions = []
     total = Decimal('0')

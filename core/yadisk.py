@@ -52,6 +52,8 @@ from urllib import error, parse, request
 
 from django.conf import settings
 
+from . import envfile
+
 from .net import explain, redact, safe_headers
 
 logger = logging.getLogger(__name__)
@@ -78,11 +80,11 @@ class YandexDiskError(Exception):
 
 
 def token():
-    return getattr(settings, 'YANDEX_DISK_TOKEN', '')
+    return envfile.setting('YANDEX_DISK_TOKEN', '')
 
 
 def api_url():
-    return getattr(settings, 'YANDEX_DISK_API_URL', DEFAULT_API_URL).rstrip('/')
+    return envfile.setting('YANDEX_DISK_API_URL', DEFAULT_API_URL).rstrip('/')
 
 
 def root():
@@ -91,7 +93,7 @@ def root():
     Отдельная, а не весь Диск: там лежит и личное владельца, и мы туда
     не ходим вовсе.
     """
-    return getattr(settings, 'YANDEX_DISK_ROOT', DEFAULT_ROOT).strip('/')
+    return envfile.setting('YANDEX_DISK_ROOT', DEFAULT_ROOT).strip('/')
 
 
 def is_configured():
@@ -218,6 +220,24 @@ def _message(body):
 
 def _disk_path(path):
     return 'disk:/' + path.strip('/')
+
+
+def check_access(timeout=15):
+    """Проверка токена: сведения о самом Диске.
+
+    Читающий запрос и ничего не создаёт — годится, чтобы убедиться,
+    что токен принят, не оставляя следов. Возвращает короткое описание
+    для человека; неверный токен приводит к YandexDiskError с текстом
+    от Диска.
+    """
+    body, _status = _call('GET', '')
+    total = body.get('total_space')
+    used = body.get('used_space')
+    if isinstance(total, int) and isinstance(used, int):
+        return 'Диск отвечает, занято %d ГБ из %d' % (
+            used // 2 ** 30, total // 2 ** 30,
+        )
+    return 'Диск отвечает'
 
 
 def create_folder(path, timeout=30):

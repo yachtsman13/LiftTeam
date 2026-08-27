@@ -18,6 +18,8 @@ from urllib import error, parse, request
 
 from django.conf import settings
 
+from . import envfile
+
 from .net import explain
 
 MAX_DEFAULT_API_URL = 'https://platform-api2.max.ru'
@@ -80,14 +82,14 @@ def _call(url, *, headers=None, payload=None, timeout=15, error_class=MessengerE
 
 def max_is_configured():
     """Настроен ли MAX. Без токена канал просто не используется."""
-    return bool(getattr(settings, 'MAX_BOT_TOKEN', ''))
+    return bool(envfile.setting('MAX_BOT_TOKEN', ''))
 
 
 def max_api_url():
     # Значение по умолчанию вынесено в настройки не от хорошей жизни: адрес
     # API уже менялся (старый platform-api.max.ru отключили летом 2026),
     # и когда он сменится снова, это должно чиниться правкой .env, а не кодом.
-    return getattr(settings, 'MAX_API_URL', MAX_DEFAULT_API_URL).rstrip('/')
+    return envfile.setting('MAX_API_URL', MAX_DEFAULT_API_URL).rstrip('/')
 
 
 def format_recipient(kind, value):
@@ -108,7 +110,7 @@ def _parse_max_recipient(recipient):
 
 def send_max_message(recipient, text, timeout=15):
     """Отправляет текст одному получателю MAX."""
-    token = getattr(settings, 'MAX_BOT_TOKEN', '')
+    token = envfile.setting('MAX_BOT_TOKEN', '')
     if not token:
         raise MaxError('Не задан MAX_BOT_TOKEN')
 
@@ -130,7 +132,7 @@ def send_max_message(recipient, text, timeout=15):
 
 def get_max_updates(limit=100, timeout=15):
     """Свежие события бота MAX — чтобы узнать идентификаторы написавших людей."""
-    token = getattr(settings, 'MAX_BOT_TOKEN', '')
+    token = envfile.setting('MAX_BOT_TOKEN', '')
     if not token:
         raise MaxError('Не задан MAX_BOT_TOKEN')
 
@@ -145,16 +147,16 @@ def get_max_updates(limit=100, timeout=15):
 # Бот заводится у @BotFather командой /newbot, тот выдаёт токен.
 
 def telegram_is_configured():
-    return bool(getattr(settings, 'TELEGRAM_BOT_TOKEN', ''))
+    return bool(envfile.setting('TELEGRAM_BOT_TOKEN', ''))
 
 
 def telegram_api_url():
-    return getattr(settings, 'TELEGRAM_API_URL', TELEGRAM_DEFAULT_API_URL).rstrip('/')
+    return envfile.setting('TELEGRAM_API_URL', TELEGRAM_DEFAULT_API_URL).rstrip('/')
 
 
 def _telegram_method(method):
     """Токен в Telegram — часть адреса, а не заголовок."""
-    token = getattr(settings, 'TELEGRAM_BOT_TOKEN', '')
+    token = envfile.setting('TELEGRAM_BOT_TOKEN', '')
     if not token:
         raise TelegramError('Не задан TELEGRAM_BOT_TOKEN')
     return f'{telegram_api_url()}/bot{token}/{method}'

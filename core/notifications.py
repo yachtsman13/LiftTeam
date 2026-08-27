@@ -8,6 +8,8 @@
 from datetime import timedelta
 
 from django.conf import settings
+
+from . import envfile
 from django.utils import timezone
 
 from . import messengers
@@ -15,7 +17,11 @@ from .models import Employee, Notification, format_amount, order_overdue_days
 
 
 def _setting(name, default):
-    return getattr(settings, name, default)
+    # Через envfile, а не напрямую из настроек: правка .env на Pi
+    # должна действовать сразу, без перезапуска службы —
+    # приложение работает с NoNewPrivileges и перезапустить себя
+    # не может. Порядок главенства разобран в шапке core/envfile.py
+    return envfile.setting(name, default)
 
 
 # Кому какие оповещения. Роли разные: детали заказывает склад, за деньгами

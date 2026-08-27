@@ -30,6 +30,8 @@
 """
 from django.conf import settings
 
+from . import envfile
+
 TBANK = 'tbank'
 TOCHKA = 'tochka'
 
@@ -296,5 +298,5 @@ def default_provider_for(employee):
 def due_days(code):
     """Через сколько дней счёт считается просроченным к оплате."""
     if code == TOCHKA:
-        return int(getattr(settings, 'TOCHKA_INVOICE_DUE_DAYS', 14))
-    return int(getattr(settings, 'TBANK_INVOICE_DUE_DAYS', 14))
+        return int(envfile.setting('TOCHKA_INVOICE_DUE_DAYS', 14))
+    return int(envfile.setting('TBANK_INVOICE_DUE_DAYS', 14))

@@ -21,12 +21,12 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 
-from . import invoicing
+from . import envfile, invoicing
 
 
 def warranty_months():
     """Срок гарантии в месяцах. 0 — гарантия не ведётся."""
-    return getattr(settings, 'WARRANTY_MONTHS', 12)
+    return envfile.setting('WARRANTY_MONTHS', 12)
 
 
 def warranty_cutoff():
@@ -44,7 +44,7 @@ def warranty_cutoff():
 
 def debt_overdue_days():
     """Через сколько дней после счёта долг считается просроченным."""
-    return getattr(settings, 'DEBT_OVERDUE_DAYS', 14)
+    return envfile.setting('DEBT_OVERDUE_DAYS', 14)
 
 
 def order_overdue_days(status):
@@ -54,7 +54,14 @@ def order_overdue_days(status):
     None — у статуса порога нет: `shipped` и `unrepairable` — завершённые
     состояния, не «зависшие».
     """
-    return getattr(settings, 'ORDER_OVERDUE_DAYS', {}).get(status)
+    # Настройка составная — в settings.py она собирается из четырёх
+    # переменных с разными именами, и одной строкой её не задать.
+    # Поэтому живое значение читается по имени своей переменной,
+    # а собранный словарь остаётся запасным
+    fallback = getattr(settings, 'ORDER_OVERDUE_DAYS', {}).get(status)
+    if fallback is None:
+        return None
+    return envfile.setting('ORDER_OVERDUE_DAYS_%s' % status.upper(), fallback)
 
 
 def format_amount(value):
@@ -1678,7 +1685,7 @@ class RepairOrder(models.Model):
             if digits.isdigit():
                 biggest = max(biggest, int(digits))
 
-        start = getattr(settings, 'TBANK_INVOICE_NUMBER_START', 1)
+        start = envfile.setting('TBANK_INVOICE_NUMBER_START', 1)
         return str(max(biggest + 1, start))
 
     def readiness(self):
@@ -1730,8 +1737,8 @@ class RepairOrder(models.Model):
         без стоимости пропускаются: строка счёта на ноль рублей — это
         не строка счёта.
         """
-        unit = getattr(settings, 'TBANK_INVOICE_UNIT', 'шт.')
-        vat = getattr(settings, 'TBANK_INVOICE_VAT', 'None')
+        unit = envfile.setting('TBANK_INVOICE_UNIT', 'шт.')
+        vat = envfile.setting('TBANK_INVOICE_VAT', 'None')
 
         items = []
         for order_equipment in self.order_equipments.select_related('equipment__model'):

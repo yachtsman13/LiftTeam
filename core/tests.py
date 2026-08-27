@@ -6,6 +6,8 @@
 """
 import datetime
 import io
+import os
+import stat
 from decimal import Decimal
 import json
 import re
@@ -21,6 +23,7 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test import Client as TestClient
@@ -33,13 +36,15 @@ from django.utils import timezone
 
 from django import forms
 
-from . import invoicing, messengers, net, notifications, scanning, tbank, tochka, views, webhooks
+from . import (
+    envfile, invoicing, messengers, net, notifications, scanning, selfcheck,
+    tbank, tochka, views, webhooks, yadisk,
+)
 from .forms import OrganizationForm, RepairOrderEquipmentForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
 from .forms import UnitEditForm
-from . import yadisk
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
@@ -16319,3 +16324,419 @@ class OrderFaultDescriptionMigrationTests(TransactionTestCase):
         # «Средний» переведён в «сложный»: занизить сложность значит
         # занизить цену по прайсу, а завысить — попросить перечитать
         self.assertEqual(speaking.repair_complexity, 'complex')
+
+
+# ============ ЖИВЫЕ НАСТРОЙКИ: ФАЙЛ .env КАК ХРАНИЛИЩЕ (v2.86.0) ============
+
+
+class EnvFileTestCase(SimpleTestCase):
+    """Общая оснастка: свой файл настроек во временном каталоге.
+
+    Своё окружение обязательно: настоящий `.env` разработчика не должен
+    ни читаться, ни тем более правиться тестами.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / '.env'
+        self.override = override_settings(ENV_FILE_PATH=str(self.path))
+        self.override.enable()
+        self.addCleanup(self.override.disable)
+        envfile.forget()
+        self.addCleanup(envfile.forget)
+
+    def write(self, text, mode=0o600):
+        self.path.write_text(text, encoding='utf-8')
+        self.path.chmod(mode)
+        envfile.forget()
+
+
+class EnvFileReadingTests(EnvFileTestCase):
+    """Файл главнее снимка, снятого при запуске, — но только там,
+    где его после запуска правили."""
+
+    def test_a_value_from_the_file_wins(self):
+        """Ради этого всё и затевалось: правка .env действует без
+        перезапуска службы."""
+        self.write('TBANK_TOKEN=из-файла\n')
+
+        with override_settings(TBANK_TOKEN='из-настроек'):
+            self.assertEqual(envfile.setting('TBANK_TOKEN', ''), 'из-файла')
+
+    def test_an_untouched_file_does_not_win(self):
+        """Значение совпало со снимком в окружении — файл не правили,
+        и разбирать строку заново незачем. На этом же держится
+        override_settings у того, у кого рядом лежит свой .env."""
+        self.write('TBANK_TOKEN=одинаково\n')
+
+        with patch.dict(os.environ, {'TBANK_TOKEN': 'одинаково'}):
+            with override_settings(TBANK_TOKEN='из-настроек'):
+                self.assertEqual(
+                    envfile.setting('TBANK_TOKEN', ''), 'из-настроек'
+                )
+
+    def test_a_name_absent_from_the_file_falls_through(self):
+        self.write('YANDEX_DISK_ROOT=Другое\n')
+
+        with override_settings(TBANK_TOKEN='из-настроек'):
+            self.assertEqual(envfile.setting('TBANK_TOKEN', ''), 'из-настроек')
+
+    def test_no_file_at_all_breaks_nothing(self):
+        self.assertFalse(envfile.exists())
+        self.assertEqual(envfile.values(), {})
+
+        with override_settings(TBANK_TOKEN='из-настроек'):
+            self.assertEqual(envfile.setting('TBANK_TOKEN', ''), 'из-настроек')
+
+    def test_the_type_comes_from_the_settings_value(self):
+        """Тип настройки описан в settings.py и там же разобран — здесь
+        он не дублируется, а берётся у образца."""
+        self.write(
+            'TBANK_INVOICE_ENABLED=True\n'
+            'TBANK_INVOICE_DUE_DAYS=21\n'
+            'WEBHOOKS_TRUSTED_PROXIES=127.0.0.1, 10.0.0.1\n'
+        )
+
+        with override_settings(TBANK_INVOICE_ENABLED=False,
+                               TBANK_INVOICE_DUE_DAYS=14,
+                               WEBHOOKS_TRUSTED_PROXIES=[]):
+            self.assertIs(envfile.setting('TBANK_INVOICE_ENABLED', False), True)
+            self.assertEqual(envfile.setting('TBANK_INVOICE_DUE_DAYS', 14), 21)
+            self.assertEqual(
+                envfile.setting('WEBHOOKS_TRUSTED_PROXIES', []),
+                ['127.0.0.1', '10.0.0.1'],
+            )
+
+    def test_a_broken_number_keeps_the_old_one(self):
+        """Опечатка в файле не должна ронять выставление счетов."""
+        self.write('TBANK_INVOICE_DUE_DAYS=через неделю\n')
+
+        with override_settings(TBANK_INVOICE_DUE_DAYS=14):
+            self.assertEqual(envfile.setting('TBANK_INVOICE_DUE_DAYS', 14), 14)
+
+    def test_a_composite_setting_is_left_alone(self):
+        """ORDER_OVERDUE_DAYS собирается в settings.py из четырёх
+        переменных, и одной строкой её не задать."""
+        self.write('ORDER_OVERDUE_DAYS=7\n')
+
+        with override_settings(ORDER_OVERDUE_DAYS={'repair': 7}):
+            self.assertEqual(
+                envfile.setting('ORDER_OVERDUE_DAYS', {}), {'repair': 7}
+            )
+
+    def test_a_rewritten_file_is_re_read(self):
+        """Разобранное держится до следующей правки, а не навсегда."""
+        self.write('TBANK_TOKEN=первый\n')
+        self.assertEqual(envfile.setting('TBANK_TOKEN', ''), 'первый')
+
+        self.write('TBANK_TOKEN=второй\n')
+
+        self.assertEqual(envfile.setting('TBANK_TOKEN', ''), 'второй')
+
+
+class EnvFileModulesUseItTests(EnvFileTestCase):
+    """Модули банков, Диска и ботов читают настройки через envfile,
+    а не напрямую: иначе правка .env не значила бы ничего до перезапуска."""
+
+    def test_the_bank_the_disk_and_the_bots_pick_it_up(self):
+        self.write(
+            'TBANK_TOKEN=банк\n'
+            'TBANK_ACCOUNT=40802810000000000001\n'
+            'YANDEX_DISK_TOKEN=диск\n'
+            'YANDEX_DISK_ROOT=Другой\n'
+            'TELEGRAM_BOT_TOKEN=телеграм\n'
+            'MAX_BOT_TOKEN=макс\n'
+            'TOCHKA_TOKEN=точка\n'
+        )
+
+        self.assertEqual(tbank.token(), 'банк')
+        self.assertEqual(tbank.account_number(), '40802810000000000001')
+        self.assertEqual(yadisk.token(), 'диск')
+        self.assertEqual(yadisk.root(), 'Другой')
+        self.assertEqual(tochka.token(), 'точка')
+        self.assertTrue(messengers.telegram_is_configured())
+        self.assertTrue(messengers.max_is_configured())
+
+    def test_the_webhook_secret_picks_it_up_too(self):
+        """Секрет уведомлений меняют, когда меняют его у банка, —
+        и ждать перезапуска в этот момент неоткуда."""
+        self.write('WEBHOOKS_TBANK_SECRET=новый-секрет\n')
+
+        self.assertEqual(
+            webhooks._setting('WEBHOOKS_TBANK_SECRET', ''), 'новый-секрет'
+        )
+
+
+class EnvFileWritingTests(EnvFileTestCase):
+    """Запись: атомарная, с сохранением комментариев и прав."""
+
+    def test_comments_and_other_lines_survive(self):
+        self.write(
+            '# Настройки LiftTeam\n'
+            'TBANK_TOKEN=старый\n'
+            '\n'
+            '# Комментарий про Диск\n'
+            'YANDEX_DISK_ROOT=LiftTeam\n'
+        )
+
+        envfile.set_value('YANDEX_DISK_ROOT', 'Новый')
+
+        text = self.path.read_text(encoding='utf-8')
+        self.assertIn('# Настройки LiftTeam', text)
+        self.assertIn('# Комментарий про Диск', text)
+        self.assertIn('TBANK_TOKEN', text)
+        self.assertEqual(envfile.values()['YANDEX_DISK_ROOT'], 'Новый')
+
+    def test_the_file_stays_closed_from_others(self):
+        """В файле токены банков. Промежутка, в котором его читают все,
+        быть не должно — ни при правке, ни при создании."""
+        self.write('YANDEX_DISK_ROOT=LiftTeam\n')
+
+        envfile.set_value('YANDEX_DISK_ROOT', 'Новый')
+
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+
+    def test_a_new_file_is_created_closed(self):
+        envfile.set_value('YANDEX_DISK_ROOT', 'Новый')
+
+        self.assertTrue(self.path.is_file())
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+
+    def test_a_copy_is_left_before_the_change(self):
+        """Человеку, сидящему рядом с Pi, должно быть куда откатиться."""
+        self.write('YANDEX_DISK_ROOT=LiftTeam\n')
+
+        envfile.set_value('YANDEX_DISK_ROOT', 'Новый')
+
+        backup = self.path.with_name('.env.bak')
+        self.assertIn('LiftTeam', backup.read_text(encoding='utf-8'))
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+
+    def test_a_value_with_spaces_and_a_hash_survives_a_round_trip(self):
+        """Значение записывается и читается одним и тем же разбором —
+        своего здесь нет намеренно."""
+        envfile.set_value('YANDEX_DISK_ROOT', 'Папка # два слова')
+
+        self.assertEqual(
+            envfile.values()['YANDEX_DISK_ROOT'], 'Папка # два слова'
+        )
+
+    def test_a_multiline_value_is_refused(self):
+        with self.assertRaises(envfile.EnvFileError):
+            envfile.set_value('YANDEX_DISK_ROOT', 'первая\nвторая')
+
+    def test_a_bad_name_is_refused(self):
+        for name in ('', 'не имя', '1TOKEN', 'TOKEN;rm'):
+            with self.assertRaises(envfile.EnvFileError):
+                envfile.set_value(name, 'что-нибудь')
+
+
+class EnvFileSecretsTests(EnvFileTestCase):
+    """Секреты: из браузера не пишутся, наружу не показываются."""
+
+    def test_the_web_may_not_write_a_secret(self):
+        """Защита от промаха, а не от злоумышленника: файл принадлежит
+        пользователю приложения. Но промах здесь и вероятнее."""
+        for name in envfile.SECRET_NAMES:
+            with self.assertRaises(envfile.EnvFileError):
+                envfile.set_value(name, 'значение')
+
+        self.assertFalse(self.path.exists())
+
+    def test_the_command_may(self):
+        envfile.set_value('TBANK_TOKEN', 'значение', allow_secrets=True)
+
+        self.assertEqual(envfile.values()['TBANK_TOKEN'], 'значение')
+
+    def test_the_description_gives_the_length_and_not_the_value(self):
+        """Показанный один раз токен оседает в истории браузера,
+        в кэше и на любом незапертом экране."""
+        self.write('TBANK_TOKEN=t1.abcdefgh\n')
+
+        state = envfile.describe_secret('TBANK_TOKEN')
+
+        self.assertTrue(state['filled'])
+        self.assertEqual(state['length'], len('t1.abcdefgh'))
+        self.assertNotIn('abcdefgh', repr(state))
+
+    def test_an_unset_secret_says_so(self):
+        with override_settings(TBANK_TOKEN=''):
+            state = envfile.describe_secret('TBANK_TOKEN')
+
+        self.assertFalse(state['filled'])
+        self.assertEqual(state['length'], 0)
+
+    def test_the_email_password_is_marked_as_needing_a_restart(self):
+        """Его читает почтовый слой Django, а он смотрит прямо в настройки,
+        мимо этого модуля."""
+        self.assertIn('EMAIL_HOST_PASSWORD', envfile.SECRETS_NEEDING_RESTART)
+        self.assertNotIn('TBANK_TOKEN', envfile.SECRETS_NEEDING_RESTART)
+
+    def test_the_secret_key_is_not_in_the_list(self):
+        """Его заводят один раз при установке: смена разлогинивает всех
+        и обесценивает подписанные ссылки."""
+        self.assertNotIn('SECRET_KEY', envfile.SECRET_NAMES)
+
+
+class SetSecretCommandTests(EnvFileTestCase):
+    """Команда у самого Pi: значение спрашивается скрытым вводом
+    и нигде не печатается."""
+
+    def test_the_list_shows_state_and_never_a_value(self):
+        self.write('TBANK_TOKEN=t1.секретное-значение\n')
+        out = io.StringIO()
+
+        call_command('setsecret', '--list', stdout=out)
+        text = out.getvalue()
+
+        self.assertIn('TBANK_TOKEN', text)
+        self.assertIn('задан', text)
+        self.assertNotIn('секретное-значение', text)
+
+    def test_it_writes_what_was_typed(self):
+        out = io.StringIO()
+
+        with patch('getpass.getpass', side_effect=['t1.новый', 't1.новый']):
+            call_command('setsecret', 'TBANK_TOKEN', '--no-check', stdout=out)
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['TBANK_TOKEN'], 't1.новый')
+        self.assertNotIn('t1.новый', out.getvalue())
+
+    def test_a_mistyped_repeat_writes_nothing(self):
+        """Токен вставляют из письма, ввод не отображается, и потерянный
+        при вставке знак не видно."""
+        with patch('getpass.getpass', side_effect=['первый', 'второй']):
+            with self.assertRaises(CommandError):
+                call_command('setsecret', 'TBANK_TOKEN', '--no-check',
+                             stdout=io.StringIO())
+
+        self.assertFalse(self.path.exists())
+
+    def test_an_empty_value_asks_for_clear_instead(self):
+        with patch('getpass.getpass', side_effect=['  ', '  ']):
+            with self.assertRaises(CommandError):
+                call_command('setsecret', 'TBANK_TOKEN', '--no-check',
+                             stdout=io.StringIO())
+
+    def test_clear_writes_an_empty_value(self):
+        self.write('TBANK_TOKEN=старый\n')
+
+        call_command('setsecret', 'TBANK_TOKEN', '--clear',
+                     stdout=io.StringIO())
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['TBANK_TOKEN'], '')
+
+    def test_an_unknown_name_is_refused(self):
+        with self.assertRaises(CommandError):
+            call_command('setsecret', 'ALLOWED_HOSTS', '--no-check')
+
+    def test_a_non_secret_setting_is_not_taken_here_either(self):
+        """Команда — для секретов. Остальное правится страницей настроек."""
+        with self.assertRaises(CommandError):
+            call_command('setsecret', 'YANDEX_DISK_ROOT', '--no-check')
+
+
+class SelfCheckTests(EnvFileTestCase):
+    """Проверка связи одна на команду и на будущую страницу настроек:
+    об одной и той же службе они обязаны говорить одно и то же."""
+
+    def test_an_unset_service_is_skipped_not_failed(self):
+        with override_settings(TBANK_TOKEN=''):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+        self.assertFalse(result.ok)
+
+    def test_a_reachable_bank_is_reported_ok(self):
+        self.write('TBANK_TOKEN=t1.живой\n')
+
+        with patch.object(tbank, 'get_accounts', return_value=[{'id': 1}]):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertTrue(result.ok)
+
+    def test_a_refusing_bank_is_reported_with_its_own_words(self):
+        self.write('TBANK_TOKEN=t1.протухший\n')
+
+        with patch.object(tbank, 'get_accounts',
+                          side_effect=tbank.TBankError('401 Unauthorized')):
+            result = selfcheck.check('TBANK_TOKEN')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.FAIL)
+        self.assertIn('401', result.message)
+
+    def test_tochka_says_that_the_check_is_not_written(self):
+        """Угаданный адрес отвечал бы «связи нет» на исправном токене —
+        это хуже честного «проверка не написана». Тот же порядок,
+        что у её проверяющего уведомления."""
+        self.write(
+            'TOCHKA_TOKEN=точка\n'
+            'TOCHKA_CUSTOMER_CODE=300000000\n'
+            'TOCHKA_ACCOUNT_ID=40802810000000000001\n'
+        )
+
+        result = selfcheck.check('TOCHKA_TOKEN')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+        self.assertIn('не написано', result.message)
+
+    def test_the_disk_check_only_reads(self):
+        """Проверка связи не должна оставлять следов на Диске."""
+        self.write('YANDEX_DISK_TOKEN=диск\n')
+        seen = {}
+
+        def fake_call(method, path, params=None, timeout=30):
+            seen['method'] = method
+            return {'total_space': 10 * 2 ** 30, 'used_space': 2 ** 30}, 200
+
+        with patch.object(yadisk, '_call', fake_call):
+            result = selfcheck.check('YANDEX_DISK_TOKEN')
+
+        self.assertEqual(seen['method'], 'GET')
+        self.assertTrue(result.ok)
+
+    def test_a_secret_without_a_check_says_so_plainly(self):
+        """Секрет вебхука подтверждает только сам банк, когда пришлёт
+        уведомление. Молчаливого «всё хорошо» тут быть не должно."""
+        result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+
+
+class EnvSettingsGoThroughEnvFileTests(SimpleTestCase):
+    """Модули, работающие со сторонними службами, читают настройки только
+    через `envfile`.
+
+    Прочитанная напрямую из `settings` настройка застывает на запуске:
+    правка `.env` перестаёт действовать до перезапуска, а перезапустить
+    себя приложение не может. Заметить это по одному новому вызову
+    невозможно — он ничего не ломает, просто настройка молча не меняется.
+    """
+
+    MODULES = (
+        'tbank.py', 'tochka.py', 'yadisk.py', 'messengers.py',
+        'invoicing.py', 'webhooks.py', 'notifications.py',
+    )
+
+    def test_no_module_reads_settings_directly(self):
+        base = Path(__file__).resolve().parent
+        offenders = []
+        for name in self.MODULES:
+            source = (base / name).read_text(encoding='utf-8')
+            for number, line in enumerate(source.splitlines(), start=1):
+                if 'getattr(settings' in line:
+                    offenders.append('%s:%d' % (name, number))
+
+        self.assertEqual(offenders, [], (
+            'Настройка читается мимо envfile — правка .env перестанет '
+            'действовать без перезапуска: %s' % ', '.join(offenders)
+        ))
+
+    def test_every_secret_has_a_title(self):
+        """Список секретов читает человек у Pi, и «TOCHKA_TOKEN» без
+        пояснения ему ничего не говорит."""
+        for name in envfile.SECRET_NAMES:
+            self.assertIn(name, envfile.SECRET_TITLES)

@@ -30,6 +30,8 @@ from urllib import error, parse, request
 
 from django.conf import settings
 
+from . import envfile
+
 from .net import explain, redact, safe_headers
 
 logger = logging.getLogger(__name__)
@@ -70,17 +72,17 @@ def is_configured():
 
 
 def token():
-    return getattr(settings, 'TBANK_TOKEN', '')
+    return envfile.setting('TBANK_TOKEN', '')
 
 
 def account_number():
-    return getattr(settings, 'TBANK_ACCOUNT', '')
+    return envfile.setting('TBANK_ACCOUNT', '')
 
 
 def api_url():
     # Адрес вынесен в настройки: банк уже переезжал с tinkoff.ru на tbank.ru,
     # и следующий переезд должен чиниться правкой .env, а не кодом
-    return getattr(settings, 'TBANK_API_URL', DEFAULT_API_URL).rstrip('/')
+    return envfile.setting('TBANK_API_URL', DEFAULT_API_URL).rstrip('/')
 
 
 def _call(path, params=None, payload=None, timeout=30):
@@ -295,7 +297,7 @@ def invoice_enabled():
     Отдельно от токена: читать выписку и писать заказчику от лица фирмы —
     разные по последствиям действия, и включаться они должны порознь.
     """
-    return bool(getattr(settings, 'TBANK_INVOICE_ENABLED', False)) and is_configured()
+    return bool(envfile.setting('TBANK_INVOICE_ENABLED', False)) and is_configured()
 
 
 def build_invoice(number, items, payer=None, emails=(), invoice_date=None,

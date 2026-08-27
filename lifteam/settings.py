@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.85.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.86.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Файл с настройками — тот самый, который только что прочитал load_dotenv().
+# Путь назван отдельной настройкой, потому что программа не только читает
+# его при запуске, но и перечитывает на ходу, и правит: см. core/envfile.py.
+# Держать его в базе нельзя — базу увозит ночная выгрузка в облако,
+# а токены банков покидать Raspberry Pi не должны.
+ENV_FILE_PATH = os.getenv('ENV_FILE_PATH', str(BASE_DIR / '.env'))
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me-in-production')
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'

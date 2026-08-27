@@ -58,7 +58,7 @@ from .utils import (
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
 from .decorators import role_required
-from . import invoicing, messengers, notifications, scanning, tbank, updater, yadisk
+from . import envfile, invoicing, messengers, notifications, scanning, tbank, updater, yadisk
 
 
 def _send_stock_update(part):
@@ -3535,7 +3535,7 @@ def report_debtors(request):
     return render(request, 'core/reports/debtors.html', {
         'orders': orders,
         'total_debt': total_debt,
-        'overdue_days': getattr(settings, 'DEBT_OVERDUE_DAYS', 14),
+        'overdue_days': envfile.setting('DEBT_OVERDUE_DAYS', 14),
     })
 
 
@@ -4253,20 +4253,20 @@ def admin_notifications(request):
         'status_filter': status,
         'status_tabs': status_tabs,
         'found_count': paginator.count,
-        'sending_enabled': getattr(settings, 'NOTIFICATIONS_ENABLED', False),
-        'clients_enabled': getattr(settings, 'NOTIFY_CLIENTS', False),
-        'low_stock_enabled': getattr(settings, 'NOTIFY_LOW_STOCK', True),
+        'sending_enabled': envfile.setting('NOTIFICATIONS_ENABLED', False),
+        'clients_enabled': envfile.setting('NOTIFY_CLIENTS', False),
+        'low_stock_enabled': envfile.setting('NOTIFY_LOW_STOCK', True),
         'channels': [
             {
                 'name': 'MAX',
                 'configured': messengers.max_is_configured(),
-                'enabled': getattr(settings, 'NOTIFY_MAX', False)
+                'enabled': envfile.setting('NOTIFY_MAX', False)
                            and messengers.max_is_configured(),
             },
             {
                 'name': 'Telegram',
                 'configured': messengers.telegram_is_configured(),
-                'enabled': getattr(settings, 'NOTIFY_TELEGRAM', False)
+                'enabled': envfile.setting('NOTIFY_TELEGRAM', False)
                            and messengers.telegram_is_configured(),
             },
         ],
@@ -4633,7 +4633,7 @@ def repair_order_quote_edit(request, pk):
         form = QuoteForm(instance=order, initial={
             'quote_date': order.quote_date or today,
             'quote_valid_until': order.quote_valid_until or today + timedelta(
-                days=getattr(settings, 'QUOTE_VALID_DAYS', 14)),
+                days=envfile.setting('QUOTE_VALID_DAYS', 14)),
         })
         formset = QuoteLineFormSet(instance=order)
 
@@ -5346,7 +5346,7 @@ def label_base_url(request):
 
     Пустое значение возвращает прежнее поведение: адрес берётся из запроса.
     """
-    configured = getattr(settings, 'LABEL_BASE_URL', '')
+    configured = envfile.setting('LABEL_BASE_URL', '')
     return configured.rstrip('/') if configured else request.build_absolute_uri('/').rstrip('/')
 
 
