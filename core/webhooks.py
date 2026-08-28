@@ -149,6 +149,11 @@ class WebhookVerifier:
 
     provider = ''
     label = ''
+    # Написана ли проверка подлинности вообще. Ложь означает, что приём
+    # откажет при любых настройках, — и страница настроек обязана сказать
+    # это словами, а не рапортовать «настроено верно» о том, что работать
+    # не будет
+    verifiable = True
     # Имя переменной .env, которой включается приём уведомлений
     enable_setting = ''
     # Имя переменной .env с секретом, которым подтверждается отправитель
@@ -277,6 +282,7 @@ class TochkaWebhookVerifier(WebhookVerifier):
 
     provider = invoicing.TOCHKA
     label = 'Точка Банк'
+    verifiable = False
     enable_setting = 'WEBHOOKS_TOCHKA_ENABLED'
     secret_setting = 'WEBHOOKS_TOCHKA_SECRET'
 

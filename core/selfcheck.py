@@ -19,8 +19,9 @@
 сказано вслух. Тот же порядок, что у её проверяющего уведомления.
 """
 from django.core.mail import get_connection
+from django.utils import timezone
 
-from . import envfile, messengers, tbank, tochka, yadisk
+from . import envfile, invoicing, messengers, tbank, tochka, webhooks, yadisk
 
 
 class CheckResult:
@@ -155,9 +156,93 @@ def _check_email():
     )
 
 
-# Какая проверка к какой настройке относится. Секрет, которому проверки нет
-# (секреты вебхуков — их подтверждает сам банк, когда пришлёт уведомление),
-# в этом списке отсутствует, и это не пропуск.
+def _check_webhook(provider):
+    """Готовность приёма уведомлений банка.
+
+    Связи здесь проверять нечего и некуда: уведомление присылает банк,
+    а секрет — это то, что мы ждём **от него**. Позвонить и спросить
+    «правильный ли у меня секрет» нельзя ни у кого.
+
+    Зато можно проверить всё остальное, и именно на этом здесь спотыкаются:
+    неверная настройка не роняет ничего, банк просто получает отказ,
+    а оплата не отмечается — молча, до первого спорного счёта. Поэтому
+    проверяются включатель, непустой секрет, его вид, список адресов
+    и то, приходило ли хоть одно уведомление на самом деле.
+    """
+    from .models import WebhookDelivery
+
+    try:
+        verifier = webhooks.get_verifier(provider)
+    except webhooks.WebhookError:
+        return _skipped('Приём уведомлений этого банка не написан.')
+
+    if not verifier.verifiable:
+        # Настраивать тут нечего: приём откажет при любых значениях.
+        # Рапортовать «настроено верно» было бы прямой неправдой
+        return _skipped(
+            'Проверка подлинности уведомлений %s не написана, и приём '
+            'откажет при любых настройках: неизвестно ни с каких адресов '
+            'банк их присылает, ни чем заверяет тело. Нужен раздел её '
+            'документации об уведомлениях — угаданная проверка означала бы, '
+            'что счета отмечает оплаченными кто угодно.' % verifier.label
+        )
+
+    troubles = []
+    if not envfile.setting(verifier.enable_setting, False):
+        troubles.append(
+            'приём выключен — включите «%s» на этой же странице' % verifier.label
+        )
+    secret = str(envfile.setting(verifier.secret_setting, '') or '').strip()
+    if not secret:
+        troubles.append(
+            'секрет не задан, а без него приём отказывает: один список '
+            'адресов слишком слаб, чтобы остаться единственной проверкой'
+        )
+    elif ' ' not in secret:
+        # Банк присылает значение заголовка Authorization целиком, вместе
+        # со схемой. Записанный без «Bearer » секрет не совпадёт ни с одним
+        # уведомлением, а выглядеть будет заполненным — самая обидная
+        # из здешних ошибок
+        troubles.append(
+            'секрет записан без схемы. В заголовке банк присылает его '
+            'целиком — «Bearer ваша-строка», — и сравнивается он целиком'
+        )
+    addresses = [
+        str(a).strip()
+        for a in (envfile.setting('WEBHOOKS_TBANK_IPS', ()) or ()) if str(a).strip()
+    ]
+    if verifier.provider == invoicing.TBANK and not addresses:
+        troubles.append('пуст список адресов Т-Банка (WEBHOOKS_TBANK_IPS)')
+
+    delivered = WebhookDelivery.objects.filter(provider=verifier.provider)
+    last = delivered.order_by('-received_at').first()
+
+    if troubles:
+        return _fail('Приём не готов: %s.' % '; '.join(troubles))
+    if last is None:
+        return _skipped(
+            'Настроено верно, но проверить это может только сам банк: '
+            'уведомлений от него пока не приходило ни одного. Секрет вы '
+            'придумываете сами и сообщаете банку письмом — совпал он или '
+            'нет, станет видно на первом оплаченном счёте.'
+        )
+    return _ok(
+        'Настроено верно. Уведомлений принято: %d, последнее — %s (%s).'
+        % (delivered.count(),
+           timezone.localtime(last.received_at).strftime('%d.%m.%Y в %H:%M'),
+           last.get_status_display())
+    )
+
+
+def _check_webhook_tbank():
+    return _check_webhook(invoicing.TBANK)
+
+
+def _check_webhook_tochka():
+    return _check_webhook(invoicing.TOCHKA)
+
+
+# Какая проверка к какой настройке относится.
 CHECKS = {
     'TBANK_TOKEN': _check_tbank,
     'TOCHKA_TOKEN': _check_tochka,
@@ -165,6 +250,8 @@ CHECKS = {
     'MAX_BOT_TOKEN': _check_max,
     'TELEGRAM_BOT_TOKEN': _check_telegram,
     'EMAIL_HOST_PASSWORD': _check_email,
+    'WEBHOOKS_TBANK_SECRET': _check_webhook_tbank,
+    'WEBHOOKS_TOCHKA_SECRET': _check_webhook_tochka,
 }
 
 
@@ -172,8 +259,5 @@ def check(name):
     """Проверить службу, к которой относится настройка `name`."""
     runner = CHECKS.get(name)
     if runner is None:
-        return _skipped(
-            'Для %s проверки связи нет: подтвердить его может только сам '
-            'отправитель уведомления.' % name
-        )
+        return _skipped('Для %s проверки не написано.' % name)
     return runner()

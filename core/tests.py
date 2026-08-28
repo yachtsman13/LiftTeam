@@ -16763,12 +16763,12 @@ class SelfCheckTests(EnvFileTestCase):
         self.assertTrue(result.ok, result.message)
         self.assertIn('занято 1 ГБ из 10', result.message)
 
-    def test_a_secret_without_a_check_says_so_plainly(self):
-        """Секрет вебхука подтверждает только сам банк, когда пришлёт
-        уведомление. Молчаливого «всё хорошо» тут быть не должно."""
-        result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+    def test_an_unknown_name_says_so_plainly(self):
+        """Молчаливого «всё хорошо» о непроверенном быть не должно."""
+        result = selfcheck.check('НЕИЗВЕСТНАЯ_НАСТРОЙКА')
 
         self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+        self.assertIn('не написано', result.message)
 
 
 class EnvSettingsGoThroughEnvFileTests(SimpleTestCase):
@@ -17448,3 +17448,90 @@ class StatementScheduleUnitsTests(SimpleTestCase):
     def test_the_interval_is_editable_from_the_page(self):
         self.assertIn('TBANK_STATEMENT_INTERVAL_MINUTES', envfile.EDITABLE_BY_NAME)
         self.assertNotIn('TBANK_STATEMENT_INTERVAL_MINUTES', envfile.SECRET_NAMES)
+
+
+class WebhookReadinessCheckTests(EnvFileMixin, TestCase):
+    """Кнопка «Проверить» у секрета уведомлений.
+
+    Связи тут не проверить: уведомление присылает банк, а секрет — то,
+    чего мы ждём от него. Зато проверяется всё, из-за чего уведомления
+    молча отбиваются: неверная настройка ничего не роняет, банк просто
+    получает отказ, а оплата не отмечается — до первого спорного счёта.
+    """
+
+    def test_a_disabled_reception_is_named(self):
+        with override_settings(WEBHOOKS_TBANK_ENABLED=False,
+                               WEBHOOKS_TBANK_SECRET='Bearer строка'):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.FAIL)
+        self.assertIn('приём выключен', result.message)
+
+    def test_an_empty_secret_is_named(self):
+        with override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                               WEBHOOKS_TBANK_SECRET=''):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.FAIL)
+        self.assertIn('секрет не задан', result.message)
+
+    def test_a_secret_without_its_scheme_is_named(self):
+        """Самая обидная из здешних ошибок: поле выглядит заполненным,
+        а не совпадёт ни с одним уведомлением — банк присылает значение
+        заголовка целиком, вместе со схемой."""
+        with override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                               WEBHOOKS_TBANK_SECRET='простострокабезсхемы'):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.FAIL)
+        self.assertIn('без схемы', result.message)
+
+    def test_an_empty_address_list_is_named(self):
+        with override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                               WEBHOOKS_TBANK_SECRET='Bearer строка',
+                               WEBHOOKS_TBANK_IPS=[]):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.FAIL)
+        self.assertIn('список адресов', result.message)
+
+    def test_everything_set_but_nothing_delivered_yet_says_so(self):
+        """«Настроено верно» — не то же, что «работает»: совпал секрет
+        или нет, знает только банк."""
+        with override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                               WEBHOOKS_TBANK_SECRET='Bearer строка'):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+        self.assertIn('не приходило ни одного', result.message)
+
+    def test_a_real_delivery_is_the_proof(self):
+        """Подтвердить секрет может только сам банк — доставкой."""
+        WebhookDelivery.objects.create(
+            provider='tbank', dedup_key='inv-1', body_hash='x',
+            status=WebhookDelivery.STATUS_PROCESSED,
+        )
+
+        with override_settings(WEBHOOKS_TBANK_ENABLED=True,
+                               WEBHOOKS_TBANK_SECRET='Bearer строка'):
+            result = selfcheck.check('WEBHOOKS_TBANK_SECRET')
+
+        self.assertTrue(result.ok)
+        self.assertIn('принято: 1', result.message)
+
+    def test_tochka_says_that_reception_will_refuse_anyway(self):
+        """Рапортовать «настроено верно» о том, что работать не будет, —
+        прямая неправда."""
+        with override_settings(WEBHOOKS_TOCHKA_ENABLED=True,
+                               WEBHOOKS_TOCHKA_SECRET='Bearer строка'):
+            result = selfcheck.check('WEBHOOKS_TOCHKA_SECRET')
+
+        self.assertEqual(result.state, selfcheck.CheckResult.SKIPPED)
+        self.assertIn('откажет при любых настройках', result.message)
+
+    def test_every_secret_now_has_a_check(self):
+        """До v2.90.0 у секретов вебхуков ответом было «проверки нет» —
+        верно по сути и бесполезно на деле."""
+        for name in envfile.SECRET_NAMES:
+            with self.subTest(name=name):
+                self.assertIn(name, selfcheck.CHECKS)
