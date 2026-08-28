@@ -66,7 +66,9 @@
     /**
      * Последняя мера, когда и минимальный шрифт не помог: обрезать текст
      * так, чтобы кончался он целой строкой с многоточием, а не полоской
-     * от следующей.
+     * от следующей. Обрезается **хвост**: начало фразы важнее конца,
+     * а на этикетке текст прижат к нижнему краю и при переполнении
+     * вылезает вверх — без этой обрезки пропадало бы как раз начало.
      *
      * Число строк считается по настоящим прямоугольникам строк, а не делением
      * высоты на межстрочный интервал: интервал больше самих букв, и деление
@@ -100,13 +102,23 @@
         var range = document.createRange();
         range.selectNodeContents(target);
         var rects = range.getClientRects();
-        var limit = element.getBoundingClientRect().bottom;
-        var top = target.getBoundingClientRect().top;
+        if (!rects.length) {
+            return;
+        }
+
+        /* Считаем по высоте, а не по нижней границе блока. Текст прижат
+           к нижнему краю, и при переполнении он вылезает ВВЕРХ: нижние
+           строки остаются внутри блока, и проверка «строка ниже дна»
+           не срабатывала бы ни на одной — обрезка не наступала вовсе,
+           а лишнее молча уезжало под верхнюю кромку. То есть у длинного
+           описания пропадало начало фразы, а не хвост. */
+        var room = element.getBoundingClientRect().height;
+        var start = rects[0].top;
 
         var lines = 0;
         var bottom = 0;
         for (var i = 0; i < rects.length; i++) {
-            if (rects[i].bottom > limit) {
+            if (rects[i].bottom - start > room + TOLERANCE) {
                 break;
             }
             lines += 1;
@@ -120,7 +132,7 @@
             return;
         }
 
-        target.style.maxHeight = (bottom - top) + 'px';
+        target.style.maxHeight = (bottom - start) + 'px';
         target.style.overflow = 'hidden';
         target.style.webkitLineClamp = String(lines);
     }

@@ -17535,3 +17535,125 @@ class WebhookReadinessCheckTests(EnvFileMixin, TestCase):
         for name in envfile.SECRET_NAMES:
             with self.subTest(name=name):
                 self.assertIn(name, selfcheck.CHECKS)
+
+
+class LabelReadsBottomUpTests(TestCase):
+    """Этикетка читается снизу вверх: артикул у нижнего края.
+
+    На передней стенке кассетницы есть выступ, за который ящик выдвигают,
+    и он закрывает верхнюю полосу наклейки — то есть ровно ту, ради которой
+    её и читают. Всё важное убрано вниз.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='label_order', full_name='Админ', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.cabinet = Cabinet.objects.create(number=9)
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.first()
+        self.part = SparePart.objects.create(
+            part_number='BU-1', name='Резистор 10к', component_type='Резистор',
+            package='0805', description='Ставится в блок питания',
+        )
+        self.cell.parts.add(self.part)
+
+    def _pages(self):
+        return (
+            '/parts/%d/label/' % self.part.pk,
+            '/storage-cells/%d/label/' % self.cell.pk,
+        )
+
+    def test_the_service_line_comes_before_the_part_number(self):
+        """Наверху то, чем жертвуют: корпус, применимость, адрес."""
+        for page in self._pages():
+            with self.subTest(page=page):
+                html = self.http.get(page).content.decode()
+                sheet = html.split('label-sheet')[1].split('</div>\n</div>')[0]
+
+                self.assertLess(sheet.index('label-foot'), sheet.index('label-number'))
+
+    def test_the_part_number_is_the_last_thing_on_the_label(self):
+        """Нижний край — единственное место, до которого выступ
+        не дотянется ни при какой глубине."""
+        for page in self._pages():
+            with self.subTest(page=page):
+                html = self.http.get(page).content.decode()
+                sheet = html.split('label-sheet')[1]
+
+                self.assertGreater(sheet.index('label-number'), sheet.index('label-body'))
+
+    def test_the_text_and_the_code_hug_the_bottom(self):
+        """Пустое место на этикетке всё равно где-то будет, и лучше ему
+        оказаться под выступом, чем между описанием и артикулом."""
+        styles = render_to_string('core/_label_part_styles.html')
+        block = styles.split('.label-text-block')[1].split('}')[0]
+        body = styles.split('.label-body {')[1].split('}')[0]
+
+        self.assertIn('justify-content: flex-end', block)
+        self.assertIn('align-items: flex-end', body)
+
+
+class CellLabelHiddenTopTests(TestCase):
+    """Сколько сверху закрыто выступом — настройкой, потому что кассетницы
+    у разных серий разные, а число нужно измерить у настоящей."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='label_hidden', full_name='Админ', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.cabinet = Cabinet.objects.create(number=11)
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.first()
+        self.part = SparePart.objects.create(
+            part_number='HD-1', name='Резистор', component_type='Резистор',
+        )
+        self.cell.parts.add(self.part)
+
+    @override_settings(LABEL_CELL_HIDDEN_TOP_MM=6)
+    def test_the_cell_label_carries_it(self):
+        html = self.http.get('/storage-cells/%d/label/' % self.cell.pk).content.decode()
+
+        self.assertIn('--hidden: 6mm', html)
+
+    @override_settings(LABEL_CELL_HIDDEN_TOP_MM=6)
+    def test_the_part_label_does_not(self):
+        """На пакете с деталью выступа нет, и пустая полоса пропала бы зря."""
+        html = self.http.get('/parts/%d/label/' % self.part.pk).content.decode()
+
+        self.assertNotIn('--hidden', html.split('label-sheet')[1].split('>')[0])
+
+    @override_settings(LABEL_CELL_HIDDEN_TOP_MM=6)
+    def test_the_batch_page_carries_it_too(self):
+        """Пачкой печатают чаще, чем по одной: разойдись эти две страницы,
+        половина наклеек оказалась бы старой раскладки."""
+        html = self.http.get(
+            '/storage-cells/labels/?cabinet=%d' % self.cabinet.number
+        ).content.decode()
+
+        self.assertIn('--hidden: 6mm', html)
+
+    @override_settings(LABEL_CELL_HIDDEN_TOP_MM=0)
+    def test_zero_leaves_the_label_as_it_was(self):
+        html = self.http.get('/storage-cells/%d/label/' % self.cell.pk).content.decode()
+
+        self.assertNotIn('--hidden', html.split('label-sheet')[1].split('>')[0])
+
+    def test_nonsense_is_brought_back_to_reason(self):
+        """Значение правит человек, а этикетка с закрытой половиной —
+        это уже не этикетка."""
+        for given, expected in ((-5, 0), (0, 0), (6, 6), (99, 12), ('много', 0)):
+            with self.subTest(given=given):
+                with override_settings(LABEL_CELL_HIDDEN_TOP_MM=given):
+                    self.assertEqual(views._cell_label_hidden_top(), expected)
+
+    def test_it_is_editable_from_the_settings_page(self):
+        """Померить выступ можно только у настоящей кассетницы, значит
+        число вводит владелец, а не программист."""
+        self.assertIn('LABEL_CELL_HIDDEN_TOP_MM', envfile.EDITABLE_BY_NAME)

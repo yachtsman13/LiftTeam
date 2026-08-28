@@ -3115,6 +3115,20 @@ def _grouped_specs(parts):
     return ', '.join(common), distinct
 
 
+def _cell_label_hidden_top():
+    """Сколько миллиметров этикетки ячейки закрыто выступом.
+
+    Отрицательное и заведомо бессмысленное отбрасывается: значение правит
+    человек на странице настроек, а этикетка с закрытой половиной — это
+    уже не этикетка.
+    """
+    try:
+        value = int(envfile.setting('LABEL_CELL_HIDDEN_TOP_MM', 0))
+    except (TypeError, ValueError):
+        return 0
+    return min(max(value, 0), 12)
+
+
 def _cell_label(cell, base_url):
     """Данные одной этикетки ячейки.
 
@@ -3181,6 +3195,9 @@ def _cell_label(cell, base_url):
         'qr_url': link,
         'qr_payload': payload,
         'qr_img': generate_qr_image(payload),
+        # Сколько сверху закрыто выступом кассетницы. Только у ячейки:
+        # на пакете с деталью выступа нет, и пустая полоса пропала бы зря
+        'hidden_top': _cell_label_hidden_top(),
     }
 
 
