@@ -17279,3 +17279,172 @@ class TBankCheckTests(EnvFileTestCase):
 
         self.assertTrue(result.ok)
         self.assertIn('tbank_statement --accounts', result.message)
+
+
+class StatementIntervalTests(SimpleTestCase):
+    """Частоту загрузки выписки решает программа, а не расписание.
+
+    Юнит systemd правится от root, а владелец меняет частоту со страницы
+    настроек. Поэтому таймер только тикает, а «пора или нет» отвечает
+    одно место.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.marker = Path(self.dir.name) / '.tbank-last-run'
+        patcher = patch.object(tbank, 'LAST_FETCH_FILE', self.marker)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_first_run_is_always_due(self):
+        due, why = tbank.fetch_due()
+
+        self.assertTrue(due)
+        self.assertIn('ни разу', why)
+
+    def test_too_soon_is_skipped_and_says_why(self):
+        tbank.mark_fetched(timezone.now() - datetime.timedelta(minutes=10))
+
+        with override_settings(TBANK_STATEMENT_INTERVAL_MINUTES=60):
+            due, why = tbank.fetch_due()
+
+        self.assertFalse(due)
+        self.assertIn('Пропускаю', why)
+
+    def test_after_the_interval_it_is_due_again(self):
+        tbank.mark_fetched(timezone.now() - datetime.timedelta(minutes=61))
+
+        with override_settings(TBANK_STATEMENT_INTERVAL_MINUTES=60):
+            due, _why = tbank.fetch_due()
+
+        self.assertTrue(due)
+
+    def test_zero_means_every_tick(self):
+        tbank.mark_fetched()
+
+        with override_settings(TBANK_STATEMENT_INTERVAL_MINUTES=0):
+            due, why = tbank.fetch_due()
+
+        self.assertTrue(due)
+        self.assertIn('на каждом тике', why)
+
+    def test_a_broken_value_falls_back_to_an_hour(self):
+        """Настройку правит человек, и в поле может оказаться что угодно.
+        Загрузка выписки — не то место, где стоит падать."""
+        with override_settings(TBANK_STATEMENT_INTERVAL_MINUTES='часто'):
+            self.assertEqual(tbank.statement_interval(), 60)
+
+    def test_a_missing_marker_file_is_not_an_error(self):
+        self.assertIsNone(tbank.last_fetch_at())
+
+    def test_a_damaged_marker_file_is_not_an_error(self):
+        """Файл могли обрезать на середине записи при выключении питания —
+        тогда просто тянем заново."""
+        self.marker.write_text('позавчера', encoding='utf-8')
+
+        self.assertIsNone(tbank.last_fetch_at())
+
+    def test_the_marker_survives_a_round_trip(self):
+        moment = timezone.now().replace(microsecond=0)
+
+        tbank.mark_fetched(moment)
+
+        self.assertEqual(tbank.last_fetch_at(), moment)
+
+    def test_the_marker_is_a_file_and_not_a_row_in_the_database(self):
+        """Это состояние установки, а не данные. В базе оно уехало бы
+        в облачную копию и после восстановления соврало бы, что выписку
+        только что тянули."""
+        self.assertTrue(str(tbank.LAST_FETCH_FILE).endswith('.tbank-last-run'))
+
+
+class StatementScheduleCommandTests(TestCase):
+    """Команда: по расписанию промежуток спрашивается, руками — нет."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = patch.object(
+            tbank, 'LAST_FETCH_FILE', Path(self.dir.name) / '.tbank-last-run'
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    PAYLOAD = {'operations': []}
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146',
+                       TBANK_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_scheduled_run_too_soon_does_not_touch_the_bank(self):
+        tbank.mark_fetched(timezone.now() - datetime.timedelta(minutes=5))
+        out = io.StringIO()
+
+        with patch('core.tbank.get_statement') as fetch:
+            call_command('tbank_statement', '--scheduled', stdout=out)
+
+        fetch.assert_not_called()
+        self.assertIn('Пропускаю', out.getvalue())
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146',
+                       TBANK_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_hand_run_does_not_ask_about_the_interval(self):
+        """Человек, набравший команду, хочет выписку сейчас."""
+        tbank.mark_fetched(timezone.now() - datetime.timedelta(minutes=5))
+        out = io.StringIO()
+
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD) as fetch:
+            call_command('tbank_statement', stdout=out)
+
+        fetch.assert_called_once()
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146',
+                       TBANK_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_successful_run_moves_the_marker(self):
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            call_command('tbank_statement', '--scheduled', stdout=io.StringIO())
+
+        self.assertIsNotNone(tbank.last_fetch_at())
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146')
+    def test_a_failed_run_leaves_the_marker_alone(self):
+        """Сорвался запрос к банку — следующий тик обязан попробовать
+        снова, а не ждать час."""
+        with patch('core.tbank.get_statement',
+                   side_effect=tbank.TBankError('банк не ответил')):
+            call_command('tbank_statement', '--scheduled',
+                         stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.assertIsNone(tbank.last_fetch_at())
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='40802810700006096146')
+    def test_a_dry_run_leaves_the_marker_alone(self):
+        """Проверка — не загрузка: после неё расписание не должно считать,
+        что выписка уже дома."""
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            call_command('tbank_statement', '--dry-run', stdout=io.StringIO())
+
+        self.assertIsNone(tbank.last_fetch_at())
+
+
+class StatementScheduleUnitsTests(SimpleTestCase):
+    """Юниты systemd и настройка обязаны сходиться: таймер тикает,
+    решает программа."""
+
+    def _read(self, name):
+        return (Path(__file__).resolve().parent.parent / 'deploy'
+                / name).read_text(encoding='utf-8')
+
+    def test_the_service_asks_the_program_whether_it_is_time(self):
+        """Без --scheduled команда тянула бы выписку на каждом тике,
+        и настройка частоты не значила бы ничего."""
+        self.assertIn('tbank_statement --scheduled',
+                      self._read('lifteam-tbank.service'))
+
+    def test_the_timer_ticks_more_often_than_the_default_interval(self):
+        """Тик реже настройки означал бы, что настройку ниже тика
+        выставить нельзя."""
+        self.assertIn('/15', self._read('lifteam-tbank.timer'))
+
+    def test_the_interval_is_editable_from_the_page(self):
+        self.assertIn('TBANK_STATEMENT_INTERVAL_MINUTES', envfile.EDITABLE_BY_NAME)
+        self.assertNotIn('TBANK_STATEMENT_INTERVAL_MINUTES', envfile.SECRET_NAMES)

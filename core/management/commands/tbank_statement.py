@@ -9,15 +9,22 @@
 
 Повторный запуск безопасен: операции опознаются по идентификатору банка,
 уже загруженные пропускаются.
+
+Частоту решает **программа**, а не расписание. Таймер только тикает раз
+в четверть часа, а тянуть ли выписку на этом тике, отвечает
+`tbank.fetch_due()` по настройке `TBANK_STATEMENT_INTERVAL_MINUTES`.
+Сделано так потому, что юнит systemd правится от root, а частоту владелец
+меняет со страницы «Настройки» — расписание в юните он бы не поправил.
+Ручной запуск промежутка не спрашивает: человек, набравший команду,
+хочет выписку сейчас.
 """
 from datetime import timedelta
 
-from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import IntegrityError
 from django.utils import timezone
 
-from core import tbank
+from core import envfile, tbank
 from core.models import BankOperation
 
 
@@ -38,6 +45,11 @@ class Command(BaseCommand):
             help='Показать расчётные счета организации и выйти — '
                  'чтобы узнать номер для TBANK_ACCOUNT',
         )
+        parser.add_argument(
+            '--scheduled', action='store_true',
+            help='Запуск по расписанию: пропустить, если с прошлой загрузки '
+                 'прошло меньше TBANK_STATEMENT_INTERVAL_MINUTES',
+        )
 
     def handle(self, *args, **options):
         if not tbank.is_configured():
@@ -48,7 +60,15 @@ class Command(BaseCommand):
             self._show_accounts()
             return
 
-        days = options['days'] or getattr(settings, 'TBANK_STATEMENT_DAYS', 30)
+        # Промежуток спрашивается только у запуска по расписанию: человек,
+        # набравший команду руками, хочет выписку сейчас, а не через час
+        if options['scheduled']:
+            due, why = tbank.fetch_due()
+            if not due:
+                self.stdout.write(why)
+                return
+
+        days = options['days'] or envfile.setting('TBANK_STATEMENT_DAYS', 30)
         date_to = timezone.localdate()
         date_from = date_to - timedelta(days=days)
 
@@ -76,6 +96,9 @@ class Command(BaseCommand):
             return
 
         added = self._store(operations)
+        # Отметка ставится **после** удачной загрузки: сорвись запрос
+        # к банку, следующий тик обязан попробовать снова, а не ждать час
+        tbank.mark_fetched()
         self.stdout.write(
             f'Выписка с {date_from} по {date_to}: операций {total}, '
             f'поступлений {len(operations)}, новых {added}.'

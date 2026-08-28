@@ -28,7 +28,10 @@ Group=lifteam
 WorkingDirectory=/opt/lifteam
 Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
 
-ExecStart=/opt/lifteam/venv/bin/python manage.py tbank_statement
+# --scheduled: спросить у программы, прошёл ли заданный промежуток.
+# Без него команда тянула бы выписку на каждом тике таймера,
+# то есть настройка частоты не значила бы ничего
+ExecStart=/opt/lifteam/venv/bin/python manage.py tbank_statement --scheduled
 
 NoNewPrivileges=true
 PrivateTmp=true

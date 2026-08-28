@@ -4312,7 +4312,7 @@ def admin_settings(request):
     manage.py setsecret. Здесь видно только «задан, столько-то знаков».
     """
     return render(request, 'core/admin/settings.html', {
-        'sections': envfile.editable_sections(),
+        'sections': envfile.editable_sections(_settings_notes()),
         'secrets': [envfile.describe_secret(name)
                     for name in envfile.SECRET_NAMES],
         'env_path': envfile.path(),
@@ -4325,6 +4325,29 @@ def admin_settings(request):
         'restart_pending': restarter.pending(),
         'history': SettingChange.objects.select_related('changed_by')[:20],
     })
+
+
+def _settings_notes():
+    """Живые приписки под полями настроек.
+
+    Без них частота загрузки выписки — число в вакууме: понять,
+    работает ли расписание вообще, можно только по журналу systemd.
+    Привязка по имени настройки, а не по названию раздела: имя —
+    опознавательный знак, а названия разделов переписывают.
+    """
+    notes = {}
+    fetched = tbank.last_fetch_at()
+    if fetched:
+        notes['TBANK_STATEMENT_INTERVAL_MINUTES'] = (
+            'Выписка последний раз загружалась %s.'
+            % timezone.localtime(fetched).strftime('%d.%m.%Y в %H:%M')
+        )
+    elif tbank.is_configured():
+        notes['TBANK_STATEMENT_INTERVAL_MINUTES'] = (
+            'Выписку ещё не тянули ни разу. Если расписание установлено, '
+            'первая загрузка случится на ближайшем тике.'
+        )
+    return notes
 
 
 @role_required('admin')

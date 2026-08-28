@@ -33,6 +33,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, time
+from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from urllib import error, parse, request
 
@@ -149,6 +150,78 @@ def _call(path, params=None, payload=None, timeout=30):
 def get_accounts(timeout=30):
     """Расчётные счета организации — чтобы узнать номер для выписки."""
     return _call(ACCOUNTS_PATH, timeout=timeout)
+
+
+# --- Отметка о последней загрузке ---------------------------------------
+#
+# Хранится файлом рядом с приложением, а не в базе. Причина простая: это
+# не данные, а состояние вот этой установки — сколько времени прошло
+# с последнего обращения к банку. В базе оно уехало бы в облачную копию
+# и после восстановления соврало бы, что выписку только что тянули.
+# Тот же приём, что у заявок на обновление и перезапуск.
+LAST_FETCH_FILE = Path(settings.BASE_DIR) / '.tbank-last-run'
+
+
+def last_fetch_at():
+    """Когда выписку тянули в последний раз. None — ни разу."""
+    try:
+        raw = LAST_FETCH_FILE.read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment)
+    return moment
+
+
+def mark_fetched(when=None):
+    """Запомнить, что выписка загружена."""
+    moment = when or timezone.now()
+    try:
+        LAST_FETCH_FILE.write_text(
+            moment.isoformat(timespec='seconds'), encoding='utf-8'
+        )
+    except OSError as exc:
+        # Не роняем загрузку: выписка-то получена. Молча тоже не оставляем —
+        # без отметки следующий тик потянет её снова
+        logger.warning('Отметку о загрузке выписки не записать: %s', exc)
+
+
+def statement_interval():
+    """Через сколько минут после прошлой загрузки тянуть снова."""
+    try:
+        return max(0, int(envfile.setting('TBANK_STATEMENT_INTERVAL_MINUTES', 60)))
+    except (TypeError, ValueError):
+        return 60
+
+
+def fetch_due(now=None):
+    """Пора ли тянуть выписку. Возвращает (пора, объяснение).
+
+    Решает **программа**, а не расписание: юнит systemd правится от root,
+    а частоту владелец меняет со страницы настроек. Поэтому таймер только
+    тикает, а этот ответ — единственное место, где решается, работать
+    на этом тике или нет.
+    """
+    interval = statement_interval()
+    if not interval:
+        return True, 'Промежуток не задан — тянем на каждом тике.'
+    previous = last_fetch_at()
+    if previous is None:
+        return True, 'Выписку ещё не тянули ни разу.'
+    now = now or timezone.now()
+    passed = (now - previous).total_seconds() / 60
+    if passed >= interval:
+        return True, 'С прошлой загрузки прошло %d мин при промежутке %d.' % (
+            passed, interval,
+        )
+    return False, (
+        'С прошлой загрузки прошло %d мин, а тянуть договорились раз '
+        'в %d. Пропускаю.' % (passed, interval)
+    )
 
 
 def account_list(payload):

@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.88.3 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.89.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -346,6 +346,13 @@ TBANK_INVOICE_VAT = os.getenv('TBANK_INVOICE_VAT', 'None')
 # повторная загрузка уже известных операций ничего не портит, а пропущенный
 # из-за суточного простоя Pi день стоил бы потерянного поступления.
 TBANK_STATEMENT_DAYS = int(os.getenv('TBANK_STATEMENT_DAYS', '30'))
+
+# Как часто тянуть выписку. Таймер systemd только тикает (раз в четверть
+# часа в рабочее время), а решает программа: расписание в юните меняется
+# от root, а эта настройка правится со страницы «Настройки».
+# 0 — на каждый тик.
+TBANK_STATEMENT_INTERVAL_MINUTES = int(
+    os.getenv('TBANK_STATEMENT_INTERVAL_MINUTES', '60'))
 
 # --- Точка Банк -----------------------------------------------------------
 #
