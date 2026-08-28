@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.91.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.92.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -228,7 +228,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 {% comment %}
                     Сложность правится здесь, рядом с неисправностями,
                     из которых она выводится: пустое значение означает
-                    не «простой», а «считай по неисправностям». До v2.91.0
+                    не «простой», а «считай по неисправностям». До v2.92.0
                     это поле правилось только в форме предложения —
                     то есть нигде, пока предложение не понадобится,
                     и цвет сложности в списке единиц не появлялся.

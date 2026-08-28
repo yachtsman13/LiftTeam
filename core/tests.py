@@ -4,6 +4,7 @@
 импорт/экспорт Excel, права доступа по ролям, маршрутизацию,
 настройку SQLite и резервное копирование.
 """
+import base64
 import datetime
 import io
 import os
@@ -44,6 +45,7 @@ from .forms import OrganizationForm, RepairOrderEquipmentForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
+from .utils import generate_qr_image
 from .forms import UnitEditForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
@@ -17657,3 +17659,80 @@ class CellLabelHiddenTopTests(TestCase):
         """Померить выступ можно только у настоящей кассетницы, значит
         число вводит владелец, а не программист."""
         self.assertIn('LABEL_CELL_HIDDEN_TOP_MM', envfile.EDITABLE_BY_NAME)
+
+
+class QrErrorCorrectionTests(SimpleTestCase):
+    """Уровень восстановления кода — самый высокий, и он ничего не стоит.
+
+    Наклейка на оборудовании живёт в машинном отделении: прибор задевают,
+    трут, ставят на него что попало. Уровень H держит около 30 %
+    повреждённой площади против 15 % у прежнего M.
+    """
+
+    # То, что кладётся в код на самом деле: вид объекта и его номер
+    # в базе (views.qr_payload). Адреса сервера здесь нет с v2.61.0
+    PAYLOADS = ('u/123', 'p/42', 'c/7', 'e/1', 'o/2')
+    # Каким код станет, когда номера дорастут до шести знаков
+    LONG_ID = 'p/123456'
+
+    def _modules(self, uri):
+        from PIL import Image
+        raw = base64.b64decode(uri.split(',', 1)[1])
+        image = Image.open(io.BytesIO(raw))
+        # box_size=6, border=1 с каждой стороны
+        return image.size[0] // 6 - 2
+
+    def test_the_level_is_the_highest_one(self):
+        import qrcode
+        source = (Path(__file__).resolve().parent / 'utils.py').read_text(encoding='utf-8')
+
+        self.assertIn('ERROR_CORRECT_H', source)
+        self.assertNotIn('ERROR_CORRECT_M', source)
+        self.assertTrue(hasattr(qrcode.constants, 'ERROR_CORRECT_H'))
+
+    def test_it_costs_nothing_on_our_short_payloads(self):
+        """Ради этого с v2.61.0 в коде и нет адреса сервера: содержимое
+        короткое, и самый высокий уровень умещается в тот же 21 модуль."""
+        for payload in self.PAYLOADS:
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    self._modules(generate_qr_image(payload)), 21
+                )
+
+    def test_six_digit_numbers_still_print_comfortably(self):
+        """Самый высокий уровень держит семь знаков в 21 модуле; на восьми
+        код вырастает до 25. Это не беда: на 12,3 мм при 203 точках на дюйм
+        выходит 98 точек, то есть 3,6 точки на модуль вместе с полем —
+        столько же, сколько на этикетке заказа, которая печатается годами.
+        Проверка стоит здесь, чтобы рост не оказался неожиданностью,
+        когда номера дорастут."""
+        self.assertLessEqual(self._modules(generate_qr_image(self.LONG_ID)), 25)
+
+    def test_a_full_url_would_no_longer_fit(self):
+        """Проверка на будущее: верни кто-нибудь адрес сервера в код —
+        и он вырастет с 21 модуля до 37, то есть перестанет читаться
+        на 12,3 мм. Это не запрет, а предупреждение в виде теста."""
+        long_payload = 'http://lifteam.taile9b605.ts.net/u/123'
+
+        self.assertGreater(self._modules(generate_qr_image(long_payload)), 21)
+
+
+class EquipmentLabelSerialTests(TestCase):
+    """Серийный номер на этикетке оборудования — запасной путь к прибору.
+
+    Если код повреждён, единицу находят в программе поиском по этому
+    номеру, а прочитать его надо глазами.
+    """
+
+    def test_the_serial_is_set_as_large_as_the_model(self):
+        styles = render_to_string(
+            'core/repair_orders/_label_order_equipment_styles.html'
+        )
+        serial = styles.split('.label-serial {')[1].split('}')[0]
+        model = styles.split('.label-model {')[1].split('}')[0]
+
+        self.assertIn('font-weight: bold', serial)
+        self.assertEqual(
+            serial.split('font-size:')[1].split(';')[0].strip(),
+            model.split('font-size:')[1].split(';')[0].strip(),
+        )
