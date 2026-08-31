@@ -1696,7 +1696,6 @@ def repair_order_change_status(request, pk):
     form = StatusChangeForm(request.POST)
     if form.is_valid():
         new_status = form.cleaned_data['new_status']
-        notes = form.cleaned_data.get('notes', '')
         old_status = order.status
 
         if old_status == new_status:
@@ -1714,12 +1713,14 @@ def repair_order_change_status(request, pk):
                 order.shipping_date = None
         order.save()
 
-        # Создаём новую запись истории (а не обновляем старую)
+        # Создаём новую запись истории (а не обновляем старую). Текст
+        # подставляет программа — своего примечания у мастера здесь
+        # больше не спрашивают (v2.94.0)
         OrderStatusHistory.objects.create(
             order=order,
             status=new_status,
             changed_by=request.user,
-            notes=notes or f'Статус изменён с "{dict(RepairOrder.STATUS_CHOICES).get(old_status)}"'
+            notes=f'Статус изменён с "{dict(RepairOrder.STATUS_CHOICES).get(old_status)}"'
         )
 
         # Оповещение заказчику — в очередь, не отправкой на месте: SMTP через

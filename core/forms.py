@@ -1337,14 +1337,18 @@ class MyNotificationsForm(forms.ModelForm):
 
 
 class StatusChangeForm(forms.Form):
+    """Смена статуса заказа — на месте, выпадающим списком (с v2.94.0).
+
+    Поля «Примечание к переходу» здесь больше нет: в истории статуса
+    запись остаётся всегда, но текст для неё программа подставляет сама
+    («Статус изменён с "…"») — спрашивать его у мастера при каждом клике
+    было лишним полем ради записи, которую почти никто не заполнял.
+    """
+
     new_status = forms.ChoiceField(
         choices=RepairOrder.STATUS_CHOICES,
-        widget=forms.Select(attrs={'class': 'form-select'}),
-        label='Новый статус'
-    )
-    notes = forms.CharField(
-        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
-        label='Примечания', required=False
+        widget=forms.Select(attrs={'class': 'form-select form-select-sm'}),
+        label='Статус'
     )
 
 

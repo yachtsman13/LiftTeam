@@ -41,7 +41,7 @@ from . import (
     envfile, invoicing, messengers, net, notifications, restarter, scanning,
     selfcheck, tbank, tochka, views, webhooks, yadisk,
 )
-from .forms import OrganizationForm, RepairOrderEquipmentForm
+from .forms import OrganizationForm, RepairOrderEquipmentForm, StatusChangeForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
@@ -14889,6 +14889,90 @@ class StatusControlPlacementTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.order.status, 'repair')
+
+
+class OrderCardStage2Tests(TestCase):
+    """Этап 2 крупной переработки (v2.94.0): карточка заказа.
+
+    Два столбца вместо общей сетки вперемешку, статус/заказчик/оплата
+    правятся выпадающим списком на месте, «Готовность» и «Действия»
+    в списке единиц слиты в один столбец.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='stage2_card', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+        self.client_obj = ClientModel.objects.create(name='ООО «Столбцы»')
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.equipment = Equipment.objects.create(model=self.model, serial_number='SN-ST2-1')
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=self.equipment,
+        )
+
+    def _html(self):
+        return self.http.get(
+            reverse('repair_order_detail', args=[self.order.pk])
+        ).content.decode()
+
+    def test_the_note_field_is_gone_from_the_status_form(self):
+        """Убрано из самой формы, а не только спрятано в шаблоне: история
+        статуса по-прежнему пишет свою запись, но своей текста для неё
+        у мастера больше не спрашивают."""
+        self.assertNotIn('notes', StatusChangeForm().fields)
+        self.assertNotIn('Примечание к переходу', self._html())
+
+    def test_the_standalone_payment_status_card_is_gone(self):
+        """Второе место для одного и того же поля — то, что чинили на этом
+        этапе: правится статус оплаты теперь только в карточке сверху,
+        отдельной карточки внизу страницы больше нет."""
+        html = self._html()
+        self.assertNotIn('Изменить статус оплаты', html)
+        self.assertIn(
+            reverse('repair_order_change_payment_status', args=[self.order.pk]), html
+        )
+
+    def test_left_column_is_client_and_money_right_is_dates_and_status(self):
+        html = self._html()
+        card = html.split('Информация о заказе')[1].split('Оборудование в заказе')[0]
+        self.assertLess(card.index('Заказчик'), card.index('Дата приёма'))
+        self.assertLess(card.index('Оплата'), card.index('Статус'))
+        self.assertLess(card.index('Общая стоимость'), card.index('Счёт'))
+
+    def test_readiness_and_actions_share_one_column(self):
+        html = self._html()
+        self.assertIn('Готовность / Действия', html)
+        self.assertNotIn('<th>Готовность</th>', html)
+
+    def test_a_finished_check_colors_its_button_green(self):
+        self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.save()
+
+        row = self._html().split('unit-%d' % self.roe.pk)[1].split('</tr>')[0]
+        self.assertIn('btn-outline-success', row)
+
+    def test_an_unfinished_check_keeps_the_button_plain(self):
+        row = self._html().split('unit-%d' % self.roe.pk)[1].split('</tr>')[0]
+        self.assertNotIn('btn-outline-success', row)
+
+    def test_a_pending_planned_part_colors_the_parts_button(self):
+        part = SparePart.objects.create(part_number='ST2-1', name='Деталь', current_stock=5)
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=1, is_planned=True,
+        )
+
+        self.assertTrue(self.roe.has_pending_planned_parts)
+        row = self._html().split('unit-%d' % self.roe.pk)[1].split('</tr>')[0]
+        self.assertIn('btn-outline-warning', row)
+
+    def test_no_pending_planned_parts_means_no_warning_button(self):
+        self.assertFalse(self.roe.has_pending_planned_parts)
+        row = self._html().split('unit-%d' % self.roe.pk)[1].split('</tr>')[0]
+        self.assertNotIn('btn-outline-warning', row)
 
 
 # ============ БЫСТРЫЕ ДЕЙСТВИЯ ПО ЕДИНИЦЕ (v2.78.0) ============

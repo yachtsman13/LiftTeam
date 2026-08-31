@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.93.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.94.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -106,96 +106,105 @@ document.addEventListener('DOMContentLoaded', function () {
                 <h5 class="mb-0">Информация о заказе</h5>
             </div>
             <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-md-6"><strong>Заказчик:</strong> {{ order.client.name }}</div>
-                    <div class="col-md-6"><strong>Статус:</strong> <span class="status-badge bg-{% if order.status == 'accepted' %}info{% elif order.status == 'diagnostic' %}warning{% elif order.status == 'repair' %}primary{% elif order.status == 'ready_for_shipment' %}success{% elif order.status == 'unrepairable' %}dark{% else %}secondary{% endif %}">{{ order.get_status_display }}</span></div>
-                    <div class="col-md-6"><strong>Оплата:</strong> <span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></div>
-                    <div class="col-md-6"><strong>Общая стоимость:</strong> {{ order.total_repair_cost }} ₽</div>
-                    {% if order.paid_amount %}
-                    <div class="col-md-6"><strong>Оплачено:</strong> {{ order.paid_amount }} ₽</div>
-                    <div class="col-md-6"><strong>Остаток:</strong>
-                        <span class="fw-bold {% if order.debt %}text-danger{% else %}text-success{% endif %}">{{ order.debt }} ₽</span>
-                    </div>
-                    {% endif %}
-                    {% comment %}
-                        Отметка банка об оплате счёта. Это не оплата: суммы
-                        в уведомлении банка нет, поэтому поступление вносит
-                        бухгалтер по выписке. Без этой оговорки строка
-                        читалась бы как «деньги пришли и учтены».
-                    {% endcomment %}
-                    {% if order.invoice_paid_at %}
-                    <div class="col-md-12">
-                        <strong>Банк сообщил об оплате счёта:</strong>
-                        {{ order.invoice_paid_at|date:"d.m.Y H:i" }}
-                        <div class="text-muted small">Поступление вносит бухгалтер по выписке — эта отметка сумму не меняет.</div>
-                    </div>
-                    {% endif %}
-                    <div class="col-md-6"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>
-                    {% comment %}
-                        Строки «Начальное состояние» здесь больше нет
-                        (с v2.93.0): поле живёт у единицы, а не у заказа
-                        (`RepairOrderEquipment.initial_condition`), и это
-                        место обращалось к несуществующему полю заказа —
-                        всегда показывало «—», сколько бы ни заполнили
-                        на странице единицы. Настоящее значение — там же.
-                    {% endcomment %}
-                </div>
-
                 {% comment %}
-                    Смена статуса — здесь же, рядом со значком статуса,
-                    а не отдельной карточкой внизу страницы. Раньше значок
-                    был вверху, а форма под деталями и платежами, и на
-                    телефоне это была долгая прокрутка туда и обратно
-                    по нескольку раз в день.
+                    Два столбца, а не общая сетка вперемешку (с v2.94.0):
+                    слева то, что относится к заказчику и деньгам, справа —
+                    к ходу самого ремонта. Статус, заказчик и оплата
+                    правятся прямо здесь, выпадающим списком — отдельных
+                    страниц-переходов под них больше нет, и карточка
+                    «Изменить статус оплаты» внизу страницы пропала: это
+                    было второе место для одного и того же поля.
                 {% endcomment %}
-                <hr>
-                <form method="post" action="{% url 'repair_order_change_status' order.pk %}">
-                    {% csrf_token %}
-                    <div class="row g-2 align-items-center">
-                        <div class="col-md-4">
-                            <label class="form-label small mb-1">Новый статус ремонта</label>
-                            {{ status_form.new_status }}
-                        </div>
-                        <div class="col-md-5">
-                            <label class="form-label small mb-1">Примечание к переходу</label>
-                            {{ status_form.notes }}
-                        </div>
-                        <div class="col-md-3 align-self-end">
-                            <button type="submit" class="btn btn-warning w-100">
-                                <i class="bi bi-arrow-repeat me-2"></i>Изменить статус
-                            </button>
-                        </div>
-                    </div>
-                </form>
-
-                {% comment %}
-                    Заказчик — единственное, что относится к заказу
-                    целиком, а не к прибору. Отдельная форма,
-                    а не общая со статусом: смена статуса пишет историю
-                    и шлёт оповещение заказчику, и складывать её
-                    с правкой полей нельзя.
-
-                    Номера счёта и статуса оплаты здесь нет намеренно:
-                    счёт заполняется при выставлении на своей странице,
-                    статус оплаты правится своей формой ниже
-                    и пересчитывается сам после платежа.
-                {% endcomment %}
-                <hr>
-                <form method="post" action="{% url 'repair_order_edit_info' order.pk %}">
-                    {% csrf_token %}
-                    <div class="row g-2">
-                        <div class="col-md-8">
-                            <label class="form-label small mb-1">{{ info_form.client.label }}</label>
-                            {{ info_form.client }}
+                <div class="row g-4">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label small mb-1 text-muted">Заказчик</label>
+                            <form method="post" action="{% url 'repair_order_edit_info' order.pk %}" class="d-flex gap-2">
+                                {% csrf_token %}
+                                {{ info_form.client }}
+                                <button type="submit" class="btn btn-outline-primary btn-sm flex-shrink-0" title="Сохранить заказчика">
+                                    <i class="bi bi-check-lg"></i>
+                                </button>
+                            </form>
                             {% if info_form.client.errors %}<div class="text-danger small">{{ info_form.client.errors.0 }}</div>{% endif %}
                         </div>
-                        <div class="col-md-4 align-self-end">
-                            <button type="submit" class="btn btn-outline-primary w-100">
-                                <i class="bi bi-check-lg me-2"></i>Сохранить заказчика
-                            </button>
+
+                        <div class="mb-3">
+                            <label class="form-label small mb-1 text-muted">Оплата</label>
+                            {% if user.role == 'accountant' or user.role == 'admin' %}
+                            <form method="post" action="{% url 'repair_order_change_payment_status' order.pk %}" class="d-flex gap-2">
+                                {% csrf_token %}
+                                <select name="payment_status" class="form-select form-select-sm">
+                                    {% for value, label in order.PAYMENT_STATUS_CHOICES %}
+                                    <option value="{{ value }}" {% if order.payment_status == value %}selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" class="btn btn-outline-primary btn-sm flex-shrink-0" title="Сохранить статус оплаты">
+                                    <i class="bi bi-check-lg"></i>
+                                </button>
+                            </form>
+                            {% else %}
+                            <div><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></div>
+                            {% endif %}
+                            {% if order.paid_amount %}
+                            <div class="small text-muted mt-1">
+                                Внесено {{ order.paid_amount }} ₽{% if order.debt %}, остаток
+                                <span class="fw-bold text-danger">{{ order.debt }} ₽</span>{% endif %}
+                            </div>
+                            {% endif %}
                         </div>
+
+                        <div><strong>Общая стоимость:</strong> {{ order.total_repair_cost }} ₽</div>
                     </div>
-                </form>
+
+                    <div class="col-md-6">
+                        <div class="mb-3"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>
+
+                        <div class="mb-3">
+                            <label class="form-label small mb-1 text-muted">Статус</label>
+                            <form method="post" action="{% url 'repair_order_change_status' order.pk %}" class="d-flex gap-2">
+                                {% csrf_token %}
+                                {{ status_form.new_status }}
+                                <button type="submit" class="btn btn-outline-primary btn-sm flex-shrink-0" title="Сохранить статус">
+                                    <i class="bi bi-check-lg"></i>
+                                </button>
+                            </form>
+                        </div>
+
+                        <div>
+                            <strong>Счёт:</strong>
+                            {% if order.invoice_sent_at %}
+                            выставлен {{ order.invoice_sent_at|date:"d.m.Y" }}
+                            {% else %}
+                            <span class="text-muted">не выставлен</span>
+                            {% endif %}
+                            {% comment %}
+                                Отметка банка об оплате счёта — не привязана
+                                к invoice_sent_at: банк присылает её по своему
+                                уведомлению, а когда именно программа узнала
+                                о выставлении счёта, это не определяет. Это
+                                не оплата: суммы в уведомлении банка нет,
+                                поэтому поступление вносит бухгалтер
+                                по выписке. Без этой оговорки строка читалась
+                                бы как «деньги пришли и учтены».
+                            {% endcomment %}
+                            {% if order.invoice_paid_at %}
+                            <div class="text-success small">
+                                Банк сообщил об оплате счёта: {{ order.invoice_paid_at|date:"d.m.Y H:i" }}
+                                — поступление вносит бухгалтер по выписке.
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% comment %}
+                            Строки «Начальное состояние» здесь больше нет
+                            (с v2.94.0): поле живёт у единицы, а не у заказа
+                            (`RepairOrderEquipment.initial_condition`), и это
+                            место обращалось к несуществующему полю заказа —
+                            всегда показывало «—», сколько бы ни заполнили
+                            на странице единицы. Настоящее значение — там же.
+                        {% endcomment %}
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -236,7 +245,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <input type="checkbox" class="form-check-input" id="equipmentCheckAll"
                                        title="Отметить всё" aria-label="Отметить всё оборудование">
                             </th>
-                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Стоимость</th><th>Готовность</th><th class="text-end">Действия</th>
+                            <th>№</th><th>Модель</th><th>Серийный номер</th><th>Неисправность</th><th>Выполнено</th><th>Стоимость</th><th class="text-end">Готовность / Действия</th>
                         </tr></thead>
                         <tbody>
                             {% for oe in order_equipments %}
@@ -311,29 +320,30 @@ document.addEventListener('DOMContentLoaded', function () {
                                     {% endwith %}
                                 </td>
                                 {% comment %}
-                                    Отметка короткая: что именно осталось,
-                                    перечислено ниже отдельной карточкой —
-                                    в строку это не влезает, а прятать
-                                    под раскрывашку нельзя, её рисует
-                                    Bootstrap.
+                                    Готовность и действия — один столбец
+                                    (с v2.94.0): раньше отметка стояла
+                                    отдельно от кнопок, которые её и закрывают,
+                                    и на телефоне это были две карточки
+                                    подряд про одно и то же. Что именно
+                                    осталось, перечислено ниже отдельной
+                                    карточкой — в строку это не влезает,
+                                    а прятать под раскрывашку нельзя, её
+                                    рисует Bootstrap.
+
+                                    Цвет кнопок несёт то же, что раньше
+                                    несла отдельная отметка: серая —
+                                    не сделано, зелёная — сделано. Слово
+                                    берётся из `readiness_label`, а не
+                                    вписано здесь: вписанное отдельно
+                                    разъезжается с ним при первой же правке.
                                 {% endcomment %}
-                                <td data-label="Готовность">
+                                <td class="text-end col-actions">
                                     {% if oe.is_ready %}
-                                    {% comment %}
-                                        Слово берётся из `readiness_label`
-                                        и здесь тоже: вписанное отдельно,
-                                        оно разъезжается с ним при первой же
-                                        правке — так и вышло с «Готова»,
-                                        которое согласовано с «единицей»,
-                                        а читается про прибор.
-                                    {% endcomment %}
                                     <span class="badge bg-success">{{ oe.readiness_label }}</span>
                                     {% else %}
                                     <a href="#readiness" class="badge bg-warning text-dark text-decoration-none"
                                        title="Что осталось — в чек-листе ниже">{{ oe.readiness_label }}</a>
                                     {% endif %}
-                                </td>
-                                <td class="text-end col-actions">
                                     {% comment %}
                                         Кнопки «страница единицы» здесь нет
                                         намеренно: на страницу ведёт вся
@@ -345,8 +355,12 @@ document.addEventListener('DOMContentLoaded', function () {
                                         единицы прямо к форме ремонта:
                                         до этого работы правились только
                                         через редактирование всего заказа.
+                                        Цвет — по тому же условию, что
+                                        и у пункта готовности «work».
                                     {% endcomment %}
-                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#repair" class="btn btn-sm btn-outline-primary" title="Записать выполненные работы и пломбы"><i class="bi bi-pencil-square"></i></a>
+                                    <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#repair"
+                                       class="btn btn-sm {% if oe.work_performed %}btn-outline-success{% else %}btn-outline-primary{% endif %}"
+                                       title="Записать выполненные работы и пломбы"><i class="bi bi-pencil-square"></i></a>
                                     {% comment %}
                                         «Списать деталь» ведёт на страницу
                                         единицы, к её деталям: там единицу
@@ -354,9 +368,14 @@ document.addEventListener('DOMContentLoaded', function () {
                                         Форма ниже на этой странице
                                         осталась для того, что к прибору
                                         не привязано, — «на заказ целиком».
+                                        Цвет — по тому же условию, что
+                                        и у пункта готовности «planned_parts»:
+                                        жёлтая, пока есть запланированная
+                                        и не списанная деталь.
                                     {% endcomment %}
                                     <a href="{% url 'repair_order_unit_detail' order.pk oe.pk %}#parts"
-                                       class="btn btn-sm btn-outline-warning" title="Детали этой единицы"><i class="bi bi-cpu"></i></a>
+                                       class="btn btn-sm {% if oe.has_pending_planned_parts %}btn-outline-warning{% else %}btn-outline-secondary{% endif %}"
+                                       title="Детали этой единицы"><i class="bi bi-cpu"></i></a>
                                     {% comment %}
                                         Пока дефектации нет — ведём на заполнение,
                                         потом на сам акт: печатать пустой бланк
@@ -384,7 +403,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="9" class="text-center text-muted">Оборудование не добавлено</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted">Оборудование не добавлено</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -827,33 +846,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     </div>
                 </form>
                 {% endif %}
-            </div>
-        </div>
-
-        <!-- Payment Status Change -->
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-credit-card me-2"></i>Изменить статус оплаты</h5>
-            </div>
-            <div class="card-body">
-                <form method="post" action="{% url 'repair_order_change_payment_status' order.pk %}">
-                    {% csrf_token %}
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <select name="payment_status" class="form-select">
-                                {% for value, label in order.PAYMENT_STATUS_CHOICES %}
-                                <option value="{{ value }}" {% if order.payment_status == value %}selected{% endif %}>{{ label }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        <div class="col-md-5">
-                            <input type="text" name="notes" class="form-control" placeholder="Примечание">
-                        </div>
-                        <div class="col-md-3">
-                            <button type="submit" class="btn btn-info w-100"><i class="bi bi-check-lg me-2"></i>Изменить</button>
-                        </div>
-                    </div>
-                </form>
             </div>
         </div>
     </div>
