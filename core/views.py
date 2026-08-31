@@ -46,10 +46,11 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
-    TechCardForm, TechCardStepFormSet, UnitEditForm, UnitDiskFolderForm, OrderInfoForm,
+    TechCardForm, TechCardStepFormSet, UnitDiagnosisForm, UnitRepairForm,
+    UnitDiskFolderForm, OrderInfoForm,
     RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
-    DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
+    InvoiceSendForm, QuoteForm, QuoteLineFormSet,
     CabinetForm, MyNotificationsForm, FaultTypeForm, FaultTypePartFormSet,
     make_fault_type_part_formset,
 )
@@ -4625,8 +4626,9 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
     с прибора, ссылку на страницу можно дать в переписке и открыть
     в соседней вкладке. Всё это окно не умеет.
 
-    Пока только показывает и уводит к правке в те места, где она уже
-    есть: быстрые действия и правка полей прямо здесь — следующий этап.
+    С v2.95.0 здесь же и дефектация: своей страницы у неё больше нет.
+    Мастер с платой в руках заполнял диагноз на одном экране, работы
+    на другом, а список того, что осталось, читал на третьем.
     """
     order_equipment = _order_equipment(order_pk, roe_pk)
     order = order_equipment.repair_order
@@ -4643,14 +4645,25 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
     # исключён, иначе он сам попадал бы в «повторное обращение»
     previous = Equipment.warranty_map([equipment], exclude_order_id=order.pk)
 
+    # Цена по прайсу — предложение, а не подстановка: мастер видит её рядом
+    # с полем оценки и решает сам. Молча вписывать нельзя — он подписывает
+    # акт. Переехало сюда вместе с самой дефектацией
+    line = order_equipment.price_list_line
+
     return render(request, 'core/repair_orders/unit_detail.html', {
         'order': order,
         'order_equipment': order_equipment,
-        'form': UnitEditForm(instance=order_equipment),
+        # Раздел правится своей формой и своей кнопкой: сохранение одного
+        # раздела не должно трогать поля другого — прибор в работе бывает
+        # у двоих сразу
+        'diagnosis_form': UnitDiagnosisForm(instance=order_equipment),
+        'repair_form': UnitRepairForm(instance=order_equipment),
         'equipment': equipment,
         'position': position,
         'previous_warranty': previous.get(equipment.pk),
         'faults': order_equipment.faults.all(),
+        'price_line': line,
+        'price_source': str(line.price_list) if line else '',
         # Детали, списанные именно на эту единицу. Списанные «на заказ
         # целиком» сюда не попадают намеренно: программа не знает,
         # в какую железку они ушли, и приписывать их наугад нельзя
@@ -4692,77 +4705,72 @@ def repair_order_unit_remove(request, order_pk, roe_pk):
     })
 
 
+# Разделы страницы единицы и формы, которыми они правятся (с v2.95.0).
+# Имя раздела приходит в запросе, и незнакомое не принимается: без этого
+# списка подсунутое имя означало бы «сохрани неизвестно что».
+UNIT_SECTION_FORMS = {
+    'diagnosis': UnitDiagnosisForm,
+    'repair': UnitRepairForm,
+}
+
+
 @login_required
 @require_POST
 def repair_order_unit_edit(request, order_pk, roe_pk):
-    """Сохранить правку единицы со страницы этой единицы.
+    """Сохранить один раздел страницы единицы.
 
     Только POST: страница показывается своим представлением, а сюда
-    приходит одна форма — та, что на ней стоит. Возвращаемся туда же,
-    к тому месту, которое правили: мастер записывает работы по одному
-    прибору и берётся за следующий, а не уходит в заказ целиком.
+    приходит форма того раздела, который правили. Возвращаемся туда же,
+    к нему: мастер записывает работы по одному прибору и берётся
+    за следующий, а не уходит в заказ целиком.
+
+    Раздел приходит полем `section`. Сохраняется **только он**: одна
+    форма на всю страницу означала бы, что открывший её утром и
+    сохранивший вечером затирает всё, что за день вписал сосед.
     """
     order_equipment = _order_equipment(order_pk, roe_pk)
-    form = UnitEditForm(request.POST, instance=order_equipment)
-    anchor = request.POST.get('anchor', '')
+    section = request.POST.get('section', '')
+    form_class = UNIT_SECTION_FORMS.get(section)
+    if form_class is None:
+        messages.error(request, 'Не сохранено: неизвестный раздел страницы')
+        return redirect('repair_order_unit_detail',
+                        order_pk=order_pk, roe_pk=roe_pk)
 
+    form = form_class(request.POST, instance=order_equipment)
     if form.is_valid():
-        form.save()
+        saved = form.save()
+        if section == 'diagnosis':
+            # Дата акта — день первой записи, а не день печати: пустая
+            # означала «печатай сегодняшнее число», и акт, заполненный
+            # в понедельник, к среде становился средой. Цену прайса
+            # запоминаем тогда же — только здесь известно, от чего мастер
+            # отступил, договариваясь с заказчиком
+            saved.stamp_defect_act_date()
+            saved.freeze_list_price()
         messages.success(request, 'Записано')
     else:
         messages.error(request, 'Не сохранено: проверьте отмеченные поля')
 
     url = reverse('repair_order_unit_detail', args=[order_pk, roe_pk])
-    return redirect(f'{url}#{anchor}' if anchor else url)
+    return redirect(f'{url}#{section}' if section else url)
 
 
 @login_required
 def repair_order_defect_act_edit(request, order_pk, roe_pk):
-    """Заполнение акта дефектации по одной единице оборудования."""
+    """Бывшая страница дефектации — теперь указатель на её место.
+
+    С v2.95.0 дефектацию заполняют в разделе «Приём и диагностика»
+    на странице самой единицы: своей страницы у неё больше нет. Адрес
+    оставлен переадресацией, а не убран совсем, — на него ведут закладки
+    в браузерах мастеров и ссылки, разосланные в переписке; 404 на них
+    выглядел бы как пропавшая дефектация.
+
+    Это не второе место правки, а вывеска: своей формы здесь нет.
+    """
     order_equipment = _order_equipment(order_pk, roe_pk)
-    if request.method == 'POST':
-        form = DefectActForm(request.POST, instance=order_equipment)
-        if form.is_valid():
-            saved = form.save()
-            # Цену прайса запоминаем здесь: назначают её на этой странице,
-            # и только тут известно, от чего мастер отступил. Уже
-            # замороженную не переписываем.
-            # Дата акта — день первой записи, а не день печати. Пустая
-            # дата означала «печатай сегодняшнее число», и акт, заполненный
-            # в понедельник, к среде становился средой
-            saved.stamp_defect_act_date()
-            saved.freeze_list_price()
-            messages.success(request, 'Акт дефектации сохранён')
-            # Возвращаемся на ту же страницу, а не на печатный акт.
-            # Раньше сохранение уводило на документ, и чтобы поправить одну
-            # строку диагноза, приходилось уходить на акт и возвращаться
-            # назад. Документ открывается своей кнопкой, когда он нужен.
-            return redirect('repair_order_defect_act_edit',
-                            order_pk=order_pk, roe_pk=roe_pk)
-        messages.error(request, 'Акт не сохранён: проверьте отмеченные поля')
-    else:
-        form = DefectActForm(instance=order_equipment)
-    # Цена по прайсу — предложение, а не подстановка: мастер видит её рядом
-    # с полем и решает сам. Молча вписывать нельзя — он подписывает акт.
-    line = order_equipment.price_list_line
-    # Материалы модели — рядом, а не «где-то на Диске»: мастер сидит
-    # с прибором и актом, и схему он ищет ровно в эту минуту. Отбор идёт
-    # по исполнению единицы: у неё бывает своя схема
-    equipment = order_equipment.equipment
-    return render(request, 'core/repair_orders/defect_act_form.html', {
-        'form': form,
-        'order': order_equipment.repair_order,
-        'order_equipment': order_equipment,
-        'price_line': line,
-        'price_source': str(line.price_list) if line else '',
-        'materials': equipment.model.materials_for(equipment.version),
-        # Карты модели целиком, а не только по выбранным неисправностям:
-        # на дефектации их ещё выбирают, а «как разобрать корпус» нужна
-        # раньше любого выбора. Исполнение передаётся в ссылку, чтобы
-        # карта открылась сразу со своими шагами
-        'tech_cards': equipment.model.tech_cards.select_related('fault_type'),
-        'version_id': equipment.version_id or '',
-    })
+    url = reverse('repair_order_unit_detail',
+                  args=[order_equipment.repair_order_id, order_equipment.pk])
+    return redirect(f'{url}#diagnosis')
 
 
 @login_required

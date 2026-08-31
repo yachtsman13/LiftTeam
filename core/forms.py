@@ -641,62 +641,6 @@ TechCardStepFormSet = inlineformset_factory(
 )
 
 
-class DefectActForm(forms.ModelForm):
-    """Данные акта дефектации — то, что нашли при диагностике.
-
-    Отдельная форма и отдельная страница: в форме заказа этих полей было бы
-    шесть штук на каждую единицу оборудования, а заполняют их один раз
-    и не тогда, когда заводят заказ.
-    """
-    class Meta:
-        model = RepairOrderEquipment
-        fields = [
-            'defect_act_date', 'diagnosis', 'error_codes',
-            'warranty_case', 'non_warranty_reason', 'estimated_cost',
-        ]
-        widgets = {
-            'defect_act_date': forms.DateInput(
-                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
-            ),
-            'diagnosis': forms.Textarea(attrs={
-                'class': 'form-control', 'rows': 3,
-                'placeholder': 'В результате диагностики устройства выявлен '
-                               'выход из строя IGBT модуля и его обвязки.',
-            }),
-            'error_codes': forms.Textarea(attrs={
-                'class': 'form-control', 'rows': 4,
-                'placeholder': '«F2340» — короткое замыкание в IGBT модуле',
-            }),
-            'warranty_case': forms.Select(attrs={'class': 'form-select'}),
-            'non_warranty_reason': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
-            'estimated_cost': forms.NumberInput(
-                attrs={'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}
-            ),
-        }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Пустой вариант ModelForm подставляет сам, но подписывает его
-        # прочерками: в акте это состояние осмысленное, а не «не выбрано».
-        self.fields['warranty_case'].choices = [
-            ('', 'Не определено') if not value else (value, label)
-            for value, label in self.fields['warranty_case'].choices
-        ]
-        # Именно self.initial, а не field.initial: у формы, связанной
-        # с объектом, значения полей берутся из initial объекта, и пустая
-        # строка оттуда перебила бы заготовку.
-        if not self.instance.non_warranty_reason:
-            self.initial['non_warranty_reason'] = DEFAULT_NON_WARRANTY_REASON
-
-    def clean(self):
-        cleaned = super().clean()
-        # Гарантийному случаю причина негарантийности не нужна, и оставленная
-        # заготовка попала бы в акт прямым противоречием самой себе.
-        if cleaned.get('warranty_case') == 'warranty':
-            cleaned['non_warranty_reason'] = ''
-        return cleaned
-
-
 class RepairOrderDetailForm(forms.ModelForm):
     """Деталь в заказе.
 
@@ -962,17 +906,31 @@ class OrderInfoForm(forms.ModelForm):
         self.fields['client'].queryset = Client.objects.order_by('name')
 
 
-class UnitEditForm(forms.ModelForm):
-    """Правка единицы прямо на её странице.
+# Страница единицы правится по разделам, и у каждого раздела своя форма
+# со своей кнопкой «Сохранить» (с v2.95.0). Раньше форм тоже было две,
+# но разрезаны они были не по разделам, а по страницам: `UnitEditForm`
+# на странице единицы и `DefectActForm` на отдельной странице дефектации.
+# Отдельной страницы больше нет — дефектацию заполняют там же, где всё
+# остальное про этот прибор, — и разрез прошёл по тому, что человек
+# делает за один заход: сначала принял и продиагностировал, потом
+# починил.
+#
+# Разделов два, а не один общий: сохранение раздела пишет только его
+# поля. Одна форма на страницу означала бы, что мастер, открывший её
+# утром и сохранивший вечером, затрёт всё, что за день вписал в неё
+# сосед, — а прибор в работе бывает у двоих.
 
-    Раньше эти поля правились только через редактирование всего заказа —
-    формой на все единицы разом. Записать выполненные работы по одному
-    прибору стоило открыть заказ целиком, найти в нём нужную строку
-    и сохранить всё вместе.
 
-    Состав нарочно узкий: то, что заполняют по ходу ремонта. Диагностика
-    со стоимостью живёт на своей странице (там рядом прайс, техкарты
-    и материалы), состав заказа — в заказе, предложение — в предложении.
+class UnitDiagnosisForm(forms.ModelForm):
+    """Приём и диагностика — один раздел страницы единицы.
+
+    Что привезли (со слов заказчика, начальное состояние) и что нашли
+    внутри (диагноз, коды ошибок, типовые неисправности, сложность,
+    гарантийный случай, оценка) — это одна работа за одним столом,
+    и разносить её по двум экранам было незачем.
+
+    Сюда же переехали поля бывшего акта дефектации: акт печатает то,
+    что записано здесь, а не то, что заполняют где-то отдельно.
     """
 
     class Meta:
@@ -981,27 +939,39 @@ class UnitEditForm(forms.ModelForm):
         # «завести папку» в карточке «Документы и папка», а не поле в этой
         # форме. Ручной ввод — своей маленькой формой там же (UnitDiskFolderForm)
         fields = [
-            'fault_description', 'initial_condition', 'faults',
-            'repair_complexity', 'work_performed', 'seal_numbers',
-            'repair_cost',
+            'fault_description', 'initial_condition',
+            'defect_act_date', 'diagnosis', 'error_codes', 'faults',
+            'repair_complexity', 'warranty_case', 'non_warranty_reason',
+            'estimated_cost',
         ]
         widgets = {
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
             'initial_condition': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'defect_act_date': forms.DateInput(
+                attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
+            ),
+            'diagnosis': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 3,
+                'placeholder': 'В результате диагностики устройства выявлен '
+                               'выход из строя IGBT модуля и его обвязки.',
+            }),
+            'error_codes': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 4,
+                'placeholder': '«F2340» — короткое замыкание в IGBT модуле',
+            }),
             'faults': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 6}),
             'repair_complexity': forms.Select(attrs={'class': 'form-select'}),
-            'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
-            'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
-            'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+            'warranty_case': forms.Select(attrs={'class': 'form-select'}),
+            'non_warranty_reason': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'estimated_cost': forms.NumberInput(
+                attrs={'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}
+            ),
         }
         labels = {
             'fault_description': 'Со слов заказчика',
             'initial_condition': 'Начальное состояние',
             'faults': 'Типовые неисправности',
             'repair_complexity': 'Сложность ремонта',
-            'work_performed': 'Выполненные работы',
-            'seal_numbers': 'Номера пломб',
-            'repair_cost': 'Стоимость ремонта, ₽',
         }
 
     def __init__(self, *args, **kwargs):
@@ -1028,6 +998,49 @@ class UnitEditForm(forms.ModelForm):
             'Оставьте «по неисправностям» — сложен хотя бы один вид поломки, '
             'сложен весь ремонт. Здесь это правило перебивается вручную.'
         )
+        # Пустой вариант ModelForm подставляет сам, но подписывает его
+        # прочерками: в акте это состояние осмысленное, а не «не выбрано».
+        self.fields['warranty_case'].choices = [
+            ('', 'Не определено') if not value else (value, label)
+            for value, label in self.fields['warranty_case'].choices
+        ]
+        # Именно self.initial, а не field.initial: у формы, связанной
+        # с объектом, значения полей берутся из initial объекта, и пустая
+        # строка оттуда перебила бы заготовку.
+        if not self.instance.non_warranty_reason:
+            self.initial['non_warranty_reason'] = DEFAULT_NON_WARRANTY_REASON
+
+    def clean(self):
+        cleaned = super().clean()
+        # Гарантийному случаю причина негарантийности не нужна, и оставленная
+        # заготовка попала бы в акт прямым противоречием самой себе.
+        if cleaned.get('warranty_case') == 'warranty':
+            cleaned['non_warranty_reason'] = ''
+        return cleaned
+
+
+class UnitRepairForm(forms.ModelForm):
+    """Ремонт — второй раздел страницы единицы: что сделали, какие пломбы
+    поставили и во что это обошлось заказчику.
+
+    Стоимость здесь **фактическая**, а не оценка из диагностики: по ней
+    считается сумма заказа и выставляется счёт. Оценку согласуют
+    до ремонта, и живёт она в разделе диагностики, рядом с прайсом.
+    """
+
+    class Meta:
+        model = RepairOrderEquipment
+        fields = ['work_performed', 'seal_numbers', 'repair_cost']
+        widgets = {
+            'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
+            'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+        }
+        labels = {
+            'work_performed': 'Выполненные работы',
+            'seal_numbers': 'Номера пломб',
+            'repair_cost': 'Стоимость ремонта, ₽',
+        }
 
 
 class UnitDiskFolderForm(forms.Form):

@@ -46,7 +46,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .images import MAX_UPLOAD_BYTES
 from .utils import generate_qr_image
-from .forms import UnitEditForm
+from .forms import UnitDiagnosisForm, UnitRepairForm
 from .models import (
     BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
@@ -196,14 +196,16 @@ class RepairOrderFormErrorTests(TestCase):
 
     def _post_unit(self, order, oe, **overrides):
         """Поля прибора правятся на его странице: страницы правки заказа
-        больше нет, её работу забрали карточка заказа и страница единицы."""
+        больше нет, её работу забрали карточка заказа и страница единицы.
+
+        С v2.95.0 страница правится по разделам, и запрос называет свой:
+        сохраняется только он.
+        """
         data = {
-            'fault_description': '',
-            'initial_condition': '',
+            'section': 'repair',
             'work_performed': '',
             'seal_numbers': '',
             'repair_cost': '',
-            'yandex_disk_folder': '',
         }
         data.update(overrides)
         return self.client_http.post(
@@ -260,9 +262,9 @@ class RepairOrderIntakeFormTests(TestCase):
     и в каком он виде приехал. Счёта, оплаты, диагноза, стоимости,
     выполненных работ и номеров пломб в этот момент не существует —
     счёт выставляют после согласования, пломбы ставят при выдаче.
-    Ни одно поле при этом не потеряно: у каждого своё место —
-    диагноз и оценка на странице дефектации, работы, пломбы
-    и стоимость на странице единицы, счёт при его выставлении.
+    Ни одно поле при этом не потеряно: у каждого своё место — диагноз
+    и оценка в разделе диагностики на странице единицы, работы, пломбы
+    и стоимость в разделе ремонта там же, счёт при его выставлении.
     """
 
     INTAKE_ONLY = ['invoice_number', 'invoice_date', 'payment_status']
@@ -316,8 +318,12 @@ class RepairOrderIntakeFormTests(TestCase):
             repair_order=order, equipment=self.equipment
         )
 
-        # Поля прибора — на его странице
-        unit_fields = list(UnitEditForm(instance=roe).fields)
+        # Поля прибора — на его странице, в разделах: приём с диагностикой
+        # и ремонт. Разделов два, формы две, но страница одна
+        unit_fields = [
+            *UnitDiagnosisForm(instance=roe).fields,
+            *UnitRepairForm(instance=roe).fields,
+        ]
         for name in self.LATER_PER_UNIT:
             with self.subTest(field=name):
                 self.assertIn(name, unit_fields)
@@ -3531,10 +3537,21 @@ class DefectActTests(TestCase):
         return f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/act/defect/'
 
     def _edit_url(self):
-        return f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/defect/'
+        """Дефектацию заполняют на странице единицы, в разделе «Приём
+        и диагностика» (с v2.95.0): своей страницы у неё больше нет."""
+        return reverse(
+            'repair_order_unit_detail', args=[self.order.pk, self.roe.pk]
+        ) + '#diagnosis'
+
+    def _save_url(self):
+        return reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk])
 
     def _fill(self, **overrides):
         data = {
+            'section': 'diagnosis',
+            'fault_description': self.roe.fault_description,
+            'initial_condition': '',
+            'repair_complexity': '',
             'defect_act_date': '2026-05-06',
             'diagnosis': 'Выявлен выход из строя IGBT модуля и его обвязки.',
             'error_codes': '«Десат» — короткое замыкание между фазами\n'
@@ -3544,7 +3561,7 @@ class DefectActTests(TestCase):
             'estimated_cost': '14000',
         }
         data.update(overrides)
-        return self.client_http.post(self._edit_url(), data)
+        return self.client_http.post(self._save_url(), data)
 
     def test_the_generic_type_stands_before_the_model(self):
         """«Тип: Преобразователь частоты Emotron …» — так набран их бланк."""
@@ -3556,30 +3573,34 @@ class DefectActTests(TestCase):
 
         self.assertEqual(model.full_name, 'БУАД-3')
 
-    def test_saving_stays_on_the_form(self):
-        """Сохранение больше не уводит на печатный акт.
-
-        Пока уводило, правка одной строки диагноза стоила ухода
+    def test_saving_stays_on_the_page(self):
+        """Сохранение возвращает в тот же раздел, а не уводит на печатный
+        акт. Пока уводило, правка одной строки диагноза стоила ухода
         на документ и возвращения назад. Документ открывается своей
         кнопкой, когда он нужен.
         """
         resp = self._fill()
 
-        self.assertRedirects(
-            resp,
-            reverse('repair_order_defect_act_edit',
-                    args=[self.order.pk, self.roe.pk]),
-        )
+        self.assertRedirects(resp, self._edit_url())
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.estimated_cost, Decimal('14000'))
         self.assertEqual(self.roe.defect_act_date, datetime.date(2026, 5, 6))
+
+    def test_the_old_defect_page_leads_to_its_new_place(self):
+        """На старый адрес ведут закладки мастеров и ссылки в переписке:
+        404 на них выглядел бы как пропавшая дефектация."""
+        resp = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/equipment/{self.roe.pk}/defect/'
+        )
+
+        self.assertRedirects(resp, self._edit_url())
 
     def test_the_act_is_opened_by_its_own_button(self):
         """И рядом с ней сказано, что акт печатает сохранённое: молчание
         здесь означало бы документ заказчику без того, что мастер
         только что вписал."""
         html = self.client_http.get(
-            reverse('repair_order_defect_act_edit',
+            reverse('repair_order_unit_detail',
                     args=[self.order.pk, self.roe.pk])
         ).content.decode()
 
@@ -3657,7 +3678,9 @@ class DefectActTests(TestCase):
         self.assertContains(resp, timezone.localdate().strftime('%d.%m.%Y'))
 
     def test_the_prefilled_reason_is_the_usual_wording(self):
-        resp = self.client_http.get(self._edit_url())
+        resp = self.client_http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        )
 
         self.assertContains(resp, 'естественной деградацией электронных компонентов')
 
@@ -11046,13 +11069,19 @@ class PriceInDefectActTests(TestCase):
         )
 
     def _act_url(self):
-        return '/repair-orders/%d/equipment/%d/defect/' % (self.order.pk, self.roe.pk)
+        """Диагностика живёт на странице единицы (с v2.95.0), и прайс
+        предлагается там же — рядом с полем оценки."""
+        return reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
 
     def _save(self, cost):
-        return self.http.post(self._act_url(), {
-            'defect_act_date': '', 'diagnosis': 'вздулись конденсаторы',
-            'error_codes': '', 'non_warranty_reason': '', 'estimated_cost': cost,
-        })
+        return self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            {'section': 'diagnosis',
+             'fault_description': '', 'initial_condition': '',
+             'repair_complexity': '', 'warranty_case': '',
+             'defect_act_date': '', 'diagnosis': 'вздулись конденсаторы',
+             'error_codes': '', 'non_warranty_reason': '', 'estimated_cost': cost},
+        )
 
     def test_the_price_is_offered_not_filled_in(self):
         """Акт подписывает мастер — вписать за него программа не вправе."""
@@ -11062,7 +11091,9 @@ class PriceInDefectActTests(TestCase):
         self.assertContains(page, 'По прайсу')
         self.assertContains(page, 'Подставить')
         # но в поле по-прежнему пусто
-        self.assertIsNone(page.context['form'].initial.get('estimated_cost'))
+        self.assertIsNone(
+            page.context['diagnosis_form'].initial.get('estimated_cost')
+        )
 
     def test_saving_freezes_the_price_of_the_day(self):
         self._save('9500')
@@ -13125,7 +13156,8 @@ class EquipmentMaterialScreensTests(TestCase):
         return reverse('equipment_model_edit', args=[self.model.pk])
 
     def _defect_url(self):
-        return reverse('repair_order_defect_act_edit',
+        """Диагностика — раздел страницы единицы (с v2.95.0)."""
+        return reverse('repair_order_unit_detail',
                        args=[self.order.pk, self.roe.pk])
 
     def test_the_new_model_page_has_no_materials(self):
@@ -13395,7 +13427,8 @@ class TechCardScreensTests(TestCase):
         )
 
     def _defect_url(self):
-        return reverse('repair_order_defect_act_edit',
+        """Диагностика — раздел страницы единицы (с v2.95.0)."""
+        return reverse('repair_order_unit_detail',
                        args=[self.order.pk, self.roe.pk])
 
     def test_a_card_is_created_with_its_steps(self):
@@ -14582,12 +14615,29 @@ class UnitPageTests(TestCase):
 
         self.assertIn('позиция 2 в заказе', html)
 
-    def test_readiness_is_shown_first(self):
-        """С этим вопросом сюда чаще всего и приходят."""
+    def test_readiness_colours_the_sections_themselves(self):
+        """С v2.95.0 готовность — не список внизу, а цвет самих разделов:
+        список стоял в стороне от полей, которые его закрывают, и мастер,
+        прочитав пункт, заново искал глазами, чего в разделе не хватает."""
         html = self.http.get(self._url()).content.decode()
 
-        self.assertIn('Записаны выполненные работы', html)
-        self.assertIn('Готовность', html)
+        # У этого прибора работы записаны, а стоимость — нет: раздел
+        # ремонта горит недоделанным и называет ровно то, чего не хватает.
+        # Слова те же, что в чек-листе на карточке заказа: список
+        # проверок один на всю программу
+        self.assertIn('Проставлена стоимость ремонта', html)
+        self.assertIn('unit-section-todo', html)
+
+    def test_a_finished_section_changes_colour(self):
+        self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.repair_cost = Decimal('4200.00')
+        self.roe.save()
+
+        html = self.http.get(self._url()).content.decode()
+        repair = html.split('id="repair"')[0].rsplit('<div class="card', 1)[1]
+
+        self.assertIn('unit-section-done', repair)
+        self.assertNotIn('unit-section-todo', repair)
 
     def test_only_the_parts_of_this_unit_are_listed(self):
         """Списанные «на заказ целиком» сюда не попадают: программа
@@ -14975,6 +15025,157 @@ class OrderCardStage2Tests(TestCase):
         self.assertNotIn('btn-outline-warning', row)
 
 
+# ============ ДЕФЕКТАЦИЯ ПЕРЕЕХАЛА НА СТРАНИЦУ ЕДИНИЦЫ (v2.95.0) ============
+
+
+class DiagnosisOnUnitPageTests(TestCase):
+    """Приём, дефектация и диагностика — один раздел одной страницы.
+
+    До v2.95.0 мастер с платой в руках заполнял диагноз на одной
+    странице, работы на другой, а список того, что осталось, читал
+    на третьей. Отдельной страницы дефектации больше нет.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='diag_merge', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-MERGE-1'
+            ),
+        )
+
+    def _url(self):
+        return reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+
+    def test_the_separate_defect_page_is_gone(self):
+        """Шаблона нет, а адрес остался вывеской: на него ведут закладки
+        мастеров и ссылки, разосланные в переписке."""
+        page = settings.BASE_DIR / 'core/templates/core/repair_orders/defect_act_form.html'
+        self.assertFalse(page.exists())
+
+        response = self.http.get(
+            reverse('repair_order_defect_act_edit', args=[self.order.pk, self.roe.pk])
+        )
+        self.assertRedirects(response, self._url() + '#diagnosis')
+
+    def test_intake_and_diagnosis_fields_stand_together(self):
+        """Что привезли и что нашли внутри записывают за один заход,
+        с прибором на столе."""
+        html = self.http.get(self._url()).content.decode()
+        section = html.split('id="diagnosis"')[1].split('id="repair"')[0]
+
+        for field in ('id_fault_description', 'id_initial_condition',
+                      'id_diagnosis', 'id_error_codes', 'id_defect_act_date',
+                      'id_warranty_case', 'id_non_warranty_reason',
+                      'id_estimated_cost', 'id_repair_complexity'):
+            with self.subTest(field=field):
+                self.assertIn(field, section)
+
+        # Неисправности рисует общий выбор (_fault_picker.html): наружу
+        # он отдаёт скрытые поля под именем поля формы, а не <select>
+        # с его идентификатором
+        self.assertIn('fault-picker', section)
+        self.assertIn('data-name="faults"', section)
+
+    def test_the_act_is_still_printed_from_what_was_saved(self):
+        """Форма переехала, а опасность та же: акт печатает базу,
+        а не то, что набрано в полях."""
+        html = self.http.get(self._url()).content.decode()
+
+        self.assertIn('Открыть акт', html)
+        self.assertIn('несохранённые правки', html)
+        self.assertIn(
+            reverse('repair_order_act_defect', args=[self.order.pk, self.roe.pk]),
+            html,
+        )
+
+    def test_the_printed_act_leads_back_to_the_section(self):
+        resp = self.http.get(
+            reverse('repair_order_act_defect', args=[self.order.pk, self.roe.pk])
+        )
+
+        self.assertContains(resp, self._url() + '#diagnosis')
+
+    def test_the_order_card_sends_to_the_section_too(self):
+        """Кнопка «заполнить дефектацию» в строке единицы ведёт туда же:
+        второго места для этих полей быть не должно."""
+        resp = self.http.get(reverse('repair_order_detail', args=[self.order.pk]))
+
+        self.assertContains(resp, self._url() + '#diagnosis')
+
+    def test_saving_the_diagnosis_stamps_the_date_and_freezes_the_price(self):
+        """То, что делала страница дефектации при сохранении, теперь
+        делает сохранение её раздела — иначе дата акта поехала бы
+        за днём печати."""
+        equipment_type = EquipmentType.objects.create(name='Привод дверей')
+        self.model.equipment_type = equipment_type
+        self.model.save()
+        PriceListLine.objects.create(
+            price_list=PriceList.base(), equipment_type=equipment_type,
+            price=Decimal('8000'),
+        )
+
+        self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            {'section': 'diagnosis', 'fault_description': '',
+             'initial_condition': '', 'repair_complexity': '',
+             'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
+             'error_codes': '', 'warranty_case': '', 'non_warranty_reason': '',
+             'estimated_cost': '9000'},
+        )
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.defect_act_date, timezone.localdate())
+        self.assertEqual(self.roe.list_price, Decimal('8000'))
+
+    def test_readiness_knows_which_section_closes_each_check(self):
+        """Раздел страницы записан у самой проверки: разъедься эти два
+        места, раздел горел бы недоделанным при заполненном поле."""
+        sections = self.roe.readiness_sections
+
+        self.assertEqual(
+            [check['code'] for check in sections['diagnosis']['checks']],
+            ['defect_act'],
+        )
+        self.assertEqual(
+            [check['code'] for check in sections['repair']['checks']],
+            ['work', 'repair_cost'],
+        )
+        self.assertEqual(
+            [check['code'] for check in sections['parts']['checks']],
+            ['planned_parts'],
+        )
+
+    def test_a_section_without_checks_is_not_alarmed_about(self):
+        """У гарантийного ремонта пункт стоимости выпадает вовсе —
+        гореть разделу не от чего."""
+        self.roe.warranty_case = 'warranty'
+        self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.save()
+
+        self.assertTrue(self.roe.readiness_sections['repair']['done'])
+
+    def test_the_section_colour_is_not_bootstraps(self):
+        """Цвет — единственный ответ страницы на «что ещё не сделано»,
+        а Bootstrap приходит из интернета и регулярно не приезжает."""
+        page = (settings.BASE_DIR
+                / 'core/templates/core/repair_orders/unit_detail.html'
+                ).read_text(encoding='utf-8')
+
+        self.assertIn('.unit-section-todo', page)
+        self.assertIn('.unit-section-done', page)
+
+
 # ============ БЫСТРЫЕ ДЕЙСТВИЯ ПО ЕДИНИЦЕ (v2.78.0) ============
 
 
@@ -15009,9 +15210,9 @@ class UnitEditTests(TestCase):
         )
 
     def _post(self, **extra):
+        """Раздел «Ремонт» — то, что заполняют после работы."""
         data = {
-            'fault_description': 'Не открывает двери',
-            'initial_condition': 'Корпус цел',
+            'section': 'repair',
             'work_performed': 'Заменены конденсаторы C12, C13',
             'seal_numbers': '7788',
             'repair_cost': '5200.00',
@@ -15022,8 +15223,25 @@ class UnitEditTests(TestCase):
             data,
         )
 
+    def _post_diagnosis(self, **extra):
+        """Раздел «Приём и диагностика» — с v2.95.0 он же и дефектация."""
+        data = {
+            'section': 'diagnosis',
+            'fault_description': 'Не открывает двери',
+            'initial_condition': 'Корпус цел',
+            'defect_act_date': '', 'diagnosis': '', 'error_codes': '',
+            'warranty_case': '', 'non_warranty_reason': '',
+            'estimated_cost': '', 'repair_complexity': '',
+        }
+        data.update(extra)
+        return self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            data,
+        )
+
     def test_the_fields_are_saved_from_the_unit_page(self):
         response = self._post()
+        self._post_diagnosis()
 
         self.roe.refresh_from_db()
         self.assertEqual(response.status_code, 302)
@@ -15032,10 +15250,35 @@ class UnitEditTests(TestCase):
         self.assertEqual(self.roe.repair_cost, Decimal('5200.00'))
         self.assertEqual(self.roe.fault_description, 'Не открывает двери')
 
+    def test_one_section_does_not_wipe_the_other(self):
+        """Прибор в работе бывает у двоих: сохранение раздела пишет
+        только его поля. Одна форма на страницу означала бы, что
+        открывший её утром затирает вечером всё, что вписал сосед."""
+        self._post()
+        self._post_diagnosis(fault_description='Гудит при пуске')
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.fault_description, 'Гудит при пуске')
+        self.assertEqual(self.roe.work_performed, 'Заменены конденсаторы C12, C13')
+        self.assertEqual(self.roe.repair_cost, Decimal('5200.00'))
+
+    def test_an_unknown_section_saves_nothing(self):
+        """Имя раздела приходит в запросе, а подсунуть в него можно
+        что угодно."""
+        response = self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            {'section': 'всё сразу', 'work_performed': 'чужое'}, follow=True,
+        )
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.work_performed, '')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('неизвестный раздел' in text for text in texts), texts)
+
     def test_saving_returns_to_the_place_that_was_edited(self):
         """Мастер записывает работы по одному прибору и берётся
         за следующий, а не уходит в заказ целиком."""
-        response = self._post(anchor='repair')
+        response = self._post()
 
         self.assertEqual(
             response['Location'],
@@ -15060,7 +15303,7 @@ class UnitEditTests(TestCase):
     def test_choosing_a_fault_changes_readiness_and_documents(self):
         """Описание выбранной неисправности идёт в акт дефектации,
         и из неё же выводится сложность ремонта."""
-        self._post(faults=[str(self.fault.pk)])
+        self._post_diagnosis(faults=[str(self.fault.pk)])
 
         self.roe.refresh_from_db()
         self.assertEqual(list(self.roe.faults.all()), [self.fault])
@@ -15071,7 +15314,7 @@ class UnitEditTests(TestCase):
         """До v2.84.0 сложность правилась только в форме предложения —
         то есть нигде, пока предложение не понадобится, и цвет сложности
         в списке единиц заказа не появлялся ни у одной строки."""
-        self._post(repair_complexity='complex')
+        self._post_diagnosis(repair_complexity='complex')
 
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.repair_complexity, 'complex')
@@ -15083,7 +15326,7 @@ class UnitEditTests(TestCase):
         self.fault.complexity = 'complex'
         self.fault.save()
 
-        self._post(repair_complexity='', faults=[str(self.fault.pk)])
+        self._post_diagnosis(repair_complexity='', faults=[str(self.fault.pk)])
 
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.repair_complexity, '')
@@ -15563,13 +15806,16 @@ class DefectActDateTests(TestCase):
 
     def _fill(self, **extra):
         data = {
+            'section': 'diagnosis',
+            'fault_description': '', 'initial_condition': '',
+            'repair_complexity': '',
             'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
             'error_codes': '', 'warranty_case': '',
             'non_warranty_reason': '', 'estimated_cost': '',
         }
         data.update(extra)
         return self.http.post(
-            reverse('repair_order_defect_act_edit',
+            reverse('repair_order_unit_edit',
                     args=[self.order.pk, self.roe.pk]),
             data,
         )
@@ -15668,8 +15914,11 @@ class ReadinessButtonsTests(TestCase):
 
     def test_every_check_leads_to_the_field(self):
         expected = {
+            # С v2.95.0 дефектацию заполняют на самой странице единицы:
+            # своей страницы у неё нет, и вести туда значило бы вести
+            # на переадресацию
             'defect_act': reverse(
-                'repair_order_defect_act_edit',
+                'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_diagnosis',
             'work': reverse(
                 'repair_order_unit_detail',
@@ -15991,9 +16240,12 @@ class FaultPickerTests(TestCase):
     def test_saving_the_choice_still_works(self):
         self.http.post(
             reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
-            {'fault_description': '', 'initial_condition': '',
-             'work_performed': '', 'seal_numbers': '', 'repair_cost': '',
-             'yandex_disk_folder': '', 'faults': [str(self.hard.pk)]},
+            {'section': 'diagnosis',
+             'fault_description': '', 'initial_condition': '',
+             'defect_act_date': '', 'diagnosis': '', 'error_codes': '',
+             'warranty_case': '', 'non_warranty_reason': '',
+             'estimated_cost': '', 'repair_complexity': '',
+             'faults': [str(self.hard.pk)]},
         )
 
         self.assertEqual(list(self.roe.faults.all()), [self.hard])

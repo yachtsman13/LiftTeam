@@ -1,16 +1,21 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.94.0{% endblock %}
+{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.95.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
     <button onclick="window.print()" class="btn btn-primary">
         <i class="bi bi-printer me-2"></i>Печать
     </button>
-    <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}" class="btn btn-outline-primary">
+    {% comment %}
+        Правка — в разделе «Приём и диагностика» на странице единицы:
+        своей страницы у дефектации с v2.95.0 нет.
+    {% endcomment %}
+    <a href="{% url 'repair_order_unit_detail' order.pk order_equipment.pk %}#diagnosis"
+       class="btn btn-outline-primary">
         <i class="bi bi-pencil me-2"></i>Изменить
     </a>
-    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% url 'repair_order_unit_detail' order.pk order_equipment.pk %}" class="btn btn-outline-secondary">Назад</a>
     {% if not order_equipment.has_defect_act %}
     <span class="text-danger small">
         Результаты диагностики не заполнены — печатать пока нечего.

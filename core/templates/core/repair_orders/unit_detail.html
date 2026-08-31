@@ -1,6 +1,36 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.94.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.95.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    /*
+     * Готовность — цветом самих разделов, а не списком внизу страницы
+     * (с v2.95.0). Список стоял в стороне от полей, которые его
+     * закрывают: мастер читал «записаны выполненные работы», шёл
+     * в раздел и там заново искал глазами, чего не хватает.
+     *
+     * Правила свои, а не классы Bootstrap: он приходит из интернета
+     * и регулярно не приезжает, а без цвета эта страница перестала бы
+     * отвечать на главный вопрос, с которым на неё приходят.
+     */
+    .unit-section > .card-header {
+        border-left: 6px solid transparent;
+    }
+    .unit-section-todo > .card-header {
+        border-left-color: #ffc107;
+        background-color: #fff8e6;
+    }
+    .unit-section-done > .card-header {
+        border-left-color: #198754;
+        background-color: #eaf6ee;
+    }
+    /* Что именно осталось — тем же словом, что и в чек-листе на карточке
+       заказа: списки, набранные порознь, расходятся при первой правке. */
+    .unit-section-pending { color: #8a6100; }
+    .unit-section-ready { color: #146c43; }
+</style>
+{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -56,6 +86,30 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 });
+
+/*
+ * Отметка «есть несохранённые правки» рядом с кнопкой «Открыть акт».
+ *
+ * Акт печатает то, что лежит в базе, а не то, что набрано в форме, —
+ * и молчать об этом нельзя: мастер отдаст заказчику документ без того,
+ * что только что вписал. Переехало сюда вместе с самой дефектацией:
+ * форма теперь на этой странице, а опасность та же.
+ *
+ * Прячется атрибутом hidden, а не классом Bootstrap: он приходит
+ * из интернета и регулярно не приезжает.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('diagnosisForm');
+    var note = document.getElementById('defectActDirty');
+    if (!form || !note) return;
+
+    function markDirty() { note.hidden = false; }
+
+    form.addEventListener('input', markDirty);
+    form.addEventListener('change', markDirty);
+    // Отправили — правки уехали в базу, и предупреждать больше не о чем
+    form.addEventListener('submit', function () { note.hidden = true; });
+});
 </script>
 {% endblock %}
 
@@ -64,6 +118,10 @@ document.addEventListener('DOMContentLoaded', function () {
     Всё про один прибор в одной работе. Раньше это лежало в трёх местах:
     часть в строке карточки заказа, часть в форме правки заказа, часть
     на дефектации — и мастер с платой в руках ходил между ними.
+
+    С v2.95.0 дефектация переехала сюда же: своей страницы у неё больше
+    нет. Разделы правятся каждый своей кнопкой — сохранение одного
+    не трогает поля другого: прибор в работе бывает у двоих сразу.
 {% endcomment %}
 <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
     <div>
@@ -82,231 +140,300 @@ document.addEventListener('DOMContentLoaded', function () {
     </a>
 </div>
 
+{% with sections=order_equipment.readiness_sections %}
 <div class="row g-4">
     <div class="col-lg-8">
 
         {% comment %}
-            Готовность — первым делом: это ответ на вопрос «что с ней
-            ещё не сделано», с которым сюда чаще всего и приходят.
-            Список проверок общий на всю программу (READINESS_CHECKS).
+            Приём и диагностика — один раздел: что привезли и что нашли
+            внутри записывают за один заход, с прибором на столе.
+            До v2.95.0 это были две страницы, и на второй приходилось
+            заново читать, с чем прибор приехал.
         {% endcomment %}
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-check2-square me-2"></i>Готовность</h5>
-                <span class="badge bg-{% if order_equipment.is_ready %}success{% else %}warning text-dark{% endif %}">
-                    {{ order_equipment.readiness_label }}
+        <div class="card mb-4 unit-section {% if sections.diagnosis.done %}unit-section-done{% else %}unit-section-todo{% endif %}"
+             id="diagnosis">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-clipboard2-pulse me-2"></i>Приём и диагностика</h5>
+                {% comment %}
+                    Что осталось — теми же словами, что и в чек-листе
+                    на карточке заказа: список проверок один
+                    (READINESS_CHECKS), и набранный здесь заново
+                    разошёлся бы с ним при первой правке.
+                {% endcomment %}
+                <span class="small {% if sections.diagnosis.done %}unit-section-ready{% else %}unit-section-pending{% endif %}">
+                    {% if sections.diagnosis.done %}
+                    <i class="bi bi-check-lg me-1"></i>заполнено
+                    {% else %}
+                    {% for check in sections.diagnosis.pending %}
+                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    {% endfor %}
+                    {% endif %}
                 </span>
             </div>
             <div class="card-body">
-                {% comment %}
-                    Пункты — кнопки, и выполненные тоже: перепроверить
-                    написанное надо уметь в один щелчок. Переход ставит
-                    курсор прямо в поле — общий скрипт в base.html.
-                {% endcomment %}
-                <div class="d-grid gap-2">
-                    {% for check in order_equipment.readiness %}
-                    <a href="{{ check.url }}"
-                       class="btn btn-sm text-start {% if check.done %}btn-outline-secondary{% else %}btn-warning{% endif %}">
-                        {% if check.done %}<i class="bi bi-check-lg me-2"></i>{% else %}<i class="bi bi-dash-lg me-2"></i>{% endif %}
-                        {{ check.label }}
-                        {% if not check.done %}
-                        <div class="small ms-4">{{ check.hint }}</div>
-                        {% endif %}
-                    </a>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-
-        {% comment %}
-            Правка прямо здесь, одной формой на три карточки и одной
-            кнопкой «Сохранить». Раньше эти поля правились только через
-            редактирование всего заказа — формой на все единицы разом:
-            записать работы по одному прибору стоило открыть заказ
-            целиком и сохранить всё вместе.
-
-            Диагностика со стоимостью в эту форму не входит: у неё своя
-            страница, где рядом прайс, техкарты и материалы.
-        {% endcomment %}
-        <form method="post" action="{% url 'repair_order_unit_edit' order.pk order_equipment.pk %}">
-            {% csrf_token %}
-            <input type="hidden" name="anchor" value="repair" id="unitEditAnchor">
-
-        <div class="card mb-4" id="intake">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-box-arrow-in-down me-2"></i>Приём</h5>
-            </div>
-            <div class="card-body">
-                <div class="mb-3">
-                    <label class="form-label">{{ form.fault_description.label }}</label>
-                    {{ form.fault_description }}
-                    {% if form.fault_description.errors %}<div class="text-danger small">{{ form.fault_description.errors.0 }}</div>{% endif %}
-                </div>
-                <div class="mb-0">
-                    <label class="form-label">{{ form.initial_condition.label }}</label>
-                    {{ form.initial_condition }}
-                    {% if form.initial_condition.errors %}<div class="text-danger small">{{ form.initial_condition.errors.0 }}</div>{% endif %}
-                </div>
-            </div>
-        </div>
-
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-clipboard2-pulse me-2"></i>Диагностика</h5>
-                <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}"
-                   class="btn btn-sm btn-outline-primary">
-                    <i class="bi bi-pencil me-1"></i>Заполнить
-                </a>
-            </div>
-            <div class="card-body">
-                {% if order_equipment.has_defect_act %}
-                <p class="mb-2">
-                    <strong>Что нашли:</strong><br>
-                    {{ order_equipment.diagnosis_document_text|default:"—"|linebreaksbr }}
-                </p>
-                {% if order_equipment.error_codes %}
-                <p class="mb-2"><strong>Коды ошибок:</strong> {{ order_equipment.error_codes }}</p>
-                {% endif %}
-                <div class="row">
-                    <div class="col-sm-4"><strong>Гарантийный случай:</strong>
-                        {{ order_equipment.get_warranty_case_display|default:"не указан" }}</div>
-                    <div class="col-sm-4"><strong>Сложность:</strong>
-                        {% if order_equipment.effective_complexity_display %}
-                        <span class="badge {{ order_equipment.effective_complexity_css }}">{{ order_equipment.effective_complexity_display }}</span>
-                        {% else %}—{% endif %}
-                        {% if order_equipment.complexity_is_derived %}
-                        <span class="text-muted small">(по неисправностям)</span>
-                        {% endif %}
-                    </div>
-                    <div class="col-sm-4"><strong>Оценка:</strong>
-                        {% if order_equipment.estimated_cost is not None %}{{ order_equipment.estimated_cost|floatformat:2 }} ₽{% else %}—{% endif %}
-                    </div>
-                </div>
-                {% if order_equipment.non_warranty_reason %}
-                <p class="mb-0 mt-2 text-muted small">
-                    Не гарантийный, потому что неисправность вызвана
-                    {{ order_equipment.non_warranty_reason }}
-                </p>
-                {% endif %}
-                {% else %}
-                <p class="text-muted mb-0">
-                    Дефектация не заполнена. Пока её нет, ни акт, ни коммерческое
-                    предложение по этой единице напечатать нечем.
-                </p>
-                {% endif %}
-
-                {% comment %}
-                    Типовые неисправности выбираются здесь же. Их описания
-                    идут в акт дефектации и в предложение, из них выводится
-                    сложность ремонта, и по их рецептам списываются детали.
-
-                    Кнопка «Применить рецепт» — не часть формы: она
-                    списывает детали со склада, то есть меняет остатки,
-                    и складывать её с обычным сохранением полей нельзя.
-                    Вложенной формой её тоже не сделать — вложенных форм
-                    в разметке не бывает, поэтому запрос уходит скриптом.
-                {% endcomment %}
-                <hr>
-                <label class="form-label"><strong>{{ form.faults.label }}</strong></label>
-                {% include 'core/_fault_picker.html' with field=form.faults selected=faults %}
-                {% if form.faults.errors %}<div class="text-danger small">{{ form.faults.errors.0 }}</div>{% endif %}
-
-                {% comment %}
-                    Полные описания — те, что идут в документы. Показываем
-                    их отдельно от выбора: в строке выбора стоит короткое
-                    название, а в акт уходит описание, и увидеть,
-                    что именно уйдёт, надо здесь.
-                {% endcomment %}
-                {% if faults %}
-                <ul class="mt-2 mb-2 small text-muted">
-                    {% for fault in faults %}
-                    {% if fault.description %}<li>{{ fault.description }}</li>{% endif %}
-                    {% endfor %}
-                </ul>
-                {% endif %}
-
-                {% comment %}
-                    Сложность правится здесь, рядом с неисправностями,
-                    из которых она выводится: пустое значение означает
-                    не «простой», а «считай по неисправностям». До v2.94.0
-                    это поле правилось только в форме предложения —
-                    то есть нигде, пока предложение не понадобится,
-                    и цвет сложности в списке единиц не появлялся.
-                {% endcomment %}
-                <div class="mt-3" style="max-width: 22rem;">
-                    <label class="form-label" for="{{ form.repair_complexity.id_for_label }}">
-                        <strong>{{ form.repair_complexity.label }}</strong>
-                    </label>
-                    {{ form.repair_complexity }}
-                    {% if form.repair_complexity.errors %}<div class="text-danger small">{{ form.repair_complexity.errors.0 }}</div>{% endif %}
-                    <div class="form-text">{{ form.repair_complexity.help_text }}</div>
-                </div>
-
-                <button type="button" class="btn btn-sm btn-outline-warning mt-3"
-                        id="applyRecipe"
-                        data-url="{% url 'repair_order_apply_fault_template' order.pk %}"
-                        data-equipment="{{ equipment.pk }}">
-                    <i class="bi bi-magic me-1"></i>Применить рецепт деталей
-                </button>
-                <div class="form-text">
-                    Спишет со склада детали из рецептов сохранённых
-                    неисправностей — на эту единицу. Список деталей
-                    дополняется, ничего в нём не заменяется.
-                </div>
-            </div>
-        </div>
-
-        <div class="card mb-4" id="repair">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-tools me-2"></i>Ремонт</h5>
-            </div>
-            <div class="card-body">
-                <div class="mb-3">
-                    <label class="form-label">{{ form.work_performed.label }}</label>
-                    {{ form.work_performed }}
-                    {% if form.work_performed.errors %}<div class="text-danger small">{{ form.work_performed.errors.0 }}</div>{% endif %}
+                <form method="post" id="diagnosisForm"
+                      action="{% url 'repair_order_unit_edit' order.pk order_equipment.pk %}">
+                    {% csrf_token %}
                     {% comment %}
-                        Типовые работы выбранных неисправностей —
-                        подставляются кнопкой, а не сами. Неисправности
-                        выбирают при дефектации, до ремонта: собери
-                        программа акт сама, он оказался бы готов
-                        по неразобранному прибору, и чек-лист показал бы
-                        «работы записаны». То же правило, что у цены
-                        из прайса — предлагается, а не подставляется.
+                        Раздел называет себя сам: представление сохраняет
+                        только его поля, а незнакомое имя не принимает
+                        вовсе — подсунуть в запрос можно что угодно.
                     {% endcomment %}
-                    <div class="d-flex gap-2 align-items-center flex-wrap mt-2">
-                        <button type="button" class="btn btn-sm btn-outline-success"
-                                data-typical-work
-                                data-target="{{ form.work_performed.id_for_label }}"
-                                data-lines="{{ order_equipment.typical_work_json }}">
-                            <i class="bi bi-magic me-1"></i>Подставить типовые работы
+                    <input type="hidden" name="section" value="diagnosis">
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="{{ diagnosis_form.fault_description.id_for_label }}">
+                                {{ diagnosis_form.fault_description.label }}
+                            </label>
+                            {{ diagnosis_form.fault_description }}
+                            {% if diagnosis_form.fault_description.errors %}<div class="text-danger small">{{ diagnosis_form.fault_description.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="{{ diagnosis_form.initial_condition.id_for_label }}">
+                                {{ diagnosis_form.initial_condition.label }}
+                            </label>
+                            {{ diagnosis_form.initial_condition }}
+                            {% if diagnosis_form.initial_condition.errors %}<div class="text-danger small">{{ diagnosis_form.initial_condition.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    {% comment %}
+                        Диагноз собирается из двух источников, и оба нужны:
+                        описания выбранных типовых неисправностей плюс
+                        свободный текст мастера на нетиповой случай.
+                        В акт уходит и то, и другое — собирает это одно
+                        место, `document_fault_text`, а не печатный шаблон.
+                    {% endcomment %}
+                    <label class="form-label"><strong>{{ diagnosis_form.faults.label }}</strong></label>
+                    {% include 'core/_fault_picker.html' with field=diagnosis_form.faults selected=faults %}
+                    {% if diagnosis_form.faults.errors %}<div class="text-danger small">{{ diagnosis_form.faults.errors.0 }}</div>{% endif %}
+
+                    {% comment %}
+                        Полные описания — те, что идут в документы. Показываем
+                        их отдельно от выбора: в строке выбора стоит короткое
+                        название, а в акт уходит описание, и увидеть,
+                        что именно уйдёт, надо здесь.
+                    {% endcomment %}
+                    {% if faults %}
+                    <ul class="mt-2 mb-2 small text-muted">
+                        {% for fault in faults %}
+                        {% if fault.description %}<li>{{ fault.description }}</li>{% endif %}
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+
+                    <div class="mt-3">
+                        <label class="form-label" for="{{ diagnosis_form.diagnosis.id_for_label }}">
+                            {{ diagnosis_form.diagnosis.label }}
+                        </label>
+                        {{ diagnosis_form.diagnosis }}
+                        <div class="form-text">
+                            Нетиповое — сюда. В акт пойдёт вместе с описаниями
+                            выбранных неисправностей.
+                        </div>
+                        {% if diagnosis_form.diagnosis.errors %}<div class="text-danger small">{{ diagnosis_form.diagnosis.errors.0 }}</div>{% endif %}
+                    </div>
+
+                    <div class="mt-3">
+                        <label class="form-label" for="{{ diagnosis_form.error_codes.id_for_label }}">
+                            {{ diagnosis_form.error_codes.label }}
+                        </label>
+                        {{ diagnosis_form.error_codes }}
+                        <div class="form-text">{{ diagnosis_form.error_codes.help_text }}</div>
+                        {% if diagnosis_form.error_codes.errors %}<div class="text-danger small">{{ diagnosis_form.error_codes.errors.0 }}</div>{% endif %}
+                    </div>
+
+                    {% comment %}
+                        Сложность, гарантия и оценка — здесь же (решение
+                        владельца, этап 3): это выводы диагностики, а не
+                        отдельная работа. Сложность стоит рядом
+                        с неисправностями, из которых она выводится:
+                        пустое значение означает не «простой», а «считай
+                        по неисправностям».
+                    {% endcomment %}
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-4">
+                            <label class="form-label" for="{{ diagnosis_form.repair_complexity.id_for_label }}">
+                                {{ diagnosis_form.repair_complexity.label }}
+                            </label>
+                            {{ diagnosis_form.repair_complexity }}
+                            <div class="form-text">{{ diagnosis_form.repair_complexity.help_text }}</div>
+                            {% if diagnosis_form.repair_complexity.errors %}<div class="text-danger small">{{ diagnosis_form.repair_complexity.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="{{ diagnosis_form.warranty_case.id_for_label }}">
+                                {{ diagnosis_form.warranty_case.label }}
+                            </label>
+                            {{ diagnosis_form.warranty_case }}
+                            {% if diagnosis_form.warranty_case.errors %}<div class="text-danger small">{{ diagnosis_form.warranty_case.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="{{ diagnosis_form.estimated_cost.id_for_label }}">
+                                {{ diagnosis_form.estimated_cost.label }}, ₽
+                            </label>
+                            {{ diagnosis_form.estimated_cost }}
+                            <div class="form-text">{{ diagnosis_form.estimated_cost.help_text }}</div>
+                            {% if diagnosis_form.estimated_cost.errors %}<div class="text-danger small">{{ diagnosis_form.estimated_cost.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+
+                    {% comment %}
+                        Цена по прайсу — предложение, а не подстановка:
+                        акт подписывает мастер, и вписать за него программа
+                        не вправе. Кнопка ставит число в поле, дальше он его
+                        правит или оставляет.
+                    {% endcomment %}
+                    {% if price_line %}
+                    <div class="alert alert-light border py-2 px-3 mt-3 mb-0 small">
+                        <i class="bi bi-cash-coin me-1"></i>
+                        По прайсу: <strong>{{ price_line.price|floatformat:2 }} ₽</strong>
+                        <span class="text-muted">
+                            ({{ price_source }}{% if price_line.complexity %}, {{ price_line.get_complexity_display|lower }}{% else %}, любая сложность{% endif %})
+                        </span>
+                        <button type="button" class="btn btn-sm btn-outline-success ms-2"
+                                onclick="document.getElementById('{{ diagnosis_form.estimated_cost.id_for_label }}').value = '{{ price_line.price|stringformat:"s" }}';">
+                            Подставить
                         </button>
-                        <span class="small text-muted typical-work-note"></span>
                     </div>
-                </div>
-                <div class="row g-3">
-                    <div class="col-sm-6">
-                        <label class="form-label">{{ form.seal_numbers.label }}</label>
-                        {{ form.seal_numbers }}
+                    {% elif equipment.model.equipment_type %}
+                    <div class="form-text text-muted mt-2">
+                        В прайсе нет цены на «{{ equipment.model.equipment_type }}»
+                        {% if order_equipment.effective_complexity_display %}({{ order_equipment.effective_complexity_display|lower }}){% endif %}.
                     </div>
-                    <div class="col-sm-6">
-                        <label class="form-label">{{ form.repair_cost.label }}</label>
-                        {{ form.repair_cost }}
-                        {% if form.repair_cost.errors %}<div class="text-danger small">{{ form.repair_cost.errors.0 }}</div>{% endif %}
+                    {% else %}
+                    <div class="form-text text-muted mt-2">
+                        У модели не указан тип оборудования — подставить цену из прайса не по чему.
                     </div>
-                </div>
+                    {% endif %}
+                    {% if order_equipment.list_price is not None %}
+                    <div class="form-text">
+                        Цена прайса на момент назначения: {{ order_equipment.list_price|floatformat:2 }} ₽{% if order_equipment.price_differs_from_list %} — договорились о другой{% endif %}
+                    </div>
+                    {% endif %}
+
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-4">
+                            <label class="form-label" for="{{ diagnosis_form.defect_act_date.id_for_label }}">
+                                {{ diagnosis_form.defect_act_date.label }}
+                            </label>
+                            {{ diagnosis_form.defect_act_date }}
+                            <div class="form-text">{{ diagnosis_form.defect_act_date.help_text }}</div>
+                            {% if diagnosis_form.defect_act_date.errors %}<div class="text-danger small">{{ diagnosis_form.defect_act_date.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label" for="{{ diagnosis_form.non_warranty_reason.id_for_label }}">
+                                {{ diagnosis_form.non_warranty_reason.label }}
+                            </label>
+                            {{ diagnosis_form.non_warranty_reason }}
+                            <div class="form-text">{{ diagnosis_form.non_warranty_reason.help_text }}</div>
+                            {% if diagnosis_form.non_warranty_reason.errors %}<div class="text-danger small">{{ diagnosis_form.non_warranty_reason.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+
+                    {% comment %}
+                        Кнопка «Применить рецепт» — не часть сохранения:
+                        она списывает детали со склада, то есть меняет
+                        остатки, и складывать её с правкой полей нельзя.
+                        Запрос уходит скриптом (вложенных форм в разметке
+                        не бывает) и работает от сохранённых неисправностей.
+                    {% endcomment %}
+                    <div class="mt-4 d-flex gap-2 flex-wrap align-items-center">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Сохранить диагностику
+                        </button>
+                        <a href="{% url 'repair_order_act_defect' order.pk order_equipment.pk %}"
+                           class="btn btn-outline-dark" target="_blank">
+                            <i class="bi bi-printer me-2"></i>Открыть акт
+                        </a>
+                        <button type="button" class="btn btn-outline-warning"
+                                id="applyRecipe"
+                                data-url="{% url 'repair_order_apply_fault_template' order.pk %}"
+                                data-equipment="{{ equipment.pk }}">
+                            <i class="bi bi-magic me-1"></i>Применить рецепт деталей
+                        </button>
+                        <span class="text-danger small" id="defectActDirty" hidden>
+                            В форме есть несохранённые правки — в акт они не попадут.
+                            Сначала сохраните.
+                        </span>
+                    </div>
+                    <div class="form-text">
+                        Рецепт спишет со склада детали сохранённых неисправностей —
+                        на эту единицу. Список деталей дополняется, ничего в нём
+                        не заменяется.
+                    </div>
+                </form>
             </div>
         </div>
 
-        <div class="mb-4 d-flex gap-2 align-items-center flex-wrap">
-            <button type="submit" class="btn btn-primary">
-                <i class="bi bi-check-lg me-2"></i>Сохранить
-            </button>
-            <span class="text-muted small">
-                Приём, неисправности и ремонт сохраняются вместе.
-            </span>
+        <div class="card mb-4 unit-section {% if sections.repair.done %}unit-section-done{% else %}unit-section-todo{% endif %}"
+             id="repair">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-tools me-2"></i>Ремонт</h5>
+                <span class="small {% if sections.repair.done %}unit-section-ready{% else %}unit-section-pending{% endif %}">
+                    {% if sections.repair.done %}
+                    <i class="bi bi-check-lg me-1"></i>заполнено
+                    {% else %}
+                    {% for check in sections.repair.pending %}
+                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    {% endfor %}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{% url 'repair_order_unit_edit' order.pk order_equipment.pk %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="section" value="repair">
+                    <div class="mb-3">
+                        <label class="form-label" for="{{ repair_form.work_performed.id_for_label }}">
+                            {{ repair_form.work_performed.label }}
+                        </label>
+                        {{ repair_form.work_performed }}
+                        {% if repair_form.work_performed.errors %}<div class="text-danger small">{{ repair_form.work_performed.errors.0 }}</div>{% endif %}
+                        {% comment %}
+                            Типовые работы выбранных неисправностей —
+                            подставляются кнопкой, а не сами. Неисправности
+                            выбирают при дефектации, до ремонта: собери
+                            программа акт сама, он оказался бы готов
+                            по неразобранному прибору, и раздел показал бы
+                            «работы записаны». То же правило, что у цены
+                            из прайса — предлагается, а не подставляется.
+                        {% endcomment %}
+                        <div class="d-flex gap-2 align-items-center flex-wrap mt-2">
+                            <button type="button" class="btn btn-sm btn-outline-success"
+                                    data-typical-work
+                                    data-target="{{ repair_form.work_performed.id_for_label }}"
+                                    data-lines="{{ order_equipment.typical_work_json }}">
+                                <i class="bi bi-magic me-1"></i>Подставить типовые работы
+                            </button>
+                            <span class="small text-muted typical-work-note"></span>
+                        </div>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ repair_form.seal_numbers.id_for_label }}">
+                                {{ repair_form.seal_numbers.label }}
+                            </label>
+                            {{ repair_form.seal_numbers }}
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ repair_form.repair_cost.id_for_label }}">
+                                {{ repair_form.repair_cost.label }}
+                            </label>
+                            {{ repair_form.repair_cost }}
+                            {% if repair_form.repair_cost.errors %}<div class="text-danger small">{{ repair_form.repair_cost.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Сохранить ремонт
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
-        </form>
 
         {% comment %}
             Детали именно этой единицы. Списанные «на заказ целиком»
@@ -314,9 +441,19 @@ document.addEventListener('DOMContentLoaded', function () {
             ушли, и приписывать их наугад нельзя — по этой записи потом
             считают, во сколько обошёлся ремонт.
         {% endcomment %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0" id="parts"><i class="bi bi-cpu me-2"></i>Детали на эту единицу</h5>
+        <div class="card mb-4 unit-section {% if sections.parts.done %}unit-section-done{% else %}unit-section-todo{% endif %}"
+             id="parts">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Детали на эту единицу</h5>
+                <span class="small {% if sections.parts.done %}unit-section-ready{% else %}unit-section-pending{% endif %}">
+                    {% if sections.parts.done %}
+                    <i class="bi bi-check-lg me-1"></i>всё списано
+                    {% else %}
+                    {% for check in sections.parts.pending %}
+                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    {% endfor %}
+                    {% endif %}
+                </span>
             </div>
             <div class="card-body">
                 {% comment %}
@@ -422,14 +559,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 <h5 class="mb-0"><i class="bi bi-file-earmark-text me-2"></i>Документы и папка</h5>
             </div>
             <div class="card-body d-grid gap-2">
+                {% comment %}
+                    Акт печатает то, что записано в разделе диагностики
+                    выше. Пока там пусто, печатать нечего — и кнопка ведёт
+                    туда, а не на пустой бланк.
+                {% endcomment %}
                 {% if order_equipment.has_defect_act %}
                 <a href="{% url 'repair_order_act_defect' order.pk order_equipment.pk %}"
                    class="btn btn-outline-success" target="_blank">
                     <i class="bi bi-clipboard2-pulse me-2"></i>Акт дефектации
                 </a>
                 {% else %}
-                <a href="{% url 'repair_order_defect_act_edit' order.pk order_equipment.pk %}"
-                   class="btn btn-outline-secondary">
+                <a href="#diagnosis" class="btn btn-outline-secondary">
                     <i class="bi bi-clipboard2-plus me-2"></i>Заполнить дефектацию
                 </a>
                 {% endif %}
@@ -451,7 +592,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 </form>
                 {% endif %}
                 {% comment %}
-                    Путь на Диске — кнопкой, не полем (с v2.94.0): ссылку
+                    Путь на Диске — кнопкой, не полем (с v2.95.0): ссылку
                     обычно ставит кнопка выше, которая строит её сама.
                     Ручной ввод нужен на два случая — папку завели раньше
                     программы, или снимки переложили — и не должен быть
@@ -534,44 +675,68 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
 
         {% comment %}
-            Техкарты и материалы — те же, что на дефектации, и ссылка
-            несёт исполнение единицы: без него мастер увидел бы половину
-            карты и не понял, что половины нет.
+            Техкарты и материалы — рядом с диагностикой, а не «где-то
+            на Диске»: мастер сидит с прибором, и схема нужна ему ровно
+            в эту минуту. Ссылка несёт исполнение единицы: без него мастер
+            увидел бы половину карты и не понял, что половины нет.
+        {% endcomment %}
+        {% comment %}
+            Карты и материалы — двумя списками, у каждого свой ответ
+            на пустоту. Общее «нет ни карт, ни материалов» молчало бы
+            о том виде, которого не хватает: у модели бывает карта
+            разборки и ни одной схемы, и мастеру надо знать, что схему
+            сюда можно повесить, а не решать, что программа их не умеет.
         {% endcomment %}
         <div class="card mb-4">
             <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-card-checklist me-2"></i>Как это чинят</h5>
             </div>
             <div class="card-body">
+                <div class="small text-muted mb-2">Технологические карты</div>
                 {% if tech_cards %}
                 <div class="d-grid gap-2 mb-3">
                     {% for card in tech_cards %}
                     <a href="{% url 'tech_card_detail' card.pk %}{% if equipment.version_id %}?version={{ equipment.version_id }}{% endif %}"
                        target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary text-start">
                         <i class="bi bi-list-ol me-1"></i>{{ card.title }}
+                        <span class="text-muted small">
+                            — {% if card.fault_type %}{{ card.fault_type.name }}{% else %}общая процедура{% endif %}
+                        </span>
                     </a>
                     {% endfor %}
                 </div>
+                {% else %}
+                <p class="text-muted small">
+                    У модели «{{ equipment.model.name }}» карт пока нет.
+                    Первая — обычно «как разобрать корпус»:
+                    <a href="{% url 'tech_card_create' %}">завести карту</a>.
+                </p>
                 {% endif %}
+
+                <div class="small text-muted mb-2">Материалы модели</div>
                 {% if materials %}
                 <div class="d-grid gap-2">
                     {% for material in materials %}
                     <a href="{{ material.url }}" target="_blank" rel="noopener"
                        class="btn btn-sm btn-outline-primary text-start">
                         <i class="bi bi-box-arrow-up-right me-1"></i>{{ material.title }}
+                        <span class="text-muted small">
+                            — {{ material.get_kind_display|lower }}{% if material.version %}, только для {{ material.version }}{% endif %}
+                        </span>
                     </a>
                     {% endfor %}
                 </div>
-                {% endif %}
-                {% if not tech_cards and not materials %}
+                {% else %}
                 <p class="text-muted small mb-0">
-                    У модели «{{ equipment.model.name }}» нет ни карт, ни материалов.
-                    Их заводят <a href="{% url 'equipment_model_edit' equipment.model.pk %}">в карточке модели</a>
-                    и в разделе <a href="{% url 'tech_card_list' %}">техкарт</a>.
+                    У модели «{{ equipment.model.name }}» материалов пока нет.
+                    Схемы и инструкции добавляются
+                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}">в карточке модели</a>
+                    ссылками на Яндекс.Диск.
                 </p>
                 {% endif %}
             </div>
         </div>
     </div>
 </div>
+{% endwith %}
 {% endblock %}
