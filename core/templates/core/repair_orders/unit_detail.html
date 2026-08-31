@@ -1,12 +1,12 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.95.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.96.0{% endblock %}
 
 {% block extra_css %}
 <style>
     /*
      * Готовность — цветом самих разделов, а не списком внизу страницы
-     * (с v2.95.0). Список стоял в стороне от полей, которые его
+     * (с v2.96.0). Список стоял в стороне от полей, которые его
      * закрывают: мастер читал «записаны выполненные работы», шёл
      * в раздел и там заново искал глазами, чего не хватает.
      *
@@ -29,6 +29,16 @@
        заказа: списки, набранные порознь, расходятся при первой правке. */
     .unit-section-pending { color: #8a6100; }
     .unit-section-ready { color: #146c43; }
+
+    /* Списана деталь или только намечена — цветом строки: это главный
+       вопрос к списку деталей, и отвечать на него значком в конце строки
+       значит заставлять читать список глазами. Полоса слева, а не заливка
+       целиком: на телефоне строка становится карточкой (list-table.css),
+       и заливка съела бы её собственные границы. */
+    .part-row-planned > td { border-left: 4px solid #ffc107; }
+    .part-row-written > td { border-left: 4px solid #198754; }
+    .part-row-planned > td:not(:first-child),
+    .part-row-written > td:not(:first-child) { border-left: none; }
 </style>
 {% endblock %}
 
@@ -110,6 +120,76 @@ document.addEventListener('DOMContentLoaded', function () {
     // Отправили — правки уехали в базу, и предупреждать больше не о чем
     form.addEventListener('submit', function () { note.hidden = true; });
 });
+
+/*
+ * Скан детали или ячейки кладёт деталь в форму списка (с v2.96.0).
+ *
+ * Ставит выбор и переводит курсор в количество — но ничего не списывает
+ * и даже не добавляет: количество вводит человек, а список уходит
+ * на склад отдельной кнопкой. Скан, который сам менял бы остатки,
+ * означал бы, что случайно поднесённая к сканеру наклейка списывает
+ * деталь.
+ *
+ * Ячейка: одна деталь в ней — берём её; несколько — говорим вслух,
+ * сколько их, и просим отсканировать саму деталь. Догадка здесь
+ * означала бы не ту деталь в ремонте и не ту себестоимость.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('unitPartForm');
+    if (!form || typeof LiftTeamScanner === 'undefined') return;
+
+    var picker = form.querySelector('.part-picker');
+    var quantity = form.querySelector('input[type="number"], input[name="quantity_used"]');
+    if (!picker) return;
+
+    function put(part) {
+        LiftTeamPartPicker.set(picker, {
+            id: part.id,
+            label: part.part_number + ' — ' + part.name
+        });
+        if (quantity) {
+            quantity.focus();
+            quantity.select();
+        }
+        return part.part_number + ' — укажите количество и нажмите «Добавить в список»';
+    }
+
+    LiftTeamScanner.register({
+        kinds: ['part', 'cell'],
+        name: 'Детали единицы',
+        onScan: function (scan) {
+            // LiftTeamWS.fetch, а не голый fetch: обрыв связи должен
+            // поднять общую полосу вверху страницы, а не выглядеть
+            // как «деталь не найдена»
+            return LiftTeamWS.fetch('{% url "scan_resolve" %}?code=' + encodeURIComponent(scan.payload))
+                .then(function (response) {
+                    return response.ok ? response.json() : Promise.reject(response.status);
+                })
+                .then(function (data) {
+                    if (!data.found) return {ok: false, text: data.message};
+
+                    if (data.kind === 'part') {
+                        return put({
+                            id: data.id,
+                            part_number: data.title,
+                            name: data.subtitle || ''
+                        });
+                    }
+
+                    var parts = data.parts || [];
+                    if (parts.length === 1) return put(parts[0]);
+                    if (!parts.length) {
+                        return {ok: false, text: 'Ячейка ' + data.title + ' пуста'};
+                    }
+                    return {
+                        ok: false,
+                        text: 'В ячейке ' + data.title + ' деталей: ' + parts.length +
+                              ' — отсканируйте саму деталь'
+                    };
+                });
+        }
+    });
+});
 </script>
 {% endblock %}
 
@@ -119,7 +199,7 @@ document.addEventListener('DOMContentLoaded', function () {
     часть в строке карточки заказа, часть в форме правки заказа, часть
     на дефектации — и мастер с платой в руках ходил между ними.
 
-    С v2.95.0 дефектация переехала сюда же: своей страницы у неё больше
+    С v2.96.0 дефектация переехала сюда же: своей страницы у неё больше
     нет. Разделы правятся каждый своей кнопкой — сохранение одного
     не трогает поля другого: прибор в работе бывает у двоих сразу.
 {% endcomment %}
@@ -147,7 +227,7 @@ document.addEventListener('DOMContentLoaded', function () {
         {% comment %}
             Приём и диагностика — один раздел: что привезли и что нашли
             внутри записывают за один заход, с прибором на столе.
-            До v2.95.0 это были две страницы, и на второй приходилось
+            До v2.96.0 это были две страницы, и на второй приходилось
             заново читать, с чем прибор приехал.
         {% endcomment %}
         <div class="card mb-4 unit-section {% if sections.diagnosis.done %}unit-section-done{% else %}unit-section-todo{% endif %}"
@@ -164,8 +244,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     {% if sections.diagnosis.done %}
                     <i class="bi bi-check-lg me-1"></i>заполнено
                     {% else %}
+                    {% comment %}
+                        Пока пункт не закрыт, показываем **подсказку**,
+                        а не название: названия в списке проверок набраны
+                        как утверждения о сделанном («Запланированные
+                        детали списаны»), и в шапке недоделанного раздела
+                        такое утверждение читается ровно наоборот тому,
+                        что есть. Подсказка говорит, чего не хватает,
+                        и берётся из того же списка — расходиться нечему.
+                    {% endcomment %}
                     {% for check in sections.diagnosis.pending %}
-                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    <span title="{{ check.label }}"><i class="bi bi-dash-lg me-1"></i>{{ check.hint }}</span>
                     {% endfor %}
                     {% endif %}
                 </span>
@@ -376,8 +465,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     {% if sections.repair.done %}
                     <i class="bi bi-check-lg me-1"></i>заполнено
                     {% else %}
+                    {% comment %}
+                        Пока пункт не закрыт, показываем **подсказку**,
+                        а не название: названия в списке проверок набраны
+                        как утверждения о сделанном («Запланированные
+                        детали списаны»), и в шапке недоделанного раздела
+                        такое утверждение читается ровно наоборот тому,
+                        что есть. Подсказка говорит, чего не хватает,
+                        и берётся из того же списка — расходиться нечему.
+                    {% endcomment %}
                     {% for check in sections.repair.pending %}
-                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    <span title="{{ check.label }}"><i class="bi bi-dash-lg me-1"></i>{{ check.hint }}</span>
                     {% endfor %}
                     {% endif %}
                 </span>
@@ -449,39 +547,54 @@ document.addEventListener('DOMContentLoaded', function () {
                     {% if sections.parts.done %}
                     <i class="bi bi-check-lg me-1"></i>всё списано
                     {% else %}
+                    {% comment %}
+                        Пока пункт не закрыт, показываем **подсказку**,
+                        а не название: названия в списке проверок набраны
+                        как утверждения о сделанном («Запланированные
+                        детали списаны»), и в шапке недоделанного раздела
+                        такое утверждение читается ровно наоборот тому,
+                        что есть. Подсказка говорит, чего не хватает,
+                        и берётся из того же списка — расходиться нечему.
+                    {% endcomment %}
                     {% for check in sections.parts.pending %}
-                    <span title="{{ check.hint }}"><i class="bi bi-dash-lg me-1"></i>{{ check.label }}</span>
+                    <span title="{{ check.label }}"><i class="bi bi-dash-lg me-1"></i>{{ check.hint }}</span>
                     {% endfor %}
                     {% endif %}
                 </span>
             </div>
             <div class="card-body">
                 {% comment %}
-                    Списание прямо здесь: единицу выбирать не надо, она
-                    известна. Раньше за этим уходили на карточку заказа
-                    и там ещё раз указывали, в какую железку.
+                    Список набирается, а списывается кнопкой внизу
+                    (с v2.96.0). Так это и происходит у стола: мастер
+                    вскрыл прибор, набрал, что менять, и только потом
+                    идёт к стеллажу. До этого каждая строка списывалась
+                    в тот же миг, когда её вписали, — то есть склад
+                    менялся, пока мастер ещё думал.
 
-                    Форма на карточке заказа при этом осталась: там
-                    списывают то, что к прибору не привязано, — припой,
-                    стяжки, промывку, то есть «на заказ целиком».
-
-                    `next` возвращает сюда же: мастер списывает три детали
-                    подряд, и уезжать в заказ после каждой незачем.
+                    Единицу выбирать не надо, она известна; `next`
+                    возвращает сюда же, к следующей детали.
                 {% endcomment %}
-                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}" class="row g-2 mb-3">
+                <form method="post" action="{% url 'repair_order_add_detail' order.pk %}"
+                      class="row g-2 mb-3" id="unitPartForm">
                     {% csrf_token %}
                     <input type="hidden" name="order_equipment" value="{{ order_equipment.pk }}">
                     <input type="hidden" name="next" value="{{ request.path }}#parts">
+                    {% comment %}
+                        Добавление всегда намечает, а не списывает:
+                        поле `plan` уходит скрытым, а не второй кнопкой.
+                    {% endcomment %}
+                    <input type="hidden" name="plan" value="1">
                     <div class="col-md-6">{% include 'core/_part_picker.html' with name=detail_form.part.html_name placeholder='Деталь не выбрана' %}</div>
                     <div class="col-md-2">{{ detail_form.quantity_used }}</div>
-                    <div class="col-md-4 d-flex gap-2">
-                        <button type="submit" class="btn btn-primary flex-fill">
-                            <i class="bi bi-plus-lg me-1"></i>Списать
+                    <div class="col-md-4">
+                        <button type="submit" class="btn btn-outline-primary w-100">
+                            <i class="bi bi-plus-lg me-1"></i>Добавить в список
                         </button>
-                        <button type="submit" name="plan" value="1" class="btn btn-outline-primary flex-fill"
-                                title="Нужна, но со склада ещё не берём">
-                            <i class="bi bi-clock me-1"></i>В план
-                        </button>
+                    </div>
+                    <div class="form-text">
+                        Склад не трогается: со стеллажа детали уходят кнопкой
+                        «Списать со склада» под списком. Деталь или ячейку
+                        можно отсканировать — она встанет в поле выбора.
                     </div>
                 </form>
 
@@ -492,12 +605,21 @@ document.addEventListener('DOMContentLoaded', function () {
                             <tr><th>Артикул</th><th>Название</th><th class="text-end">Кол-во</th><th class="text-end">Себестоимость</th><th class="col-actions"></th></tr>
                         </thead>
                         <tbody>
+                            {% comment %}
+                                Цвет строки говорит, ушла деталь с полки
+                                или только намечена: это главный вопрос
+                                к этому списку, и отвечать на него значком
+                                в конце строки — значит заставлять читать
+                                весь список глазами. Правила свои, не
+                                бутстраповские: Bootstrap приходит
+                                из интернета.
+                            {% endcomment %}
                             {% for detail in details %}
-                            <tr>
+                            <tr class="{% if detail.is_planned %}part-row-planned{% else %}part-row-written{% endif %}">
                                 <td data-label="Артикул">
                                     <a href="{% url 'part_detail' detail.part.pk %}">{{ detail.part.part_number }}</a>
                                     {% if detail.is_planned %}
-                                    <span class="badge bg-secondary">запланирована</span>
+                                    <span class="badge bg-secondary">намечена</span>
                                     {% endif %}
                                 </td>
                                 <td data-label="Название">{{ detail.part.name }}</td>
@@ -540,13 +662,36 @@ document.addEventListener('DOMContentLoaded', function () {
                         </tbody>
                     </table>
                 </div>
-                <div class="form-text">
+                {% comment %}
+                    Списание всего списка разом — одной кнопкой и одной
+                    транзакцией: наполовину списанный список хуже
+                    не списанного вовсе, по нему уже не понять, что взято.
+                    Кнопки нет, когда намечать нечего: кнопка, которая
+                    ничего не делает, учит не читать кнопки.
+                {% endcomment %}
+                {% if planned_details %}
+                <form method="post"
+                      action="{% url 'repair_order_unit_write_off_planned' order.pk order_equipment.pk %}"
+                      class="mt-3">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-box-arrow-down me-2"></i>Списать со склада весь список
+                    </button>
+                    <span class="text-muted small ms-2">
+                        Намечено строк: {{ planned_details|length }}. Остальные уже списаны.
+                    </span>
+                </form>
+                {% endif %}
+
+                <div class="form-text mt-2">
                     Детали, списанные на заказ целиком, здесь не показаны —
                     они в <a href="{% url 'repair_order_detail' order.pk %}">карточке заказа</a>.
+                    Так лежат списания, сделанные до v2.96.0: с тех пор
+                    деталь ставят в конкретный прибор.
                 </div>
                 {% else %}
                 <p class="text-muted mb-0">
-                    На эту единицу деталей не списано.
+                    Список деталей на эту единицу пуст.
                 </p>
                 {% endif %}
             </div>
@@ -592,7 +737,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 </form>
                 {% endif %}
                 {% comment %}
-                    Путь на Диске — кнопкой, не полем (с v2.95.0): ссылку
+                    Путь на Диске — кнопкой, не полем (с v2.96.0): ссылку
                     обычно ставит кнопка выше, которая строит её сама.
                     Ручной ввод нужен на два случая — папку завели раньше
                     программы, или снимки переложили — и не должен быть

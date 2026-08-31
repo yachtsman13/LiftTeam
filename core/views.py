@@ -1514,11 +1514,20 @@ def repair_order_add_detail(request, pk):
     if form.is_valid():
         part = form.cleaned_data['part']
         quantity = form.cleaned_data['quantity_used']
-        # В какую единицу ушла деталь. Не указана — списание останется
-        # общим по заказу, а если прибор в заказе один, привязка
-        # проставится сама (см. _use_repair_order_part).
+        # В какую единицу ушла деталь. С v2.96.0 «на заказ целиком» больше
+        # не выбирают (решение владельца): деталь ставят в конкретный
+        # прибор, иначе по этой записи потом не посчитать, во сколько
+        # обошёлся его ремонт. Прибор в заказе один — привязка
+        # проставляется сама (см. _use_repair_order_part).
         unit_id = request.POST.get('order_equipment')
         unit = order.order_equipments.filter(pk=unit_id).first() if unit_id else None
+        if unit is None and order.order_equipments.count() > 1:
+            messages.error(
+                request,
+                'Не списано: укажите, в какой прибор ушла деталь. '
+                'В заказе их несколько, и угадывать программа не станет.'
+            )
+            return _back_after_detail(request, pk)
         # «Запланировать» вместо «Добавить»: деталь нужна, но со склада
         # ещё не взята — остаток трогать рано.
         if request.POST.get('plan'):
@@ -1551,16 +1560,38 @@ def repair_order_add_detail(request, pk):
     return _back_after_detail(request, pk)
 
 
+def _write_off_planned(detail, employee):
+    """Превратить запланированную строку в настоящее списание.
+
+    Одно место на оба случая — одну строку и весь список разом: второй
+    такой код однажды разошёлся бы с первым, а склад не то место, где
+    это можно позволить. Списание идёт ровно тем же путём, что и обычное
+    (`_use_repair_order_part`): распределение по партиям FIFO, затрата
+    по заказу, запись в истории. Отличается только тем, что строка
+    в заказе уже есть — её убираем, а не заводим вторую.
+
+    Возвращает True, если списывать пришлось в минус.
+    """
+    order = detail.repair_order
+    part = detail.part
+    quantity = detail.quantity_used
+    shortage = part.current_stock < quantity
+    unit = detail.order_equipment
+
+    detail.delete()
+    _use_repair_order_part(
+        order, part, quantity, employee,
+        f'Списана запланированная деталь {part.name} x{quantity}',
+        order_equipment=unit
+    )
+    return shortage
+
+
 @login_required
 @require_POST
 def repair_order_write_off_detail(request, pk, detail_pk):
     """Списать запланированную деталь: теперь она действительно ушла
     в прибор.
-
-    Списание идёт ровно тем же путём, что и обычное (`_use_repair_order_part`):
-    распределение по партиям FIFO, затрата по заказу, запись в истории.
-    Отличается только тем, что строка в заказе уже есть — её и обновляем,
-    а не заводим вторую.
     """
     order = get_object_or_404(RepairOrder, pk=pk)
     detail = get_object_or_404(
@@ -1577,19 +1608,64 @@ def repair_order_write_off_detail(request, pk, detail_pk):
         )
 
     with transaction.atomic():
-        # Запланированную строку убираем и заводим настоящее списание одним
-        # общим путём: иначе распределение по партиям и затрата считались бы
-        # здесь во второй раз, своим кодом, и однажды разошлись бы с тем.
-        unit = detail.order_equipment
-        detail.delete()
-        _use_repair_order_part(
-            order, part, quantity, request.user,
-            f'Списана запланированная деталь {part.name} x{quantity}',
-            order_equipment=unit
-        )
+        _write_off_planned(detail, request.user)
 
     messages.success(request, f'{part.name} x{quantity} списана со склада')
     return _back_after_detail(request, order.pk)
+
+
+@login_required
+@require_POST
+def repair_order_unit_write_off_planned(request, order_pk, roe_pk):
+    """Списать со склада весь намеченный список деталей этой единицы
+    (с v2.96.0).
+
+    Так это и происходит у стола: мастер вскрыл прибор, набрал список
+    того, чтоменять, и только потом идёт к стеллажу. До этого каждая
+    строка списывалась в тот же миг, когда её вписали, — то есть склад
+    менялся, пока мастер ещё думал.
+
+    Списывается каждая строка **тем же** путём, что и по одной
+    (`_write_off_planned`), и всё одной транзакцией: наполовину списанный
+    список хуже не списанного вовсе — по нему уже не понять, что взято.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    planned = list(
+        order_equipment.details.filter(is_planned=True).select_related('part')
+    )
+
+    if not planned:
+        messages.info(request, 'Списывать нечего: намеченных деталей нет.')
+        return redirect(
+            reverse('repair_order_unit_detail', args=[order_pk, roe_pk]) + '#parts'
+        )
+
+    short = []
+    written = []
+    with transaction.atomic():
+        for detail in planned:
+            name = detail.part.name
+            written.append(f'{detail.part.part_number} x{detail.quantity_used}')
+            if _write_off_planned(detail, request.user):
+                short.append(name)
+
+    # Перечисляем, что именно ушло с полки, а не считаем строки: мастер
+    # сверяет это с тем, что взял в руки. Длинный список подрезаем —
+    # в полосе сообщения читают первые слова
+    shown = ', '.join(written[:6])
+    if len(written) > 6:
+        shown += f' и ещё {len(written) - 6}'
+    messages.success(request, f'Списано со склада: {shown}')
+    # Списали в минус — сказать вслух: остаток на полке и в программе
+    # разошлись, и знать об этом надо сейчас, а не при инвентаризации
+    if short:
+        messages.warning(
+            request,
+            'Списано с отрицательным остатком: %s.' % ', '.join(short),
+        )
+    return redirect(
+        reverse('repair_order_unit_detail', args=[order_pk, roe_pk]) + '#parts'
+    )
 
 
 @login_required
@@ -4650,6 +4726,8 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
     # акт. Переехало сюда вместе с самой дефектацией
     line = order_equipment.price_list_line
 
+    details = list(order_equipment.details.select_related('part').order_by('id'))
+
     return render(request, 'core/repair_orders/unit_detail.html', {
         'order': order,
         'order_equipment': order_equipment,
@@ -4667,7 +4745,11 @@ def repair_order_unit_detail(request, order_pk, roe_pk):
         # Детали, списанные именно на эту единицу. Списанные «на заказ
         # целиком» сюда не попадают намеренно: программа не знает,
         # в какую железку они ушли, и приписывать их наугад нельзя
-        'details': order_equipment.details.select_related('part').order_by('id'),
+        'details': details,
+        # Намеченные, но ещё не взятые со склада — ради кнопки «списать
+        # весь список». Считаем здесь, а не в шаблоне: `details` уже
+        # выбраны из базы, и второй запрос ради того же незачем
+        'planned_details': [line for line in details if line.is_planned],
         # Форма списания на самой странице: единицу выбирать не надо,
         # она известна — в этом и выигрыш перед формой на карточке заказа
         'detail_form': RepairOrderDetailForm(),
@@ -5433,6 +5515,14 @@ def _scan_cell(cell):
     return {
         'title': cell.address,
         'subtitle': str(cell.cabinet),
+        # Что лежит в ячейке — не только строкой для человека, но и
+        # номерами: страница единицы кладёт отсканированную ячейку
+        # в список деталей, а для этого ей нужен номер самой детали.
+        # Тот же приём, что `cell_id` у детали.
+        'parts': [
+            {'id': part.pk, 'part_number': part.part_number, 'name': part.name}
+            for part in parts
+        ],
         'lines': [
             {'label': 'Кассетница', 'value': str(cell.cabinet)},
             {'label': 'Деталей в ячейке', 'value': str(len(parts))},

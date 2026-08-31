@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.95.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.96.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
             <div class="card-body">
                 {% comment %}
-                    Два столбца, а не общая сетка вперемешку (с v2.95.0):
+                    Два столбца, а не общая сетка вперемешку (с v2.96.0):
                     слева то, что относится к заказчику и деньгам, справа —
                     к ходу самого ремонта. Статус, заказчик и оплата
                     правятся прямо здесь, выпадающим списком — отдельных
@@ -197,7 +197,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         </div>
                         {% comment %}
                             Строки «Начальное состояние» здесь больше нет
-                            (с v2.95.0): поле живёт у единицы, а не у заказа
+                            (с v2.96.0): поле живёт у единицы, а не у заказа
                             (`RepairOrderEquipment.initial_condition`), и это
                             место обращалось к несуществующему полю заказа —
                             всегда показывало «—», сколько бы ни заполнили
@@ -321,7 +321,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                                 {% comment %}
                                     Готовность и действия — один столбец
-                                    (с v2.95.0): раньше отметка стояла
+                                    (с v2.96.0): раньше отметка стояла
                                     отдельно от кнопок, которые её и закрывают,
                                     и на телефоне это были две карточки
                                     подряд про одно и то же. Что именно
@@ -646,11 +646,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         приборов в заказе несколько. Когда он один, ответ
                         очевиден, и лишний выбор мешал бы: программа
                         привязывает деталь сама.
+
+                        Варианта «на заказ целиком» здесь больше нет
+                        (с v2.96.0, решение владельца): деталь ставят
+                        в конкретный прибор, иначе по этой записи потом
+                        не посчитать, во сколько обошёлся его ремонт.
+                        Списания, сделанные раньше, так и остаются
+                        общими по заказу — переписывать их наугад нельзя.
                     {% endcomment %}
                     {% if order_equipments|length > 1 %}
                     <div class="col-md-3">
-                        <select name="order_equipment" class="form-select" aria-label="В какую единицу">
-                            <option value="">На заказ целиком</option>
+                        <select name="order_equipment" class="form-select" required aria-label="В какую единицу">
+                            <option value="">Выберите прибор…</option>
                             {% for oe in order_equipments %}
                             <option value="{{ oe.pk }}">{{ forloop.counter }}. {{ oe.equipment.designation }} — {{ oe.equipment.serial_number }}</option>
                             {% endfor %}

@@ -10821,9 +10821,11 @@ class PartsPerUnitTests(TestCase):
     """Деталь списывается в конкретную железку, а не «в заказ вообще».
 
     В заказе с одним прибором привязка очевидна и проставляется сама;
-    с несколькими программа не угадывает — деталь остаётся общей, пока
-    мастер не укажет. Так решил владелец: неверная привязка хуже пустой,
-    потому что по ней потом считают, во сколько обошёлся ремонт.
+    с несколькими её **спрашивают**, и без ответа списания не будет
+    (с v2.96.0, решение владельца). До этого деталь оставалась общей
+    по заказу, и по такой записи нельзя было посчитать, во сколько
+    обошёлся ремонт каждого прибора. Списания, сделанные раньше,
+    так и остаются общими: переписывать их наугад нельзя.
     """
 
     def setUp(self):
@@ -10851,10 +10853,12 @@ class PartsPerUnitTests(TestCase):
             equipment=Equipment.objects.create(model=self.model, serial_number='SN-U2'),
         )
 
-    def _add(self, **extra):
+    def _add(self, follow=False, **extra):
         data = {'part': self.part.pk, 'quantity_used': 2}
         data.update(extra)
-        return self.http.post('/repair-orders/%d/add-detail/' % self.order.pk, data)
+        return self.http.post(
+            '/repair-orders/%d/add-detail/' % self.order.pk, data, follow=follow
+        )
 
     def test_one_unit_in_the_order_gets_the_part_by_itself(self):
         self._add()
@@ -10862,15 +10866,18 @@ class PartsPerUnitTests(TestCase):
         detail = self.order.details.get()
         self.assertEqual(detail.order_equipment, self.first)
 
-    def test_several_units_leave_the_part_on_the_order(self):
+    def test_several_units_mean_the_master_has_to_say_which(self):
         """Программа не угадывает, в который из пяти приборов поставили
-        конденсатор."""
+        конденсатор, — и не списывает, пока не сказали."""
         self._second_unit()
 
-        self._add()
+        response = self._add(follow=True)
 
-        detail = self.order.details.get()
-        self.assertIsNone(detail.order_equipment)
+        self.assertFalse(self.order.details.exists())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.current_stock, 50)
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('укажите, в какой прибор' in t for t in texts), texts)
 
     def test_the_master_can_name_the_unit(self):
         second = self._second_unit()
@@ -10881,7 +10888,12 @@ class PartsPerUnitTests(TestCase):
         self.assertEqual(detail.order_equipment, second)
 
     def test_a_unit_from_another_order_is_not_accepted(self):
-        """Иначе подставленный номер увёл бы деталь в чужой ремонт."""
+        """Иначе подставленный номер увёл бы деталь в чужой ремонт.
+
+        Раньше такая деталь молча списывалась «на заказ целиком»;
+        с v2.96.0 не списывается вовсе — подставленный номер это ошибка,
+        а не повод выбрать за человека.
+        """
         other_order = RepairOrder.objects.create(client=self.order.client)
         alien = RepairOrderEquipment.objects.create(
             repair_order=other_order,
@@ -10891,8 +10903,8 @@ class PartsPerUnitTests(TestCase):
 
         self._add(order_equipment=alien.pk)
 
-        detail = self.order.details.get()
-        self.assertIsNone(detail.order_equipment)
+        self.assertFalse(self.order.details.exists())
+        self.assertFalse(other_order.details.exists())
 
     def test_the_stock_is_written_off_the_same_way_as_before(self):
         """Привязка — это только запись о том, куда ушла деталь. Склад,
@@ -10940,13 +10952,20 @@ class PartsPerUnitTests(TestCase):
         self._second_unit()
         page = self.http.get('/repair-orders/%d/' % self.order.pk)
         self.assertContains(page, '<select name="order_equipment"')
-        self.assertContains(page, 'На заказ целиком')
+        # Варианта «на заказ целиком» в выборе больше нет (v2.96.0):
+        # деталь ставят в конкретный прибор
+        self.assertNotContains(page, 'На заказ целиком')
+        self.assertContains(page, 'Выберите прибор')
 
-    def test_old_write_offs_read_as_on_the_order(self):
-        """Списания до появления привязки лежат пустыми, и это честно:
-        выдумывать за них нельзя."""
+    def test_old_write_offs_still_read_as_on_the_order(self):
+        """Списания, сделанные до появления привязки, лежат пустыми,
+        и это честно: выдумывать за них нельзя. Показывать их надо
+        по-прежнему — и после того, как выбор «на заказ целиком» убран."""
         self._second_unit()
-        self._add()
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=None,
+            part=self.part, quantity_used=1,
+        )
 
         page = self.http.get('/repair-orders/%d/' % self.order.pk)
 
@@ -14623,9 +14642,12 @@ class UnitPageTests(TestCase):
 
         # У этого прибора работы записаны, а стоимость — нет: раздел
         # ремонта горит недоделанным и называет ровно то, чего не хватает.
-        # Слова те же, что в чек-листе на карточке заказа: список
-        # проверок один на всю программу
-        self.assertIn('Проставлена стоимость ремонта', html)
+        # Именно подсказкой: названия проверок набраны как утверждения
+        # о сделанном, и в шапке недоделанного раздела такое утверждение
+        # читалось бы наоборот тому, что есть. Слова берутся из того же
+        # списка проверок, что и чек-лист на карточке заказа
+        self.assertIn('По ней считается сумма заказа и выставляется счёт.', html)
+        self.assertIn('title="Проставлена стоимость ремонта"', html)
         self.assertIn('unit-section-todo', html)
 
     def test_a_finished_section_changes_colour(self):
@@ -16303,8 +16325,10 @@ class PartsOnUnitPageTests(TestCase):
         html = self.http.get(self._unit_url()).content.decode()
 
         self.assertIn('name="order_equipment" value="%d"' % self.roe.pk, html)
-        self.assertIn('Списать', html)
-        self.assertIn('В план', html)
+        # Добавление намечает, а не списывает (с v2.96.0): склад
+        # не должен меняться, пока мастер набирает список
+        self.assertIn('Добавить в список', html)
+        self.assertIn('name="plan" value="1"', html)
 
     def test_a_part_written_off_here_lands_on_this_unit(self):
         response = self.http.post(
@@ -16333,15 +16357,16 @@ class PartsOnUnitPageTests(TestCase):
             reverse('repair_order_detail', args=[self.order.pk]),
         )
 
-    def test_the_order_card_still_writes_off_to_the_order_as_a_whole(self):
-        """Там списывают припой, стяжки, промывку — то, что к прибору
-        не привязано. Убери форму — списывать общее станет негде."""
+    def test_the_order_card_keeps_its_own_form(self):
+        """Форма на карточке заказа осталась, но списывает уже
+        в названный прибор: выбора «на заказ целиком» в ней больше нет
+        (v2.96.0, решение владельца)."""
         html = self.http.get(
             reverse('repair_order_detail', args=[self.order.pk])
         ).content.decode()
 
         self.assertIn('id="usePartForm"', html)
-        self.assertIn('На заказ целиком', html)
+        self.assertNotIn('На заказ целиком', html)
 
     def test_planned_parts_are_written_off_from_here(self):
         planned = RepairOrderDetail.objects.create(
@@ -16373,7 +16398,227 @@ class PartsOnUnitPageTests(TestCase):
         html = self.http.get(self._unit_url()).content.decode()
         block = html.split('Детали на эту единицу')[1]
 
-        self.assertIn('деталей не списано', block)
+        self.assertIn('Список деталей на эту единицу пуст', block)
+
+
+class PartsListWrittenOffAtOnceTests(TestCase):
+    """Список деталей набирается, а списывается кнопкой внизу (v2.96.0).
+
+    Так это и происходит у стола: мастер вскрыл прибор, набрал, что
+    менять, и только потом идёт к стеллажу. До этого каждая строка
+    списывалась в тот же миг, когда её вписали, — то есть склад менялся,
+    пока мастер ещё думал.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='parts_batch', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-BATCH-1'),
+        )
+        self.cap = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=10
+        )
+        self.res = SparePart.objects.create(
+            part_number='R-10K', name='Резистор 10 кОм', current_stock=4
+        )
+
+    def _unit_url(self):
+        return reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+
+    def _write_off_url(self):
+        return reverse('repair_order_unit_write_off_planned',
+                       args=[self.order.pk, self.roe.pk])
+
+    def _plan(self, part, quantity=2):
+        return RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=part, quantity_used=quantity, is_planned=True,
+        )
+
+    def test_adding_from_the_unit_page_does_not_touch_the_stock(self):
+        self.http.post(
+            reverse('repair_order_add_detail', args=[self.order.pk]),
+            {'part': str(self.cap.pk), 'quantity_used': '2', 'plan': '1',
+             'order_equipment': str(self.roe.pk),
+             'next': self._unit_url() + '#parts'},
+        )
+
+        self.cap.refresh_from_db()
+        self.assertEqual(self.cap.current_stock, 10)
+        self.assertTrue(RepairOrderDetail.objects.get().is_planned)
+
+    def test_the_whole_list_goes_off_the_shelf_at_once(self):
+        self._plan(self.cap, 2)
+        self._plan(self.res, 1)
+
+        self.http.post(self._write_off_url())
+
+        self.cap.refresh_from_db()
+        self.res.refresh_from_db()
+        self.assertEqual(self.cap.current_stock, 8)
+        self.assertEqual(self.res.current_stock, 3)
+        self.assertFalse(
+            RepairOrderDetail.objects.filter(is_planned=True).exists()
+        )
+
+    def test_written_off_lines_keep_their_unit_and_cost_path(self):
+        """Списание идёт тем же путём, что и по одной строке: партии,
+        затрата и запись в истории считаются одним кодом."""
+        self._plan(self.cap, 2)
+        StockMovement.objects.create(
+            part=self.cap, quantity=10, movement_type='incoming',
+            unit_price=Decimal('30.00'),
+        )
+
+        self.http.post(self._write_off_url())
+
+        detail = RepairOrderDetail.objects.get()
+        self.assertFalse(detail.is_planned)
+        self.assertEqual(detail.order_equipment, self.roe)
+        self.assertIsNotNone(detail.movement)
+        self.assertTrue(OrderCost.objects.filter(repair_order=self.order).exists())
+
+    def test_a_shortage_is_said_out_loud(self):
+        """Списали в минус — остаток на полке и в программе разошлись,
+        и знать об этом надо сейчас, а не при инвентаризации."""
+        self._plan(self.res, 9)
+
+        response = self.http.post(self._write_off_url(), follow=True)
+
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(
+            any('отрицательным остатком' in text for text in texts), texts
+        )
+
+    def test_nothing_planned_says_so_instead_of_pretending(self):
+        response = self.http.post(self._write_off_url(), follow=True)
+
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Списывать нечего' in text for text in texts), texts)
+
+    def test_the_button_appears_only_when_there_is_something_to_write_off(self):
+        """Кнопка, которая ничего не делает, учит не читать кнопки."""
+        html = self.http.get(self._unit_url()).content.decode()
+        self.assertNotIn(self._write_off_url(), html)
+
+        self._plan(self.cap)
+        html = self.http.get(self._unit_url()).content.decode()
+        self.assertIn(self._write_off_url(), html)
+
+    def test_the_colour_says_written_off_or_not(self):
+        self._plan(self.cap)
+        RepairOrderDetail.objects.create(
+            repair_order=self.order, order_equipment=self.roe,
+            part=self.res, quantity_used=1,
+        )
+
+        html = self.http.get(self._unit_url()).content.decode()
+
+        self.assertIn('part-row-planned', html)
+        self.assertIn('part-row-written', html)
+
+    def test_a_unit_of_another_order_is_not_written_off(self):
+        """Иначе подобранный адрес списал бы склад на чужой ремонт."""
+        other = RepairOrder.objects.create(client=self.order.client)
+        self._plan(self.cap)
+
+        response = self.http.post(
+            reverse('repair_order_unit_write_off_planned', args=[other.pk, self.roe.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.cap.refresh_from_db()
+        self.assertEqual(self.cap.current_stock, 10)
+
+    def test_only_post_writes_off(self):
+        response = self.http.get(self._write_off_url())
+
+        self.assertEqual(response.status_code, 405)
+
+
+class ScanIntoPartsListTests(TestCase):
+    """Скан детали или ячейки кладёт деталь в список единицы (v2.96.0).
+
+    Ставит выбор и переводит курсор в количество — но ничего не списывает
+    и даже не добавляет: скан, сам меняющий остатки, означал бы, что
+    случайно поднесённая к сканеру наклейка списывает деталь.
+    """
+
+    STATIC = Path(__file__).resolve().parent / 'static'
+    TEMPLATE = (Path(__file__).resolve().parent
+                / 'templates/core/repair_orders/unit_detail.html')
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='scan_parts', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        cabinet = Cabinet.objects.create(number=1, name='К1')
+        cabinet.apply_layout([4])
+        self.cell = cabinet.cells.first()
+        self.part = SparePart.objects.create(
+            part_number='C-100u', name='Конденсатор 100 мкФ', current_stock=5
+        )
+
+    def test_the_unit_page_subscribes_to_parts_and_cells(self):
+        page = self.TEMPLATE.read_text(encoding='utf-8')
+
+        self.assertIn("kinds: ['part', 'cell']", page)
+        self.assertIn('LiftTeamPartPicker.set', page)
+
+    def test_the_scan_only_fills_the_field(self):
+        """Ни списания, ни добавления: количество вводит человек,
+        а список уходит на склад отдельной кнопкой."""
+        page = self.TEMPLATE.read_text(encoding='utf-8')
+        handler = page.split("name: 'Детали единицы'")[0].rsplit(
+            'LiftTeamScanner.register', 1)[0]
+
+        # Курсор переводится в количество, а сама форма не отправляется
+        self.assertIn('quantity.focus()', handler)
+        self.assertNotIn('form.submit()', page)
+
+    def test_a_scanned_cell_names_its_parts(self):
+        """Ячейку кладут в список через деталь, которая в ней лежит,
+        а для этого нужен её номер, а не строка для человека."""
+        self.cell.parts.add(self.part)
+
+        data = self.http.get(
+            reverse('scan_resolve'), {'code': 'c/%d' % self.cell.pk}
+        ).json()
+
+        self.assertEqual(
+            data['parts'],
+            [{'id': self.part.pk, 'part_number': 'C-100u',
+              'name': 'Конденсатор 100 мкФ'}],
+        )
+
+    def test_a_crowded_cell_is_not_guessed_at(self):
+        """Догадка здесь означала бы не ту деталь в ремонте и не ту
+        себестоимость."""
+        other = SparePart.objects.create(
+            part_number='R-10K', name='Резистор 10 кОм', current_stock=5
+        )
+        self.cell.parts.add(self.part, other)
+
+        data = self.http.get(
+            reverse('scan_resolve'), {'code': 'c/%d' % self.cell.pk}
+        ).json()
+        page = self.TEMPLATE.read_text(encoding='utf-8')
+
+        self.assertEqual(len(data['parts']), 2)
+        self.assertIn('отсканируйте саму деталь', page)
 
 
 class AutogrowTests(SimpleTestCase):
