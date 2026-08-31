@@ -17736,3 +17736,79 @@ class EquipmentLabelSerialTests(TestCase):
             serial.split('font-size:')[1].split(';')[0].strip(),
             model.split('font-size:')[1].split(';')[0].strip(),
         )
+
+
+class BatchLabelContextTests(TestCase):
+    """Пачка этикеток передаёт поля в шаблон поимённо, и каждое имя
+    обязано быть ключом словаря этикетки.
+
+    Пропущенный ключ здесь не оставляет поле пустым: у словаря Python
+    есть собственные методы, и `label.items` при отсутствии ключа
+    находит метод `items()`, вызывает его и печатает на наклейке весь
+    словарь целиком — вместе с `<SparePart: …>` и содержимым QR-кода.
+    Ровно это и печаталось на каждой этикетке детали, отправленной
+    пачкой.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='batch_ctx', full_name='Админ', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+        self.cabinet = Cabinet.objects.create(number=13)
+        self.cabinet.apply_layout([4])
+        self.cell = self.cabinet.cells.first()
+        self.part = SparePart.objects.create(
+            part_number='BC-1', name='Варистор 100 В', component_type='Варистор',
+        )
+        self.cell.parts.add(self.part)
+
+    def _names_used(self, template):
+        source = (Path(__file__).resolve().parent / 'templates' / 'core'
+                  / template).read_text(encoding='utf-8')
+        return set(re.findall(r'label\.(\w+)', source))
+
+    def test_the_part_label_carries_every_name_the_batch_asks_for(self):
+        keys = set(views._part_label(self.part, 'http://x/').keys())
+
+        missing = self._names_used('parts/labels_batch.html') - keys
+
+        self.assertEqual(missing, set())
+
+    def test_the_cell_label_carries_every_name_the_batch_asks_for(self):
+        keys = set(views._cell_label(self.cell, 'http://x/').keys())
+
+        missing = self._names_used('storage_cells/labels_batch.html') - keys
+
+        self.assertEqual(missing, set())
+
+    def test_a_batch_of_part_labels_prints_no_innards(self):
+        """Проверка на сам след беды, а не только на её причину."""
+        html = self.http.get('/parts/labels/?ids=%d' % self.part.pk).content.decode()
+        area = html.split('labels-area')[1]
+
+        for leak in ('SparePart', 'qr_payload', "('part'", 'data:image/png;base64'):
+            with self.subTest(leak=leak):
+                sheet = area.split('label-text-block')[1].split('label-qr-wrap')[0]
+                self.assertNotIn(leak, sheet)
+
+    def test_a_batch_of_cell_labels_prints_no_innards(self):
+        html = self.http.get(
+            '/storage-cells/labels/?cabinet=%d' % self.cabinet.number
+        ).content.decode()
+        area = html.split('labels-area')[1]
+        sheet = area.split('label-text-block')[1].split('label-qr-wrap')[0]
+
+        for leak in ('SparePart', 'qr_payload', "('title'"):
+            with self.subTest(leak=leak):
+                self.assertNotIn(leak, sheet)
+
+    def test_a_single_part_label_is_unaffected(self):
+        """Одиночная страница берёт поля из своего контекста, а не
+        поимённо, и этой беды у неё не было — но проверить надо обе."""
+        html = self.http.get('/parts/%d/label/' % self.part.pk).content.decode()
+        sheet = html.split('label-text-block')[1].split('label-qr-wrap')[0]
+
+        self.assertNotIn('SparePart', sheet)
