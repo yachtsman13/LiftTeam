@@ -633,9 +633,13 @@ class PriceListLine(models.Model):
         EquipmentType, on_delete=models.CASCADE, related_name='price_lines',
         verbose_name='Тип оборудования'
     )
+    # Значений два, как и у единицы с неисправностью, с v2.93.0:
+    # «среднего» ремонта не бывает — решение владельца, принятое ещё
+    # в v2.83.0. У прайса это отставало, потому что строк с ним не было
+    # заведено ни одной — расхождение молчало, а не мешало
     complexity = models.CharField(
         'Сложность', max_length=20, blank=True,
-        choices=[('simple', 'Простой'), ('medium', 'Средний'), ('complex', 'Сложный')],
+        choices=[('simple', 'Простой'), ('complex', 'Сложный')],
         help_text='Пусто — цена на любой ремонт этого типа.'
     )
     price = models.DecimalField(
@@ -2411,8 +2415,14 @@ class RepairOrderEquipment(models.Model):
         «Ремонт Преобразователь частоты Emotron … SN:001272 (Замена IGBT
         модуля)» — так эта строка написана в счетах, выставленных руками,
         и заказчик сверяет её с актом слово в слово.
+
+        Сложный ремонт помечается словом впереди — «Сложный ремонт …»:
+        с v2.93.0, по образцу простого «Ремонт …». Слово берётся из той же
+        сложности, что красит значок в списке единиц (`effective_complexity`)
+        — считанной по неисправностям, если не проставлена руками.
         """
-        name = f'Ремонт {self.equipment.model.full_name} SN:{self.equipment.serial_number}'
+        prefix = 'Сложный ремонт' if self.effective_complexity == 'complex' else 'Ремонт'
+        name = f'{prefix} {self.equipment.model.full_name} SN:{self.equipment.serial_number}'
         work = self.work_performed.strip()
         if work:
             # Перевод строки в наименовании позиции банку ни к чему:

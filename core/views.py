@@ -46,7 +46,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
-    TechCardForm, TechCardStepFormSet, UnitEditForm, OrderInfoForm,
+    TechCardForm, TechCardStepFormSet, UnitEditForm, UnitDiskFolderForm, OrderInfoForm,
     RepairOrderIntakeForm,
     RepairOrderEquipmentIntakeFormSet, PartImportForm, PaymentForm, OrganizationForm,
     DefectActForm, InvoiceSendForm, QuoteForm, QuoteLineFormSet,
@@ -4802,6 +4802,27 @@ def repair_order_unit_disk_folder(request, order_pk, roe_pk):
 
 
 @login_required
+@require_POST
+def repair_order_unit_disk_folder_set(request, order_pk, roe_pk):
+    """Вписать ссылку на папку Диска руками — рядом с кнопкой «завести
+    папку» (с v2.93.0).
+
+    На Диске ничего не создаёт и не проверяет: это для двух случаев,
+    когда автоматический путь не годится — папку завели раньше программы,
+    или снимки переложили в другое место.
+    """
+    order_equipment = _order_equipment(order_pk, roe_pk)
+    form = UnitDiskFolderForm(request.POST)
+    if form.is_valid():
+        order_equipment.yandex_disk_folder = form.cleaned_data['url']
+        order_equipment.save(update_fields=['yandex_disk_folder'])
+        messages.success(request, 'Ссылка на папку сохранена.')
+    else:
+        messages.error(request, 'Ссылка не похожа на настоящую — не сохранено.')
+    return redirect('repair_order_unit_detail', order_pk=order_pk, roe_pk=roe_pk)
+
+
+@login_required
 def repair_order_act_defect(request, order_pk, roe_pk):
     """Акт дефектации оборудования.
 
@@ -5619,7 +5640,7 @@ def _part_label(part, base_url):
     метод `items()`. Не окажись ключа — шаблонизатор нашёл бы метод,
     вызвал его и напечатал на наклейке весь словарь: «('part',
     <SparePart: …>), ('qr_payload', 'p/3473')…». Ровно это и печаталось
-    до v2.92.1 на каждой этикетке детали, отправленной пачкой.
+    до v2.93.0 на каждой этикетке детали, отправленной пачкой.
     """
     payload = qr_payload('p', part.pk)
     link = qr_link(base_url, 'p', part.pk)

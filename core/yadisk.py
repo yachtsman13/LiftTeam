@@ -126,18 +126,26 @@ def safe_name(name):
 
 
 def unit_path(order_equipment):
-    """Путь папки одной единицы: LiftTeam/Заказы/<заказ>/<серийник>.
+    """Путь папки одной единицы:
+    LiftTeam/Заказы/<заказ>/<модель-исполнение> SN <серийник>.
 
     Считается одним местом: разойдись он между кнопкой и проверкой,
     и снимки одного ремонта уезжали бы в папку другого — ровно то,
     ради чего папку и заводит программа.
+
+    В имени с v2.93.0 — не голый серийник, а обозначение прибора рядом
+    с ним: одинаковые кассетницы разных ПЧ отличаются буквально одной
+    цифрой в серийнике, и по нему одному на Диске было не понять,
+    что за папка перед глазами.
     """
     order = order_equipment.repair_order
+    equipment = order_equipment.equipment
+    folder = f'{equipment.designation} SN {equipment.serial_number}'
     return '/'.join([
         root(),
         ORDERS_DIR,
         safe_name(order.order_number),
-        safe_name(order_equipment.equipment.serial_number),
+        safe_name(folder),
     ])
 
 

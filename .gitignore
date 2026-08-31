@@ -20,6 +20,7 @@ rclone.conf
 .update-request
 .update-status
 .restart-request
+.tbank-last-run
 
 # Django
 staticfiles/

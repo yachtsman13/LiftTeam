@@ -227,14 +227,30 @@ class RepairOrderFormErrorTests(TestCase):
 
     def test_invalid_yandex_link_reports_error_and_saves_nothing(self):
         """«Папка на диске» словами открывать нечем, а молча сохранённая
-        строка выглядит как рабочая ссылка."""
+        строка выглядит как рабочая ссылка. С v2.93.0 ссылка вписывается
+        не в UnitEditForm, а своей мини-формой на странице единицы."""
         order, oe = self._order_with_equipment()
-        response = self._post_unit(order, oe, yandex_disk_folder='папка на диске')
+        response = self.client_http.post(
+            reverse('repair_order_unit_disk_folder_set', args=[order.pk, oe.pk]),
+            {'url': 'папка на диске'}, follow=True,
+        )
 
         oe.refresh_from_db()
         self.assertEqual(oe.yandex_disk_folder, '')
         texts = [str(m) for m in response.context['messages']]
-        self.assertTrue(any('Не сохранено' in text for text in texts), texts)
+        self.assertTrue(any('не похожа' in text for text in texts), texts)
+
+    def test_a_valid_yandex_link_is_saved_by_hand(self):
+        order, oe = self._order_with_equipment()
+        response = self.client_http.post(
+            reverse('repair_order_unit_disk_folder_set', args=[order.pk, oe.pk]),
+            {'url': 'https://disk.yandex.ru/client/disk/LiftTeam'}, follow=True,
+        )
+
+        oe.refresh_from_db()
+        self.assertEqual(oe.yandex_disk_folder, 'https://disk.yandex.ru/client/disk/LiftTeam')
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('сохранена' in text for text in texts), texts)
 
 
 class RepairOrderIntakeFormTests(TestCase):
@@ -250,8 +266,10 @@ class RepairOrderIntakeFormTests(TestCase):
     """
 
     INTAKE_ONLY = ['invoice_number', 'invoice_date', 'payment_status']
+    # yandex_disk_folder сюда не входит: с v2.93.0 это не поле формы
+    # единицы, а кнопка «завести папку» плюс мини-форма ручного ввода
     LATER_PER_UNIT = ['work_performed', 'seal_numbers', 'faults',
-                      'repair_cost', 'yandex_disk_folder']
+                      'repair_cost']
 
     def setUp(self):
         self.user = Employee.objects.create_superuser(
@@ -5614,6 +5632,32 @@ class TBankInvoiceBuildingTests(TestCase):
     def test_line_breaks_do_not_leak_into_the_invoice(self):
         """Перенос строки разорвал бы ячейку таблицы в PDF банка."""
         self.assertNotIn('\n', self.roe.invoice_line)
+
+    def test_a_complex_repair_is_named_so_in_the_invoice(self):
+        """С v2.93.0 сложный ремонт помечается словом впереди — так же,
+        как владелец писал в счетах руками."""
+        self.roe.repair_complexity = 'complex'
+        self.roe.save()
+
+        self.assertTrue(self.roe.invoice_line.startswith('Сложный ремонт '))
+
+    def test_a_simple_repair_keeps_the_old_wording(self):
+        self.roe.repair_complexity = 'simple'
+        self.roe.save()
+
+        self.assertTrue(self.roe.invoice_line.startswith('Ремонт '))
+        self.assertFalse(self.roe.invoice_line.startswith('Сложный'))
+
+    def test_complexity_derived_from_faults_is_used_too(self):
+        """Сложность не обязана быть проставлена руками — она и так
+        выводится из выбранных неисправностей."""
+        model = self.roe.equipment.model
+        fault = FaultType.objects.create(
+            equipment_model=model, name='пробит модуль', complexity='complex',
+        )
+        self.roe.faults.add(fault)
+
+        self.assertTrue(self.roe.invoice_line.startswith('Сложный ремонт '))
 
     def test_equipment_without_a_price_is_not_a_line(self):
         RepairOrderEquipment.objects.create(
@@ -13970,8 +14014,17 @@ class YandexDiskClientTests(TestCase):
         уехали бы в папку другого."""
         self.assertEqual(
             yadisk.unit_path(self.roe),
-            'LiftTeam/Заказы/%s/SN-DISK-1' % self.order.order_number,
+            'LiftTeam/Заказы/%s/БУАД-7-31 SN SN-DISK-1' % self.order.order_number,
         )
+
+    def test_the_folder_name_says_what_the_unit_is(self):
+        """С v2.93.0 в имени не голый серийник: одинаковые кассетницы
+        разных приборов отличаются одной цифрой в номере, и по нему
+        одному на Диске было не понять, что за папка перед глазами."""
+        path = yadisk.unit_path(self.roe)
+
+        self.assertIn(self.roe.equipment.designation, path)
+        self.assertIn(self.roe.equipment.serial_number, path)
 
     def test_a_slash_in_a_serial_number_does_not_become_a_folder(self):
         """Косая черта на Диске означает новый уровень пути: она тихо
@@ -16237,6 +16290,60 @@ class MediumComplexityIsGoneTests(TestCase):
 
         self.assertEqual(unit, fault)
 
+    def test_the_price_list_speaks_the_same_language_too(self):
+        """До v2.93.0 у прайса было три значения — расхождение молчало,
+        потому что строк с «Средним» не завели ни одной."""
+        unit = {code for code, _ in
+                RepairOrderEquipment._meta.get_field('repair_complexity').choices}
+        price = {code for code, _ in
+                 PriceListLine._meta.get_field('complexity').choices}
+
+        self.assertEqual(unit, price)
+
+
+class PriceListLineMigrationTests(TransactionTestCase):
+    """Миграция 0049 переводит существующие строки прайса со «Средним»
+    в «Сложный» — тот же приём, что и в 0047 для единицы оборудования."""
+
+    available_apps = None
+
+    @staticmethod
+    def _latest_migration():
+        from django.db.migrations.loader import MigrationLoader
+        names = sorted(
+            name for app, name in
+            MigrationLoader(None, ignore_no_migrations=True).disk_migrations
+            if app == 'core'
+        )
+        return names[-1]
+
+    def test_medium_price_lines_become_complex(self):
+        latest = self._latest_migration()
+        try:
+            # Откатываемся к состоянию до миграции, чтобы завести строку
+            # со «Средним» так, как это делал бы старый код, — иначе
+            # RunPython просто не на чем сработать: миграция уже накатана
+            call_command('migrate', 'core', '0048', verbosity=0)
+
+            from django.apps import apps as django_apps
+            PriceListModel = django_apps.get_model('core', 'PriceList')
+            EquipmentTypeModel = django_apps.get_model('core', 'EquipmentType')
+            PriceListLineModel = django_apps.get_model('core', 'PriceListLine')
+
+            price_list = PriceListModel.objects.create()
+            equipment_type = EquipmentTypeModel.objects.create(name='Привод дверей')
+            line = PriceListLineModel.objects.create(
+                price_list=price_list, equipment_type=equipment_type,
+                complexity='medium', price=Decimal('1000.00'),
+            )
+
+            call_command('migrate', 'core', '0049', verbosity=0)
+
+            line.refresh_from_db()
+            self.assertEqual(line.complexity, 'complex')
+        finally:
+            call_command('migrate', 'core', latest, verbosity=0)
+
 
 class OrderFaultDescriptionIsGoneTests(TestCase):
     """Общее описание неисправности у заказа убрано.
@@ -17812,3 +17919,48 @@ class BatchLabelContextTests(TestCase):
         sheet = html.split('label-text-block')[1].split('label-qr-wrap')[0]
 
         self.assertNotIn('SparePart', sheet)
+
+
+class OrderCardInitialConditionTests(TestCase):
+    """Карточка заказа не показывает «Начальное состояние» — это поле
+    единицы, а не заказа (с v2.93.0).
+
+    До этой правки строка обращалась к несуществующему полю
+    `RepairOrder.initial_condition` и всегда показывала «—», сколько бы
+    ни заполнили на странице единицы, — мёртвая ссылка, а не просто
+    лишняя строка.
+    """
+
+    def test_the_field_name_is_gone_from_the_order_card(self):
+        admin = Employee.objects.create_superuser(
+            username='order_card_ic', full_name='Админ', password='pass',
+        )
+        http = TestClient()
+        http.force_login(admin)
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-IC-1'),
+            initial_condition='Корпус цел, пломбы на месте',
+        )
+
+        html = http.get(
+            reverse('repair_order_detail', args=[order.pk])
+        ).content.decode()
+        # Слова «Начальное состояние» на странице остаются — это подпись
+        # поля в форме приёма ещё одной единицы. Мёртвой была именно
+        # строка карточки «Информация о заказе»: <strong>…:</strong><br>
+        info_card = html.split('Информация о заказе')[1].split('</form>')[0]
+
+        self.assertNotIn('Начальное состояние:</strong>', info_card)
+
+    def test_the_order_model_has_no_such_field(self):
+        """Поле действительно только у единицы: RepairOrder его никогда
+        не имел, а шаблон когда-то обращался к нему как к своему."""
+        self.assertFalse(hasattr(RepairOrder, 'initial_condition'))
+        self.assertTrue(
+            hasattr(RepairOrderEquipment, 'initial_condition')
+        )

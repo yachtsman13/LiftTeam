@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.92.1{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.93.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -131,7 +131,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     </div>
                     {% endif %}
                     <div class="col-md-6"><strong>Дата приёма:</strong> {{ order.date_received|date:"d.m.Y H:i" }}</div>
-                    <div class="col-md-12"><strong>Начальное состояние:</strong><br>{{ order.initial_condition|default:"—"|linebreaks }}</div>
+                    {% comment %}
+                        Строки «Начальное состояние» здесь больше нет
+                        (с v2.93.0): поле живёт у единицы, а не у заказа
+                        (`RepairOrderEquipment.initial_condition`), и это
+                        место обращалось к несуществующему полю заказа —
+                        всегда показывало «—», сколько бы ни заполнили
+                        на странице единицы. Настоящее значение — там же.
+                    {% endcomment %}
                 </div>
 
                 {% comment %}

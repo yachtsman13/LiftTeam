@@ -441,7 +441,7 @@ class RepairOrderIntakeForm(RepairOrderForm):
     """Заказ в момент приёма: от кого прибор.
 
     Общего описания неисправности здесь больше нет — оно убрано целиком
-    с v2.92.1. Его заполняли вместо описания по прибору, то есть про одно
+    с v2.93.0. Его заполняли вместо описания по прибору, то есть про одно
     и то же спрашивали дважды; описание пишется у каждой единицы, и оно же
     печатается в акте приёма.
     """
@@ -977,10 +977,13 @@ class UnitEditForm(forms.ModelForm):
 
     class Meta:
         model = RepairOrderEquipment
+        # yandex_disk_folder сюда не входит с v2.93.0: ссылку ставит кнопка
+        # «завести папку» в карточке «Документы и папка», а не поле в этой
+        # форме. Ручной ввод — своей маленькой формой там же (UnitDiskFolderForm)
         fields = [
             'fault_description', 'initial_condition', 'faults',
             'repair_complexity', 'work_performed', 'seal_numbers',
-            'repair_cost', 'yandex_disk_folder',
+            'repair_cost',
         ]
         widgets = {
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
@@ -990,10 +993,6 @@ class UnitEditForm(forms.ModelForm):
             'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
             'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
-            # Ссылку обычно ставит кнопка «завести папку», но вписать
-            # руками должно быть можно: папку могли завести раньше
-            # программы или переложить
-            'yandex_disk_folder': forms.URLInput(attrs={'class': 'form-control'}),
         }
         labels = {
             'fault_description': 'Со слов заказчика',
@@ -1003,7 +1002,6 @@ class UnitEditForm(forms.ModelForm):
             'work_performed': 'Выполненные работы',
             'seal_numbers': 'Номера пломб',
             'repair_cost': 'Стоимость ремонта, ₽',
-            'yandex_disk_folder': 'Папка на Яндекс.Диске',
         }
 
     def __init__(self, *args, **kwargs):
@@ -1030,6 +1028,24 @@ class UnitEditForm(forms.ModelForm):
             'Оставьте «по неисправностям» — сложен хотя бы один вид поломки, '
             'сложен весь ремонт. Здесь это правило перебивается вручную.'
         )
+
+
+class UnitDiskFolderForm(forms.Form):
+    """Ручной ввод ссылки на папку Диска — рядом с кнопкой «завести
+    папку» (с v2.93.0).
+
+    Нужна для двух случаев: папку завели раньше программы, или снимки
+    переложили в другое место. Основной путь — кнопка, которая строит
+    ссылку сама (`yadisk.unit_path`); эта форма только переопределяет
+    результат, ничего на Диске не создавая и не проверяя.
+    """
+    url = forms.URLField(
+        label='Ссылка на папку', required=True,
+        widget=forms.URLInput(attrs={
+            'class': 'form-control form-control-sm',
+            'placeholder': 'https://disk.yandex.ru/client/disk/…',
+        }),
+    )
 
 
 class QuoteForm(forms.ModelForm):

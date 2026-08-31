@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.92.1{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.93.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -228,7 +228,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 {% comment %}
                     Сложность правится здесь, рядом с неисправностями,
                     из которых она выводится: пустое значение означает
-                    не «простой», а «считай по неисправностям». До v2.92.1
+                    не «простой», а «считай по неисправностям». До v2.93.0
                     это поле правилось только в форме предложения —
                     то есть нигде, пока предложение не понадобится,
                     и цвет сложности в списке единиц не появлялся.
@@ -293,17 +293,6 @@ document.addEventListener('DOMContentLoaded', function () {
                         <label class="form-label">{{ form.repair_cost.label }}</label>
                         {{ form.repair_cost }}
                         {% if form.repair_cost.errors %}<div class="text-danger small">{{ form.repair_cost.errors.0 }}</div>{% endif %}
-                    </div>
-                    {% comment %}
-                        Ссылку на папку обычно ставит кнопка «завести
-                        папку» справа, но вписать руками должно быть
-                        можно: папку могли завести раньше программы
-                        или переложить.
-                    {% endcomment %}
-                    <div class="col-12">
-                        <label class="form-label">{{ form.yandex_disk_folder.label }}</label>
-                        {{ form.yandex_disk_folder }}
-                        {% if form.yandex_disk_folder.errors %}<div class="text-danger small">{{ form.yandex_disk_folder.errors.0 }}</div>{% endif %}
                     </div>
                 </div>
             </div>
@@ -461,6 +450,30 @@ document.addEventListener('DOMContentLoaded', function () {
                     </button>
                 </form>
                 {% endif %}
+                {% comment %}
+                    Путь на Диске — кнопкой, не полем (с v2.93.0): ссылку
+                    обычно ставит кнопка выше, которая строит её сама.
+                    Ручной ввод нужен на два случая — папку завели раньше
+                    программы, или снимки переложили — и не должен быть
+                    виден постоянно, поэтому спрятан за <details>: своего
+                    JS не требует, Bootstrap-модалку заводить нельзя.
+                {% endcomment %}
+                <details class="small">
+                    <summary class="text-muted" style="cursor: pointer;">
+                        {% if order_equipment.yandex_disk_folder %}Изменить путь{% else %}Указать путь вручную{% endif %}
+                    </summary>
+                    <form method="post"
+                          action="{% url 'repair_order_unit_disk_folder_set' order.pk order_equipment.pk %}"
+                          class="d-flex gap-2 mt-2">
+                        {% csrf_token %}
+                        <input type="url" name="url" class="form-control form-control-sm"
+                               placeholder="https://disk.yandex.ru/client/disk/…"
+                               value="{{ order_equipment.yandex_disk_folder }}">
+                        <button type="submit" class="btn btn-outline-secondary btn-sm flex-shrink-0">
+                            Сохранить
+                        </button>
+                    </form>
+                </details>
             </div>
         </div>
 
