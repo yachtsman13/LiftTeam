@@ -113,6 +113,43 @@ def queue(event, recipient, subject, body, repair_order=None, part=None,
     )
 
 
+def _queue_to_client(event, client, subject, body, **extra):
+    """Заказчику — по всем контактам с включённым каналом (с v2.97.0).
+
+    Контактов не завели — используем то единственное поле, что было
+    раньше (`Client.email`): так заказчик, для которого никто не открывал
+    страницу контактов, продолжает получать письма без единой новой
+    настройки. Контакт есть, но канал у него выключен или пуст — этот
+    контакт просто ничего не получит, и это не ошибка, а его настройка.
+
+    В мессенджер тема уходит первой строкой текста — тем же приёмом,
+    что `queue_for_staff`.
+    """
+    contacts = list(client.contacts.all())
+    if not contacts:
+        email = (client.email or '').strip()
+        return [queue(event, email, subject, body, **extra)] if email else []
+
+    queued = []
+    for contact in contacts:
+        if contact.notify_by_email and contact.email:
+            queued.append(queue(event, contact.email, subject, body, **extra))
+        if (contact.notify_by_max and contact.max_user_id
+                and messengers.max_is_configured()):
+            queued.append(queue(
+                event, messengers.format_recipient('user', contact.max_user_id),
+                subject, f'{subject}\n\n{body}',
+                channel=Notification.CHANNEL_MAX, **extra
+            ))
+        if (contact.notify_by_telegram and contact.telegram_chat_id
+                and messengers.telegram_is_configured()):
+            queued.append(queue(
+                event, contact.telegram_chat_id, subject, f'{subject}\n\n{body}',
+                channel=Notification.CHANNEL_TELEGRAM, **extra
+            ))
+    return [item for item in queued if item is not None]
+
+
 def queue_for_staff(event, subject, body, roles=STOCK_ROLES, **extra):
     """Одно и то же сообщение сотрудникам — почтой и в мессенджеры.
 
@@ -139,18 +176,21 @@ def notify_order_status(order, changed_by=None):
     """Заказчику — о смене статуса его заказа.
 
     Только для тех статусов, которые заказчику что-то говорят: принят,
-    готов к отгрузке, отгружен и «ремонт невозможен» — последнее тоже
-    финал, и заказчику разумно узнать о нём тем же письмом. «Диагностика»
-    и «ремонт» — внутренняя кухня, письмо о них выглядит как спам.
+    готов к отгрузке, отгружен, «ремонт невозможен» и «частично
+    отремонтирован» — все четыре финалы или начало, и заказчику разумно
+    узнать о них. «Диагностика» и «ремонт» — внутренняя кухня, письмо
+    о них выглядит как спам.
+
+    С v2.97.0 уходит не одним письмом на `Client.email`, а по всем
+    контактам заказчика и их каналам — см. `_queue_to_client`.
     """
     if not _setting('NOTIFY_CLIENTS', False):
-        return None
-    if order.status not in ('accepted', 'ready_for_shipment', 'shipped', 'unrepairable'):
-        return None
-
-    email = (order.client.email or '').strip()
-    if not email:
-        return None
+        return []
+    if order.status not in (
+        'accepted', 'ready_for_shipment', 'shipped',
+        'unrepairable', 'partially_repaired',
+    ):
+        return []
 
     equipment = ', '.join(str(roe.equipment) for roe in order.order_equipments.all())
     if order.status == 'unrepairable':
@@ -158,6 +198,13 @@ def notify_order_status(order, changed_by=None):
             f'Здравствуйте, {order.client.name}.',
             '',
             f'По заказу {order.order_number} ремонт признан невозможным.',
+        ]
+    elif order.status == 'partially_repaired':
+        lines = [
+            f'Здравствуйте, {order.client.name}.',
+            '',
+            f'По заказу {order.order_number} часть оборудования '
+            f'отремонтирована, часть — нет.',
         ]
     else:
         lines = [
@@ -171,8 +218,8 @@ def notify_order_status(order, changed_by=None):
         lines.append(f'Трек-номер: {order.tracking_number}.')
     lines += ['', 'Это письмо отправлено программой учёта LiftTeam.']
 
-    return queue(
-        'order_status', email,
+    return _queue_to_client(
+        'order_status', order.client,
         f'Заказ {order.order_number} — {order.get_status_display().lower()}',
         '\n'.join(lines),
         repair_order=order,
@@ -262,21 +309,17 @@ def notify_debt(order):
     ежедневная проверка превратилась бы в ежедневное письмо.
     """
     if not _setting('NOTIFY_CLIENTS', False) or not _setting('NOTIFY_DEBTS', False):
-        return None
-
-    email = (order.client.email or '').strip()
-    if not email:
-        return None
+        return []
 
     if order.debt <= 0:
-        return None
+        return []
 
     cooldown = _setting('DEBT_REMINDER_COOLDOWN_DAYS', 7)
     recent = timezone.now() - timedelta(days=cooldown)
     if Notification.objects.filter(
         event='debt_reminder', repair_order=order, created_at__gte=recent
     ).exists():
-        return None
+        return []
 
     invoice = f'по счёту {order.invoice_number}' if order.invoice_number else 'по счёту'
     lines = [
@@ -303,8 +346,8 @@ def notify_debt(order):
         'Это письмо отправлено программой учёта LiftTeam.',
     ]
 
-    return queue(
-        'debt_reminder', email,
+    return _queue_to_client(
+        'debt_reminder', order.client,
         f'Оплата по заказу {order.order_number}',
         '\n'.join(lines),
         repair_order=order,

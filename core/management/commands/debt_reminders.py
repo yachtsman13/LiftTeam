@@ -53,7 +53,7 @@ class Command(BaseCommand):
 
         reminders = 0
         for order in overdue:
-            if notifications.notify_debt(order) is not None:
+            if notifications.notify_debt(order):
                 reminders += 1
 
         self.stdout.write(

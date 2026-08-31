@@ -4,11 +4,12 @@
 from django import forms
 from django.contrib.auth import authenticate
 from django.core import validators
+from django.db.models import Q
 from django.forms import inlineformset_factory
 from . import invoicing
 from .images import MAX_UPLOAD_BYTES, shrink_photo
 from .models import (
-    Cabinet, Client, EquipmentModel, EquipmentType, EquipmentVersion,
+    Cabinet, Client, ClientContact, EquipmentModel, EquipmentType, EquipmentVersion,
     Equipment, FaultType, FaultTypePart,
     RepairOrder, RepairOrderEquipment,
     PriceList, PriceListLine, EquipmentMaterial, TechCard, TechCardStep,
@@ -78,6 +79,35 @@ class ClientForm(forms.ModelForm):
             'phone': 'Телефон',
             'email': 'Email',
         }
+
+
+class ClientContactForm(forms.ModelForm):
+    """Одна строка контактов заказчика — с v2.97.0.
+
+    Три галочки решают, куда именно уходит переписка этому человеку;
+    сама возможность писать заказчикам и включённость каждого канала —
+    в настройках (`NOTIFY_CLIENTS`, `NOTIFY_MAX`/`NOTIFY_TELEGRAM` тут
+    ни при чём — это дубли складских оповещений, у заказчиков свой канал).
+    """
+    class Meta:
+        model = ClientContact
+        fields = [
+            'name', 'role', 'phone', 'email', 'max_user_id', 'telegram_chat_id',
+            'notify_by_email', 'notify_by_max', 'notify_by_telegram',
+        ]
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Имя'}),
+            'role': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Должность'}),
+            'phone': forms.TextInput(attrs={'class': 'form-control'}),
+            'email': forms.EmailInput(attrs={'class': 'form-control'}),
+            'max_user_id': forms.TextInput(attrs={'class': 'form-control'}),
+            'telegram_chat_id': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+
+ClientContactFormSet = inlineformset_factory(
+    Client, ClientContact, form=ClientContactForm, extra=1, can_delete=True
+)
 
 
 class EquipmentTypeForm(forms.ModelForm):
@@ -172,7 +202,7 @@ class FaultTypeForm(forms.ModelForm):
     class Meta:
         model = FaultType
         fields = ['equipment_model', 'name', 'description',
-                  'work_description', 'complexity']
+                  'work_description', 'complexity', 'versions']
         widgets = {
             'equipment_model': forms.Select(attrs={'class': 'form-select'}),
             'name': forms.TextInput(attrs={'class': 'form-control'}),
@@ -182,6 +212,9 @@ class FaultTypeForm(forms.ModelForm):
                 'placeholder': 'Заменены электролитические конденсаторы в цепи питания',
             }),
             'complexity': forms.Select(attrs={'class': 'form-select'}),
+            'versions': forms.SelectMultiple(attrs={
+                'class': 'form-select fault-type-versions', 'size': 5
+            }),
         }
         labels = {
             'equipment_model': 'Модель оборудования',
@@ -189,6 +222,7 @@ class FaultTypeForm(forms.ModelForm):
             'description': 'Описание для документов',
             'work_description': 'Типовые выполненные работы',
             'complexity': 'Сложность ремонта',
+            'versions': 'Только для исполнений',
         }
 
     def __init__(self, *args, **kwargs):
@@ -197,9 +231,41 @@ class FaultTypeForm(forms.ModelForm):
         # обязана сохраняться: незаполненная сложность — «простой», как
         # и по умолчанию у поля
         self.fields['complexity'].required = False
+        # Список целиком, не только модели, выбранной в этой же форме:
+        # выбор модели меняется на этой же странице, и на момент __init__
+        # он ещё не в cleaned_data. Модель видна в самом обозначении
+        # («БУАД-7-31.4»), поэтому список остаётся понятным; лишнее
+        # (версия чужой модели) отбраковывает clean()
+        self.fields['versions'].queryset = (
+            EquipmentVersion.objects.select_related('equipment_model')
+            .order_by('equipment_model__name', 'name')
+        )
+        self.fields['versions'].required = False
+        self.fields['versions'].help_text = (
+            'Пусто — неисправность общая для всех исполнений модели.'
+        )
 
     def clean_complexity(self):
         return self.cleaned_data.get('complexity') or 'simple'
+
+    def clean(self):
+        cleaned = super().clean()
+        model = cleaned.get('equipment_model')
+        versions = cleaned.get('versions')
+        # Версия чужой модели в списке — строка, которая не сработает
+        # никогда: applicable_to сверяет версию единицы своей модели,
+        # а у единицы другой модели быть не может версии этой. Молча
+        # хранить такую строку хуже, чем не дать её сохранить — тот же
+        # приём, что у BaseFaultTypePartFormSet.
+        if model and versions:
+            alien = [v for v in versions if v.equipment_model_id != model.pk]
+            if alien:
+                self.add_error(
+                    'versions',
+                    'Все исполнения должны относиться к той же модели: '
+                    + ', '.join(str(v) for v in alien) + '.'
+                )
+        return cleaned
 
 
 class FaultTypePartForm(forms.ModelForm):
@@ -979,10 +1045,26 @@ class UnitDiagnosisForm(forms.ModelForm):
         # Неисправности — только этой модели. Список неисправностей висит
         # на модели, а не на исполнении: сохнут те же конденсаторы.
         # Чужая в списке означала бы рецепт деталей не от этого прибора
-        model_id = self.instance.equipment.model_id
+        #
+        # Внутри модели — ещё и по исполнению (с v2.97.0): неисправность
+        # без своих исполнений общая для всех, отмеченные — только для
+        # них. Уже выбранные неисправности остаются в списке всегда, даже
+        # если исполнение сменили задним числом или ограничение появилось
+        # позже: иначе форма отказалась бы сохранять раздел, потому что
+        # уже стоящая галочка стала «недопустимым значением».
+        equipment = self.instance.equipment
+        model_id = equipment.model_id
+        version_id = equipment.version_id
+        selected_ids = (
+            list(self.instance.faults.values_list('pk', flat=True))
+            if self.instance.pk else []
+        )
+        version_match = Q(versions__id=version_id) if version_id else Q(pk__in=[])
         self.fields['faults'].queryset = FaultType.objects.filter(
             equipment_model_id=model_id
-        ).order_by('name')
+        ).filter(
+            Q(versions__isnull=True) | version_match | Q(pk__in=selected_ids)
+        ).distinct().order_by('name')
         self.fields['faults'].help_text = (
             'Их описания идут в акт дефектации и в предложение, а рецепт '
             'деталей применяется кнопкой ниже.'
@@ -1030,17 +1112,28 @@ class UnitRepairForm(forms.ModelForm):
 
     class Meta:
         model = RepairOrderEquipment
-        fields = ['work_performed', 'seal_numbers', 'repair_cost']
+        fields = ['work_performed', 'repairer', 'seal_numbers', 'repair_cost']
         widgets = {
             'work_performed': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'repairer': forms.Select(attrs={'class': 'form-select'}),
             'seal_numbers': forms.TextInput(attrs={'class': 'form-control'}),
             'repair_cost': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
         }
         labels = {
             'work_performed': 'Выполненные работы',
+            'repairer': 'Исполнитель ремонта',
             'seal_numbers': 'Номера пломб',
             'repair_cost': 'Стоимость ремонта, ₽',
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Активные сотрудники, а не роль: чинит не только «мастер»
+        # по должности, а тот, кто фактически стоял у стола
+        self.fields['repairer'].queryset = Employee.objects.filter(
+            is_active=True
+        ).order_by('full_name')
+        self.fields['repairer'].empty_label = 'Не указан'
 
 
 class UnitDiskFolderForm(forms.Form):

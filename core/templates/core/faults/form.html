@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.96.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.97.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -77,6 +77,21 @@
                     {{ form.work_description }}
                     <div class="form-text">{{ form.work_description.help_text }}</div>
                     {% if form.work_description.errors %}<div class="text-danger small">{{ form.work_description.errors.0 }}</div>{% endif %}
+                </div>
+                {% comment %}
+                    Пусто — неисправность общая для всех исполнений модели,
+                    как и было всегда: это не смена архитектуры, а
+                    необязательное уточнение поверх неё (с v2.97.0).
+                    Список сужается той же кнопкой JS, что и версия
+                    в строке рецепта ниже — версия чужой модели показана
+                    не будет никогда, а не будет отбракована уже после
+                    отправки.
+                {% endcomment %}
+                <div class="col-md-6">
+                    <label class="form-label">{{ form.versions.label }}</label>
+                    {{ form.versions }}
+                    <div class="form-text">{{ form.versions.help_text }}</div>
+                    {% if form.versions.errors %}<div class="text-danger small">{{ form.versions.errors.0 }}</div>{% endif %}
                 </div>
             </div>
 
@@ -235,8 +250,24 @@ function fillVersionSelect(select) {
     if (select.value !== current) select.value = '';
 }
 
+// Тот же список версий — для многострочного выбора «Только для
+// исполнений» у самой неисправности. Placeholder здесь не нужен: пустой
+// выбор уже значит «для всех», а не требует отдельной строки в списке.
+function fillMultiVersionSelect(select) {
+    const modelId = faultModelSelect ? faultModelSelect.value : '';
+    const chosen = Array.from(select.selectedOptions).map(function (o) { return o.value; });
+    let html = '';
+    VERSION_OPTIONS.forEach(function(version) {
+        if (modelId && version.model !== modelId) return;
+        const isSelected = chosen.indexOf(version.id) !== -1 ? ' selected' : '';
+        html += '<option value="' + version.id + '"' + isSelected + '>' + version.label + '</option>';
+    });
+    select.innerHTML = html;
+}
+
 function updateVersionSelects() {
     document.querySelectorAll('.fault-part-version').forEach(fillVersionSelect);
+    document.querySelectorAll('.fault-type-versions').forEach(fillMultiVersionSelect);
 }
 
 if (faultModelSelect) faultModelSelect.addEventListener('change', updateVersionSelects);

@@ -41,7 +41,7 @@ from .models import (
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
-    LoginForm, ClientForm, EquipmentModelForm, EquipmentTypeForm,
+    LoginForm, ClientForm, ClientContactFormSet, EquipmentModelForm, EquipmentTypeForm,
     EquipmentVersionForm, EquipmentForm,
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
@@ -152,10 +152,11 @@ def presence(request):
 def dashboard(request):
     """Главная страница — статистика и алерты."""
     total_orders = RepairOrder.objects.count()
-    # «Завершённых» статусов два: отгружен и признан неремонтопригодным —
-    # оба означают, что по заказу больше ничего не ждут
+    # «Завершённых» статусов три: отгружен, признан неремонтопригодным
+    # и частично отремонтирован (смешанный исход тоже финал) — все три
+    # означают, что по заказу больше ничего не ждут
     active_orders = RepairOrder.objects.exclude(
-        status__in=['shipped', 'unrepairable']
+        status__in=['shipped', 'unrepairable', 'partially_repaired']
     ).count()
 
     # Дефицит и «ровно на минимуме» — разные вещи: первое уже в плане закупок,
@@ -302,16 +303,29 @@ def client_create(request):
 
 @login_required
 def client_edit(request, pk):
+    """Правка заказчика вместе с его контактами.
+
+    Контакты только здесь, на странице создания их нет: пока заказчика
+    не сохранили, вешать контакты не на что — тот же приём, что
+    у материалов модели (`EquipmentMaterialFormSet`).
+    """
     client = get_object_or_404(Client, pk=pk)
     if request.method == 'POST':
         form = ClientForm(request.POST, instance=client)
-        if form.is_valid():
+        formset = ClientContactFormSet(request.POST, instance=client)
+        if form.is_valid() and formset.is_valid():
             form.save()
+            formset.save()
             messages.success(request, 'Заказчик обновлён')
             return redirect('client_list')
+        messages.error(request, 'Не сохранено: проверьте отмеченные поля')
     else:
         form = ClientForm(instance=client)
-    return render(request, 'core/clients/form.html', {'form': form, 'title': 'Редактирование заказчика', 'client': client})
+        formset = ClientContactFormSet(instance=client)
+    return render(request, 'core/clients/form.html', {
+        'form': form, 'formset': formset,
+        'title': 'Редактирование заказчика', 'client': client,
+    })
 
 
 @role_required('repair_manager')
@@ -932,6 +946,7 @@ def _fault_type_copy_initial(source):
         'description': source.description,
         'work_description': source.work_description,
         'complexity': source.complexity,
+        'versions': list(source.versions.values_list('pk', flat=True)),
     }
     lines_initial = [
         {'part': line.part_id, 'quantity': line.quantity, 'version': line.version_id}
@@ -1811,7 +1826,7 @@ def repair_order_change_status(request, pk):
 
 # Статусы, при которых недоделки по единицам стоит называть вслух: дальше
 # прибор уезжает к заказчику, и незаполненный акт всплывёт уже у него.
-READINESS_WARNING_STATUSES = ('ready_for_shipment', 'shipped')
+READINESS_WARNING_STATUSES = ('ready_for_shipment', 'shipped', 'partially_repaired')
 
 
 def _warn_about_unfinished_units(request, order, new_status):
@@ -3682,7 +3697,7 @@ def report_debtors_export(request):
 # группу функций нужно будет заменить на использование поля напрямую,
 # а не достраивать поверх суррогата.
 
-TERMINAL_STATUSES = ('shipped', 'unrepairable')
+TERMINAL_STATUSES = ('shipped', 'unrepairable', 'partially_repaired')
 
 
 def _repair_analytics_period(request):

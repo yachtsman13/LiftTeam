@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.96.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.97.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -23,6 +23,83 @@
                 </div>
                 {% endfor %}
             </div>
+            {% if formset %}
+            {% comment %}
+                Контакты — только у сохранённого заказчика: пока его нет,
+                вешать их не на что (тот же приём, что у материалов
+                модели). Три галочки решают, кому и куда уходит переписка
+                по этому заказу — почта, MAX, Telegram; поля «Заказчик»
+                выше остаются резервным каналом для тех, у кого контактов
+                ещё не завели.
+            {% endcomment %}
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-person-lines-fill me-2"></i>Контактные лица</h5>
+            <p class="text-muted small">
+                Диспетчер, механик, бухгалтерия — у каждого свой набор
+                каналов. Пустой список ничего не меняет: письма о заказе
+                по-прежнему уходят на «Email» заказчика выше.
+            </p>
+            {{ formset.management_form }}
+            <div class="table-responsive table-scroll">
+                <table class="table list-table align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Имя</th>
+                            <th>Должность</th>
+                            <th>Телефон</th>
+                            <th>Email</th>
+                            <th>ID в MAX</th>
+                            <th>ID в Telegram</th>
+                            <th style="width:1%">Почта</th>
+                            <th style="width:1%">MAX</th>
+                            <th style="width:1%">TG</th>
+                            <th style="width:1%"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for contact in formset %}
+                        <tr>
+                            <td data-label="Имя">
+                                {{ contact.name }}
+                                {% if contact.name.errors %}<div class="text-danger small">{{ contact.name.errors.0 }}</div>{% endif %}
+                            </td>
+                            <td data-label="Должность">{{ contact.role }}</td>
+                            <td data-label="Телефон">{{ contact.phone }}</td>
+                            <td data-label="Email">
+                                {{ contact.email }}
+                                {% if contact.email.errors %}<div class="text-danger small">{{ contact.email.errors.0 }}</div>{% endif %}
+                            </td>
+                            <td data-label="ID в MAX">{{ contact.max_user_id }}</td>
+                            <td data-label="ID в Telegram">{{ contact.telegram_chat_id }}</td>
+                            <td data-label="Почта" class="text-center">{{ contact.notify_by_email }}</td>
+                            <td data-label="MAX" class="text-center">{{ contact.notify_by_max }}</td>
+                            <td data-label="Telegram" class="text-center">{{ contact.notify_by_telegram }}</td>
+                            <td class="col-actions">
+                                {% if contact.instance.pk %}
+                                <div class="form-check mb-0">
+                                    {{ contact.DELETE }}
+                                    <label class="form-check-label small">Убрать</label>
+                                </div>
+                                {% endif %}
+                            </td>
+                            {% for hidden in contact.hidden_fields %}{{ hidden }}{% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if formset.non_form_errors %}
+            <div class="alert alert-danger py-2">{{ formset.non_form_errors.0 }}</div>
+            {% endif %}
+            <div class="form-text mb-3">
+                Чтобы добавить ещё один контакт, сохраните — снизу появится пустая строка.
+            </div>
+            {% else %}
+            <div class="form-text mb-3">
+                Контакты добавляются после сохранения: пока заказчика нет,
+                вешать их не на что.
+            </div>
+            {% endif %}
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
                 <a href="{% url 'client_list' %}" class="btn btn-outline-secondary">Отмена</a>

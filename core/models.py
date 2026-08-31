@@ -112,6 +112,30 @@ def complexity_css(value):
     return ''
 
 
+def order_status_css(status):
+    """Цвет статуса заказа — один на всю программу (с v2.97.0).
+
+    Ровно та беда, которую называет docstring `complexity_css` выше:
+    цепочка `{% if status == '...' %}` была скопирована в список заказов,
+    карточку заказа и дашборд по отдельности, и с появлением нового
+    статуса пришлось бы править три места, не забыв ни одного.
+
+    `partially_repaired` красится не бутстраповским классом — свободных
+    контекстных цветов Bootstrap на шесть статусов уже не хватает,
+    а путать его с «Диагностикой» (тоже жёлтая) нельзя: это разные
+    и по смыслу далёкие статусы. Правило — своё, `.status-partial`
+    в `base.html`, рядом с `.status-badge`.
+    """
+    return {
+        'accepted': 'bg-info',
+        'diagnostic': 'bg-warning',
+        'repair': 'bg-primary',
+        'ready_for_shipment': 'bg-success',
+        'unrepairable': 'bg-dark',
+        'partially_repaired': 'status-partial',
+    }.get(status, 'bg-secondary')
+
+
 def plural_genitive(word):
     """Родительный падеж множественного числа: «резистор» → «резисторов».
 
@@ -476,6 +500,50 @@ class Client(models.Model):
         verbose_name = 'Заказчик'
         verbose_name_plural = 'Заказчики'
         ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class ClientContact(models.Model):
+    """Контактное лицо заказчика — с v2.97.0.
+
+    У заказчика бывает несколько адресатов (диспетчер, механик,
+    бухгалтерия), и оповещать надо не «заказчика» вообще, а тех из них,
+    кто сам выбрал получать это по этому каналу. Три галочки — тот же
+    приём, что у `Employee.notify_by_*`: NOTIFY_CLIENTS в `.env`
+    разрешает переписку с заказчиками вообще, а эти поля решают, кому
+    именно и куда.
+
+    Поля `Client.contact_person`/`phone`/`email` никуда не делись:
+    это резервный канал для заказчика, у которого контактов ещё не
+    завели — `notifications._queue_to_client` падает на них, только
+    если строк здесь нет ни одной.
+    """
+    client = models.ForeignKey(
+        Client, on_delete=models.CASCADE, related_name='contacts',
+        verbose_name='Заказчик'
+    )
+    name = models.CharField('Имя', max_length=255)
+    role = models.CharField(
+        'Должность', max_length=100, blank=True,
+        help_text='«Диспетчер», «главный механик» — для своих, в акты не идёт.'
+    )
+    phone = models.CharField('Телефон', max_length=50, blank=True)
+    email = models.EmailField('Email', blank=True)
+    max_user_id = models.CharField(
+        'ID в MAX', max_length=32, blank=True,
+        help_text='Числовой идентификатор человека в MAX, не логин и не телефон.'
+    )
+    telegram_chat_id = models.CharField('ID в Telegram', max_length=32, blank=True)
+    notify_by_email = models.BooleanField('Оповещать почтой', default=True)
+    notify_by_max = models.BooleanField('Оповещать в MAX', default=True)
+    notify_by_telegram = models.BooleanField('Оповещать в Telegram', default=True)
+
+    class Meta:
+        verbose_name = 'Контактное лицо'
+        verbose_name_plural = 'Контактные лица'
+        ordering = ['id']
 
     def __str__(self):
         return self.name
@@ -1056,6 +1124,21 @@ class FaultType(models.Model):
         'Сложность ремонта', max_length=20, default='simple',
         choices=[('simple', 'Простой'), ('complex', 'Сложный')]
     )
+    # Пусто — неисправность общая для всех исполнений модели, как и было
+    # всегда (см. CLAUDE.md, «сохнут те же конденсаторы»): это не смена
+    # архитектуры, а необязательное уточнение поверх неё. Отмечены
+    # исполнения — неисправность предлагается только на них: бывают
+    # поломки одного конкретного исполнения (например, только там, где
+    # стоит вентилятор), и до v2.97.0 отбора по этому вовсе не было —
+    # неисправность либо была у всей модели, либо не существовала.
+    #
+    # Многие-ко-многим, а не одна версия: «привязка к нескольким
+    # исполнениям, а не к одному» — решение владельца.
+    versions = models.ManyToManyField(
+        EquipmentVersion, blank=True, related_name='fault_types',
+        verbose_name='Только для исполнений',
+        help_text='Пусто — неисправность общая для всех исполнений модели.'
+    )
 
     class Meta:
         verbose_name = 'Типовая неисправность'
@@ -1064,6 +1147,18 @@ class FaultType(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.equipment_model.name})'
+
+    def applicable_to(self, version):
+        """Предлагается ли эта неисправность для данного исполнения.
+
+        Своих исполнений не отмечено — общая, подходит любому (в том
+        числе единице без исполнения вовсе). Отмечены — подходит только
+        им, и `version=None` (исполнение не указано) сюда не попадает.
+        """
+        chosen = list(self.versions.all())
+        if not chosen:
+            return True
+        return version is not None and version in chosen
 
     @property
     def document_text(self):
@@ -1372,6 +1467,12 @@ class RepairOrder(models.Model):
         ('ready_for_shipment', 'Готов к отгрузке'),
         ('shipped', 'Отгружен'),
         ('unrepairable', 'Ремонт невозможен'),
+        # Смешанный исход: часть единиц заказа отремонтирована, часть —
+        # нет (у них самих стоит «ремонт невозможен» по READINESS —
+        # такого поля нет, это решает мастер по факту). Решение владельца,
+        # 2026-08-31 — с v2.97.0. Терминальный статус, как «Отгружен»
+        # и «Ремонт невозможен»: заказ им закрывают, а не проезжают мимо
+        ('partially_repaired', 'Частично отремонтирован'),
     ]
     # Незавершённые статусы — заказ ещё «в работе». Используется и в проверке
     # просроченных заказов (SLA), и в подсчёте текущей загрузки по инженерам
@@ -1470,6 +1571,11 @@ class RepairOrder(models.Model):
 
     def __str__(self):
         return self.order_number
+
+    @property
+    def status_css(self):
+        """Цвет значка статуса — считается одним местом на всю программу."""
+        return order_status_css(self.status)
 
     @property
     def paid_amount(self):
@@ -1937,6 +2043,14 @@ class RepairOrderEquipment(models.Model):
     seal_numbers = models.CharField('Номера пломб', max_length=255, blank=True)
     initial_condition = models.TextField('Начальное состояние', blank=True)
     repair_cost = models.DecimalField('Стоимость ремонта', max_digits=12, decimal_places=2, null=True, blank=True)
+    # Кто чинил эту единицу — с v2.97.0. Не «ответственный по заказу»
+    # (такого поля в программе нет и не будет, см. CLAUDE.md): единиц
+    # в заказе бывает несколько, и чинят их разные люди. SET_NULL —
+    # уволенный мастер не должен утаскивать за собой запись о ремонте
+    repairer = models.ForeignKey(
+        Employee, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='repairs_done', verbose_name='Исполнитель ремонта'
+    )
     yandex_disk_folder = models.URLField('Папка на Яндекс.Диске', blank=True)
 
     # --- Акт дефектации ---
@@ -2337,6 +2451,28 @@ class RepairOrderEquipment(models.Model):
         return {'text': '—', 'css': '', 'muted': True}
 
     @property
+    def earnings(self):
+        """Заработок исполнителя по этой единице — с v2.97.0.
+
+        Считается от **фактической** стоимости ремонта (`repair_cost`),
+        не от прайсовой оценки: по той же логике, по которой готовность
+        и счёт уже смотрят на факт (v2.80.0). Решение владельца.
+
+        На гарантийном ремонте денег с заказчика нет — заработок
+        **ноль**, а не сама стоимость и не пусто: платить мастеру
+        по гарантии решает не программа, но врать, что заработка
+        не бывает вовсе, тоже не дело.
+
+        `None`, пока стоимость не проставлена, — так же, как в `cost_cell`:
+        отличать «не заработал» от «ещё не посчитано» надо и здесь.
+        """
+        if self.repair_cost is None:
+            return None
+        if self.warranty_case == 'warranty':
+            return Decimal('0')
+        return self.repair_cost
+
+    @property
     def error_code_lines(self):
         """Коды ошибок построчно — в акте это маркированный список."""
         return [line.strip() for line in self.error_codes.splitlines() if line.strip()]
@@ -2528,6 +2664,11 @@ class OrderStatusHistory(models.Model):
 
     def __str__(self):
         return f"{self.order.order_number} → {self.get_status_display()}"
+
+    @property
+    def status_css(self):
+        """Тот же цвет, что и у самого заказа — считается одним местом."""
+        return order_status_css(self.status)
 
 
 class SparePartQuerySet(models.QuerySet):

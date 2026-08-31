@@ -48,14 +48,14 @@ from .images import MAX_UPLOAD_BYTES
 from .utils import generate_qr_image
 from .forms import UnitDiagnosisForm, UnitRepairForm
 from .models import (
-    BankOperation, Cabinet, Client as ClientModel, Employee, Equipment, EquipmentModel,
+    BankOperation, Cabinet, Client as ClientModel, ClientContact, Employee, Equipment, EquipmentModel,
     PriceList, PriceListLine, available_equipment_for_order,
     EquipmentMaterial, EquipmentType, EquipmentVersion,
     FaultType, FaultTypePart, InventorySession, InventorySessionLine, Notification, Organization,
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
     SettingChange, StorageCell, TechCard, TechCardStep, WebhookDelivery,
-    complexity_css,
+    complexity_css, order_status_css,
     parse_layout, plural_genitive, format_spec,
 )
 
@@ -17051,6 +17051,9 @@ class OrderFaultDescriptionMigrationTests(TransactionTestCase):
         speaking.save()
 
         self._migrate(self.AFTER)
+        # Дальше запрос идёт живой моделью, а не исторической — ей нужна
+        # полная сегодняшняя схема, а не схема сразу после 0047
+        self.tearDown()
 
         silent = RepairOrderEquipment.objects.get(pk=silent.pk)
         speaking = RepairOrderEquipment.objects.get(pk=speaking.pk)
@@ -18545,3 +18548,410 @@ class OrderCardInitialConditionTests(TestCase):
         self.assertTrue(
             hasattr(RepairOrderEquipment, 'initial_condition')
         )
+
+
+# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.97.0) ============
+
+
+class RepairerEarningsTests(TestCase):
+    """Исполнитель ремонта у единицы и его заработок.
+
+    Заработок считается от фактической стоимости ремонта, не от
+    прайсовой оценки; на гарантийном ремонте — ноль. Решение владельца.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='repairer_page', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        self.roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=self.model, serial_number='SN-REP-1'),
+        )
+
+    def test_earnings_is_unknown_before_the_cost_is_set(self):
+        self.assertIsNone(self.roe.earnings)
+
+    def test_earnings_follows_the_actual_cost(self):
+        self.roe.repair_cost = Decimal('5200.00')
+        self.roe.save()
+
+        self.assertEqual(self.roe.earnings, Decimal('5200.00'))
+
+    def test_a_warranty_repair_earns_nothing(self):
+        """Денег с заказчика нет, и заработок — ноль, а не сама
+        проставленная стоимость и не пусто."""
+        self.roe.repair_cost = Decimal('5200.00')
+        self.roe.warranty_case = 'warranty'
+        self.roe.save()
+
+        self.assertEqual(self.roe.earnings, Decimal('0'))
+
+    def test_the_repairer_is_saved_from_the_repair_section(self):
+        self.http.post(
+            reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
+            {'section': 'repair', 'work_performed': 'Заменены конденсаторы',
+             'seal_numbers': '', 'repair_cost': '5200.00',
+             'repairer': str(self.employee.pk)},
+        )
+
+        self.roe.refresh_from_db()
+        self.assertEqual(self.roe.repairer, self.employee)
+
+    def test_the_unit_page_shows_the_repairer_field_and_earnings(self):
+        self.roe.repair_cost = Decimal('5200.00')
+        self.roe.repairer = self.employee
+        self.roe.save()
+
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertIn('Исполнитель ремонта', html)
+        note = html.split('Заработок:')[1].split('</div>')[0]
+        self.assertIn('5200', note)
+
+    def test_an_inactive_employee_is_not_offered(self):
+        """Уволенный не должен предлагаться на новые ремонты, но старую
+        запись о нём (SET_NULL) отбирать незачем."""
+        inactive = Employee.objects.create_user(
+            username='gone', full_name='Уволенный', password='pass',
+            is_active=False,
+        )
+
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+
+        self.assertNotIn('Уволенный', html)
+
+
+class PartiallyRepairedStatusTests(TestCase):
+    """Статус заказа для смешанного исхода: часть единиц отремонтирована,
+    часть — нет. Решение владельца, терминальный статус."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='mixed_status', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(
+                name='МУП «Лифты»', email='client@example.com'
+            )
+        )
+
+    def test_the_status_is_selectable(self):
+        self.assertIn(
+            'partially_repaired', dict(RepairOrder.STATUS_CHOICES)
+        )
+
+    def test_it_has_its_own_colour_not_a_bootstrap_one(self):
+        """Свободных контекстных цветов Bootstrap на шесть статусов уже
+        не хватает, и путать его с жёлтой «Диагностикой» нельзя."""
+        self.assertEqual(order_status_css('partially_repaired'), 'status-partial')
+        self.assertNotEqual(
+            order_status_css('partially_repaired'), order_status_css('diagnostic')
+        )
+
+    def test_it_is_not_counted_as_an_open_order(self):
+        self.assertNotIn('partially_repaired', RepairOrder.OPEN_STATUSES)
+
+    def test_it_does_not_count_as_an_active_order_on_the_dashboard(self):
+        """Терминальный статус, как «Отгружен» и «Ремонт невозможен»:
+        заказ им закрывают, и он не должен числиться «в работе»."""
+        before = self.http.get(reverse('dashboard')).context['active_orders']
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'partially_repaired'},
+        )
+
+        after = self.http.get(reverse('dashboard')).context['active_orders']
+        self.assertEqual(after, before - 1)
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_the_client_is_told_about_the_mixed_outcome(self):
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'partially_repaired'},
+        )
+
+        note = Notification.objects.get(event='order_status')
+        self.assertEqual(note.recipient, 'client@example.com')
+        self.assertIn('часть', note.body)
+        self.assertIn('отремонтирована', note.body)
+
+    def test_unfinished_units_are_still_named_out_loud(self):
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-MIX-1'),
+        )
+
+        response = self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'partially_repaired'}, follow=True,
+        )
+
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('SN-MIX-1' in t for t in texts), texts)
+
+
+class ClientContactTests(TestCase):
+    """Несколько контактных лиц у заказчика, каждое со своими каналами.
+
+    Контактов нет — оповещение идёт на Client.email, как и раньше:
+    старый заказчик без завёденных контактов не должен перестать получать
+    письма.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='contacts_admin', full_name='Админ', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.client_obj = ClientModel.objects.create(
+            name='ООО «Контакты»', email='office@example.com'
+        )
+        self.order = RepairOrder.objects.create(client=self.client_obj)
+
+    def _edit_url(self):
+        return reverse('client_edit', args=[self.client_obj.pk])
+
+    def test_the_edit_page_offers_the_contacts_formset(self):
+        html = self.http.get(self._edit_url()).content.decode()
+        self.assertIn('contacts-TOTAL_FORMS', html)
+
+    def test_a_contact_is_added_from_the_client_page(self):
+        response = self.http.post(self._edit_url(), {
+            'name': self.client_obj.name, 'inn': '', 'kpp': '', 'address': '',
+            'contact_person': '', 'phone': '', 'email': self.client_obj.email,
+            'contacts-TOTAL_FORMS': '1', 'contacts-INITIAL_FORMS': '0',
+            'contacts-MIN_NUM_FORMS': '0', 'contacts-MAX_NUM_FORMS': '1000',
+            'contacts-0-name': 'Иван Диспетчер',
+            'contacts-0-role': 'диспетчер',
+            'contacts-0-phone': '', 'contacts-0-email': 'ivan@example.com',
+            'contacts-0-max_user_id': '', 'contacts-0-telegram_chat_id': '',
+            'contacts-0-notify_by_email': 'on',
+            'contacts-0-notify_by_max': 'on',
+            'contacts-0-notify_by_telegram': 'on',
+        }, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        contact = ClientContact.objects.get()
+        self.assertEqual(contact.client, self.client_obj)
+        self.assertEqual(contact.name, 'Иван Диспетчер')
+        self.assertEqual(contact.email, 'ivan@example.com')
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_no_contacts_falls_back_to_the_client_email(self):
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        note = Notification.objects.get(event='order_status')
+        self.assertEqual(note.recipient, 'office@example.com')
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_contacts_replace_the_single_email_entirely(self):
+        """Контакт есть — общий Client.email больше не участвует:
+        иначе один и тот же адрес мог бы получить письмо дважды."""
+        ClientContact.objects.create(
+            client=self.client_obj, name='Пётр', email='petr@example.com',
+        )
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        recipients = list(
+            Notification.objects.filter(event='order_status')
+            .values_list('recipient', flat=True)
+        )
+        self.assertEqual(recipients, ['petr@example.com'])
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_a_contact_with_the_channel_off_gets_nothing(self):
+        ClientContact.objects.create(
+            client=self.client_obj, name='Молчун', email='silent@example.com',
+            notify_by_email=False,
+        )
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        self.assertEqual(Notification.objects.filter(event='order_status').count(), 0)
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_several_contacts_each_get_their_own_channels(self):
+        ClientContact.objects.create(
+            client=self.client_obj, name='Почта', email='mail@example.com',
+            notify_by_max=False, notify_by_telegram=False,
+        )
+        ClientContact.objects.create(
+            client=self.client_obj, name='Мессенджер', email='',
+            max_user_id='', telegram_chat_id='',
+            notify_by_email=False,
+        )
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        recipients = list(
+            Notification.objects.filter(event='order_status')
+            .values_list('recipient', flat=True)
+        )
+        self.assertEqual(recipients, ['mail@example.com'])
+
+    @override_settings(NOTIFY_CLIENTS=True, MAX_BOT_TOKEN='t')
+    def test_a_contacts_max_id_is_used_when_max_is_configured(self):
+        ClientContact.objects.create(
+            client=self.client_obj, name='В мессенджере', email='',
+            max_user_id='842910', notify_by_email=False,
+        )
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        note = Notification.objects.get(event='order_status')
+        self.assertEqual(note.channel, Notification.CHANNEL_MAX)
+        self.assertEqual(note.recipient, 'user:842910')
+
+    @override_settings(NOTIFY_CLIENTS=True)
+    def test_max_is_not_used_when_not_configured(self):
+        """Токена нет — сообщение всё равно не заводится: отправлять
+        было бы всё равно нечем."""
+        ClientContact.objects.create(
+            client=self.client_obj, name='В мессенджере', email='',
+            max_user_id='842910', notify_by_email=False,
+        )
+
+        self.http.post(
+            reverse('repair_order_change_status', args=[self.order.pk]),
+            {'new_status': 'ready_for_shipment'},
+        )
+
+        self.assertEqual(Notification.objects.filter(event='order_status').count(), 0)
+
+
+class FaultTypeVersionScopeTests(TestCase):
+    """Типовая неисправность бывает общей для модели или отмеченной
+    под несколько конкретных исполнений (с v2.97.0).
+
+    Решение владельца: «привязка к нескольким исполнениям, а не
+    к одному» — до этого отбора по исполнению не было вовсе.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='fault_versions', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+        self.v1 = EquipmentVersion.objects.create(equipment_model=self.model, name='.1')
+        self.v2 = EquipmentVersion.objects.create(equipment_model=self.model, name='.2')
+        self.general = FaultType.objects.create(
+            equipment_model=self.model, name='общая неисправность',
+        )
+        self.specific = FaultType.objects.create(
+            equipment_model=self.model, name='только у .1',
+        )
+        self.specific.versions.add(self.v1)
+
+    def test_a_fault_without_versions_applies_to_everything(self):
+        self.assertTrue(self.general.applicable_to(self.v1))
+        self.assertTrue(self.general.applicable_to(self.v2))
+        self.assertTrue(self.general.applicable_to(None))
+
+    def test_a_scoped_fault_applies_only_to_its_versions(self):
+        self.assertTrue(self.specific.applicable_to(self.v1))
+        self.assertFalse(self.specific.applicable_to(self.v2))
+        self.assertFalse(self.specific.applicable_to(None))
+
+    def test_the_unit_page_offers_only_applicable_faults(self):
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=self.model, version=self.v2, serial_number='SN-FV-2'
+            ),
+        )
+
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[order.pk, roe.pk])
+        ).content.decode()
+
+        self.assertIn('общая неисправность', html)
+        self.assertNotIn('только у .1', html)
+
+    def test_an_already_chosen_fault_is_not_dropped_by_later_scoping(self):
+        """Ограничение появилось после того, как неисправность уже
+        выбрали, — форма обязана сохраняться и дальше, не отказывая
+        в уже стоящей галочке."""
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=order,
+            equipment=Equipment.objects.create(
+                model=self.model, version=self.v2, serial_number='SN-FV-3'
+            ),
+        )
+        roe.faults.add(self.specific)
+
+        response = self.http.post(
+            reverse('repair_order_unit_edit', args=[order.pk, roe.pk]),
+            {'section': 'diagnosis', 'fault_description': '', 'initial_condition': '',
+             'repair_complexity': '', 'defect_act_date': '', 'diagnosis': '',
+             'error_codes': '', 'warranty_case': '', 'non_warranty_reason': '',
+             'estimated_cost': '', 'faults': [str(self.specific.pk)]},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(list(roe.faults.all()), [self.specific])
+
+    def test_copying_a_fault_type_carries_its_versions(self):
+        response = self.http.get(
+            reverse('fault_type_create') + f'?copy_from={self.specific.pk}'
+        )
+
+        self.assertContains(response, f'value="{self.v1.pk}" selected')
+
+    def test_a_version_from_another_model_is_rejected(self):
+        other_model = EquipmentModel.objects.create(name='EkoDrive 2.0')
+        alien_version = EquipmentVersion.objects.create(
+            equipment_model=other_model, name='.1'
+        )
+
+        response = self.http.post(reverse('fault_type_create'), {
+            'equipment_model': str(self.model.pk), 'name': 'плохая привязка',
+            'description': '', 'work_description': '', 'complexity': 'simple',
+            'versions': [str(alien_version.pk)],
+            'parts-TOTAL_FORMS': '0', 'parts-INITIAL_FORMS': '0',
+            'parts-MIN_NUM_FORMS': '0', 'parts-MAX_NUM_FORMS': '1000',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(FaultType.objects.filter(name='плохая привязка').exists())
