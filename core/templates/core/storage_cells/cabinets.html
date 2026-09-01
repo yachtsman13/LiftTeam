@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.99.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -35,7 +35,7 @@
                 </thead>
                 <tbody>
                     {% for row in rows %}
-                    <tr>
+                    <tr class="clickable-row" data-href="{% url 'cabinet_edit' row.cabinet.pk %}">
                         <td class="fw-bold" data-label="№">{{ row.cabinet.number }}</td>
                         <td data-label="Название">{{ row.cabinet.name|default:"—" }}</td>
                         <td data-label="Ячеек в рядах"><code>{{ row.layout|default:"пусто" }}</code></td>

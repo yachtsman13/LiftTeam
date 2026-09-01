@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.99.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.100.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -306,7 +306,7 @@
             <div class="text-muted p-4 text-center">
                 {% if cabinet %}
                 В этой кассетнице нет ячеек.
-                <a href="{% url 'cabinet_edit' cabinet.pk %}">Задайте раскладку</a>.
+                <a href="{% url 'cabinet_edit' cabinet.pk %}?next={{ request.get_full_path|urlencode }}">Задайте раскладку</a>.
                 {% else %}
                 Кассетниц пока нет.
                 <a href="{% url 'cabinet_create' %}">Заведите первую</a> —

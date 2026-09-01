@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Пользователи — LiftTeam v2.99.0{% endblock %}
+{% block title %}Пользователи — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -26,7 +26,7 @@
                 </thead>
                 <tbody>
                     {% for u in users %}
-                    <tr>
+                    <tr class="clickable-row" data-href="{% url 'admin_user_edit' u.pk %}">
                         <td class="fw-bold" data-label="Логин">{{ u.username }}</td>
                         <td data-label="ФИО">{{ u.full_name }}</td>
                         <td data-label="Email">{{ u.email|default:"—" }}</td>

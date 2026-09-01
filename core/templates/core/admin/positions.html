@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Должности — LiftTeam v2.99.0{% endblock %}
+{% block title %}Должности — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -39,7 +39,7 @@
                 </thead>
                 <tbody>
                     {% for position in positions %}
-                    <tr>
+                    <tr class="clickable-row" data-href="{% url 'admin_position_edit' position.pk %}">
                         <td data-label="Название">
                             <a href="{% url 'admin_position_edit' position.pk %}" class="fw-bold text-decoration-none">{{ position.name }}</a>
                             {% if position.is_admin %}

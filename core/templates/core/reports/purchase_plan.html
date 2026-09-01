@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}План закупок — LiftTeam v2.99.0{% endblock %}
+{% block title %}План закупок — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -31,7 +31,7 @@
                 </thead>
                 <tbody>
                     {% for part in parts %}
-                    <tr class="table-danger">
+                    <tr class="table-danger clickable-row" data-href="{% url 'part_detail' part.pk %}">
                         <td class="fw-bold" data-label="Артикул">{{ part.part_number }}</td>
                         <td data-label="Название">{{ part.name }}</td>
                         <td data-label="Тип">{{ part.component_type|default:"—" }}</td>

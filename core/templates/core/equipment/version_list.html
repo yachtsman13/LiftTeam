@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Версии моделей — LiftTeam v2.99.0{% endblock %}
+{% block title %}Версии моделей — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -32,7 +32,7 @@
                 </thead>
                 <tbody>
                     {% for version in versions %}
-                    <tr>
+                    <tr class="clickable-row" data-href="{% url 'equipment_version_edit' version.pk %}">
                         <td data-label="Модель">{{ version.equipment_model.name }}</td>
                         <td data-label="Версия">{{ version.name }}</td>
                         <td data-label="Комментарий">{% if version.note %}{{ version.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td>

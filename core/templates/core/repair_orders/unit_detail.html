@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.99.0{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.100.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -792,7 +792,7 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
             <div class="card-body">
                 <div class="mb-1"><strong>Модель:</strong>
-                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}">{{ equipment.model.name }}</a></div>
+                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}?next={{ request.path|urlencode }}%23diagnosis">{{ equipment.model.name }}</a></div>
                 <div class="mb-1"><strong>Исполнение:</strong>
                     {{ equipment.version.name|default:"не указано" }}
                     {% if equipment.version.note %}
@@ -877,7 +877,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <p class="text-muted small">
                     У модели «{{ equipment.model.name }}» карт пока нет.
                     Первая — обычно «как разобрать корпус»:
-                    <a href="{% url 'tech_card_create' %}">завести карту</a>.
+                    <a href="{% url 'tech_card_create' %}?next={{ request.path|urlencode }}%23diagnosis">завести карту</a>.
                 </p>
                 {% endif %}
 
@@ -898,7 +898,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <p class="text-muted small mb-0">
                     У модели «{{ equipment.model.name }}» материалов пока нет.
                     Схемы и инструкции добавляются
-                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}">в карточке модели</a>
+                    <a href="{% url 'equipment_model_edit' equipment.model.pk %}?next={{ request.path|urlencode }}%23diagnosis">в карточке модели</a>
                     ссылками на Яндекс.Диск.
                 </p>
                 {% endif %}

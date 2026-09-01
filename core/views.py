@@ -638,6 +638,7 @@ def equipment_model_create(request):
         form = EquipmentModelForm()
     return render(request, 'core/equipment/model_form.html', {
         'form': form, 'title': 'Новая модель оборудования', 'kinds': _equipment_kinds(),
+        'back_url': reverse('equipment_model_list'),
     })
 
 
@@ -649,8 +650,17 @@ def equipment_model_edit(request, pk):
     не сохранена, вешать ссылки не на что. Набор форм создаётся
     с `form_kwargs={'equipment_model': model}` — иначе в выборе исполнения
     оказались бы исполнения всех моделей разом.
+
+    `?next=` возвращает туда, откуда пришли, — обычно со страницы
+    единицы, когда материалов или типа у модели ещё нет и мастер зашёл
+    их завести. Без него — список моделей, как и раньше.
     """
     model = get_object_or_404(EquipmentModel, pk=pk)
+    next_url = request.GET.get('next') or request.POST.get('next') or ''
+    if not url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        next_url = ''
     if request.method == 'POST':
         form = EquipmentModelForm(request.POST, instance=model)
         formset = EquipmentMaterialFormSet(
@@ -660,7 +670,7 @@ def equipment_model_edit(request, pk):
             form.save()
             formset.save()
             messages.success(request, 'Модель обновлена')
-            return redirect('equipment_model_list')
+            return redirect(next_url or 'equipment_model_list')
         messages.error(request, 'Модель не сохранена: проверьте отмеченные поля')
     else:
         form = EquipmentModelForm(instance=model)
@@ -671,6 +681,8 @@ def equipment_model_edit(request, pk):
         'form': form, 'formset': formset,
         'title': 'Редактирование модели', 'model': model,
         'kinds': _equipment_kinds(),
+        'back_url': next_url or reverse('equipment_model_list'),
+        'next_url': next_url,
     })
 
 
@@ -883,7 +895,18 @@ def _tech_card_page(request, card, title):
 
     Одна на обе: набор шагов создаётся с моделью карты, иначе в выборе
     исполнения оказались бы исполнения всех моделей разом.
+
+    «Назад» ведёт не всегда в список: карту чаще заводят со страницы
+    единицы («у модели карт пока нет — завести карту»), и это она даёт
+    `?next=`. Без него — карточка карты при правке (туда же вернулась бы
+    и отмена) или список при создании без известного места, откуда пришли.
     """
+    next_url = request.POST.get('next') or request.GET.get('next') or ''
+    if not url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        next_url = ''
+
     model = card.equipment_model if card.pk else None
     if request.method == 'POST':
         form = TechCardForm(request.POST, instance=card)
@@ -910,8 +933,12 @@ def _tech_card_page(request, card, title):
         formset = TechCardStepFormSet(
             instance=card, form_kwargs={'equipment_model': model}
         )
+    back_url = next_url or (
+        reverse('tech_card_detail', args=[card.pk]) if card.pk else reverse('tech_card_list')
+    )
     return render(request, 'core/tech_cards/form.html', {
         'form': form, 'formset': formset, 'title': title, 'card': card,
+        'back_url': back_url, 'next_url': next_url,
     })
 
 
@@ -2352,11 +2379,15 @@ def part_create(request):
         form = SparePartForm(initial=initial)
     else:
         form = SparePartForm()
+    # Отмена копии возвращает к образцу — там и стояли, когда решили
+    # копировать; отмена новой детали с нуля — в список, другого места нет
+    back_url = reverse('part_detail', args=[source.pk]) if source is not None else reverse('part_list')
     return render(request, 'core/parts/form.html', {
         'form': form,
         'title': 'Копия детали' if source is not None else 'Новая деталь',
         'copy_source': source,
         'measurement_pairs': _measurement_pairs(form),
+        'back_url': back_url,
         **_part_choices(),
     })
 
@@ -2378,6 +2409,7 @@ def part_edit(request, pk):
         'title': 'Редактирование детали',
         'part': part,
         'measurement_pairs': _measurement_pairs(form),
+        'back_url': reverse('part_detail', args=[part.pk]),
         **_part_choices(),
     })
 
@@ -2788,7 +2820,7 @@ def cabinet_create(request):
     else:
         form = CabinetForm()
     return render(request, 'core/storage_cells/cabinet_form.html', {
-        'form': form, 'title': 'Новая кассетница',
+        'form': form, 'title': 'Новая кассетница', 'back_url': reverse('cabinet_list'),
     })
 
 
@@ -2798,8 +2830,17 @@ def cabinet_edit(request, pk):
 
     Ячейки, оказавшиеся за пределами новой раскладки, удаляются — но
     только пустые: занятые форма не пропускает.
+
+    `?next=` возвращает туда, откуда пришли, — обычно с сетки ячеек,
+    когда у кассетницы ещё нет раскладки («задайте раскладку»). Без него
+    — список кассетниц, как и раньше.
     """
     cabinet = get_object_or_404(Cabinet, pk=pk)
+    next_url = request.GET.get('next') or request.POST.get('next') or ''
+    if not url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        next_url = ''
     if request.method == 'POST':
         form = CabinetForm(request.POST, instance=cabinet)
         if form.is_valid():
@@ -2809,13 +2850,15 @@ def cabinet_edit(request, pk):
                 f'Кассетница {cabinet.number} сохранена. '
                 f'Добавлено ячеек: {added}, удалено: {removed}'
             ))
-            return redirect('cabinet_list')
+            return redirect(next_url or 'cabinet_list')
         messages.error(request, 'Изменения не сохранены: проверьте отмеченные поля')
     else:
         form = CabinetForm(instance=cabinet)
     return render(request, 'core/storage_cells/cabinet_form.html', {
         'form': form, 'cabinet': cabinet,
         'title': f'Кассетница {cabinet.number}',
+        'back_url': next_url or reverse('cabinet_list'),
+        'next_url': next_url,
     })
 
 
@@ -4063,9 +4106,9 @@ def report_profit(request):
     деталей, списанных по конкретным партиям прихода (не по средней
     и не по текущей цене детали), плюс разбивка по заказчику.
 
-    Права — только `accountant` (`admin` проходит декоратором всегда), как
-    у остальных финансовых разделов (`repair_order_add_payment`,
-    `bank_operations`): это деньги заказа, складу и мастеру они не нужны.
+    Право — `reports_profit`, как у остальных финансовых разделов
+    (`bank_statement` у поступлений, `invoices_send` у счетов): это деньги
+    заказа, складу и мастеру они не нужны.
     """
     date_from, date_to = _profit_period(request)
     data = _profit_data(date_from, date_to)
@@ -4340,7 +4383,7 @@ def admin_user_edit(request, pk):
     return render(request, 'core/admin/user_form.html', {'form': form, 'title': 'Редактирование пользователя', 'user_obj': user})
 
 
-# ==================== ДОЛЖНОСТИ И ПРАВА (v2.99.0) ====================
+# ==================== ДОЛЖНОСТИ И ПРАВА (v2.98.0) ====================
 #
 # Права заводит администратор, а не программист: до v2.99.0 ролей было
 # ровно четыре, они были зашиты в код, и пятая требовала правки исходников.
@@ -5562,8 +5605,23 @@ def _price_list_copy_source(request):
     return PriceList.objects.filter(pk=copy_from).first()
 
 
+def _price_list_back_url(request):
+    """Куда вернуться из формы прайса.
+
+    `?next=` приходит с карточки заказчика, когда прайс завели или
+    открыли прямо оттуда — без него список прайсов, как и раньше.
+    """
+    next_url = request.GET.get('next') or request.POST.get('next') or ''
+    if not url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        next_url = ''
+    return next_url or reverse('price_list_index'), next_url
+
+
 @login_required
 def price_list_create(request):
+    back_url, next_url = _price_list_back_url(request)
     if request.method == 'POST':
         form = PriceListForm(request.POST)
         formset = PriceListLineFormSet(request.POST, prefix='lines')
@@ -5597,12 +5655,14 @@ def price_list_create(request):
     return render(request, 'core/prices/form.html', {
         'form': form, 'formset': formset, 'title': 'Новый прайс',
         'copy_source': _price_list_copy_source(request),
+        'back_url': back_url, 'next_url': next_url,
     })
 
 
 @login_required
 def price_list_edit(request, pk):
     price_list = get_object_or_404(PriceList.objects.select_related('client'), pk=pk)
+    back_url, next_url = _price_list_back_url(request)
     if request.method == 'POST':
         form = PriceListForm(request.POST, instance=price_list)
         formset = PriceListLineFormSet(request.POST, instance=price_list, prefix='lines')
@@ -5617,6 +5677,7 @@ def price_list_edit(request, pk):
         formset = PriceListLineFormSet(instance=price_list, prefix='lines')
     return render(request, 'core/prices/form.html', {
         'form': form, 'formset': formset, 'price_list': price_list,
+        'back_url': back_url, 'next_url': next_url,
         'title': str(price_list),
     })
 

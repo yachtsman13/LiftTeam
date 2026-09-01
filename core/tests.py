@@ -65,7 +65,7 @@ from .models import (
 def position(name):
     """Заводская должность по названию — их заводит миграция 0051.
 
-    Тесты просят должность, а не роль: ролей с v2.99.0 нет, права даёт
+    Тесты просят должность, а не роль: ролей с v2.98.0 нет, права даёт
     должность. Названия те же, что были у ролей, — так их и перенесла
     миграция.
     """
@@ -6671,6 +6671,37 @@ class CabinetTests(TestCase):
 
         self.assertEqual(Cabinet.objects.get(number=1).layout(), [2])
 
+    def test_back_from_setting_a_layout_off_the_grid_returns_there(self):
+        """«Задайте раскладку» на сетке ячеек шлёт `?next=` — «Назад»
+        и сохранение обязаны вернуть на сетку, а не в список кассетниц."""
+        cabinet = Cabinet.objects.create(number=5, name='Без раскладки')
+        grid_url = f'/storage-cells/?cabinet={cabinet.number}'
+
+        response = self.client_http.get(grid_url)
+        self.assertContains(response, f'/storage-cells/cabinets/{cabinet.pk}/edit/?next=')
+
+        html = self.client_http.get(
+            f'/storage-cells/cabinets/{cabinet.pk}/edit/', {'next': grid_url}
+        ).content.decode()
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>К списку\s*</a>', html)
+        self.assertIsNotNone(back_button)
+        self.assertEqual(back_button.group(1), grid_url)
+
+        response = self.client_http.post(f'/storage-cells/cabinets/{cabinet.pk}/edit/', {
+            'number': cabinet.number, 'name': cabinet.name, 'note': '',
+            'layout': '4, 4', 'next': grid_url,
+        })
+        self.assertRedirects(response, grid_url)
+
+    def test_editing_without_a_known_origin_falls_back_to_the_list(self):
+        self._create(number=6)
+        cabinet = Cabinet.objects.get(number=6)
+
+        html = self.client_http.get(f'/storage-cells/cabinets/{cabinet.pk}/edit/').content.decode()
+
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>К списку\s*</a>', html)
+        self.assertEqual(back_button.group(1), reverse('cabinet_list'))
+
 
 class CommonLabelLayoutTests(TestCase):
     """Этикетка детали и этикетка ячейки печатаются одним шаблоном.
@@ -11275,6 +11306,37 @@ class PriceListPagesTests(TestCase):
         self.assertEqual(page.context['base'], base)
         self.assertIn(self.own, page.context['client_lists'])
 
+    def test_back_from_the_clients_own_price_list_returns_to_the_client(self):
+        """Прайс открыли с карточки заказчика — «Назад» обязан вернуть
+        туда же, а не в общий список прайсов."""
+        client_url = f'/clients/{self.first.pk}/edit/'
+
+        response = self.http.get(client_url)
+        self.assertContains(response, f'/price-lists/{self.own.pk}/edit/?next=')
+
+        html = self.http.get(f'/price-lists/{self.own.pk}/edit/', {'next': client_url}).content.decode()
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertIsNotNone(back_button)
+        self.assertEqual(back_button.group(1), client_url)
+
+    def test_back_from_founding_a_price_list_off_the_client_returns_there(self):
+        without_price = ClientModel.objects.create(name='ООО «Без прайса»')
+        client_url = f'/clients/{without_price.pk}/edit/'
+
+        response = self.http.get(client_url)
+        self.assertContains(response, f'/price-lists/create/?client={without_price.pk}&next=')
+
+        html = self.http.get('/price-lists/create/', {'client': without_price.pk, 'next': client_url}).content.decode()
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertIsNotNone(back_button)
+        self.assertEqual(back_button.group(1), client_url)
+
+    def test_without_a_known_origin_the_form_falls_back_to_the_index(self):
+        html = self.http.get(f'/price-lists/{self.own.pk}/edit/').content.decode()
+
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertEqual(back_button.group(1), reverse('price_list_index'))
+
     def test_copying_fills_the_form_and_saves_nothing_yet(self):
         """Тот же приём, что у типовых неисправностей и карточек деталей:
         до нажатия «Сохранить» в базе не появляется ничего."""
@@ -12111,6 +12173,23 @@ class ReferenceCopyTests(TestCase):
         self.assertEqual(copy.current_stock, 0)
         self.capacitor.refresh_from_db()
         self.assertEqual(self.capacitor.current_stock, 42)
+
+    def test_back_from_a_new_part_without_a_copy_source_goes_to_the_list(self):
+        html = self.client_http.get('/parts/create/').content.decode()
+
+        self.assertIn(f'href="{reverse("part_list")}"', html)
+
+    def test_back_from_a_copy_returns_to_the_sample(self):
+        """Копию открыли с карточки образца — «Назад» должен вернуть
+        туда же, а не в общий список: образец там и остался."""
+        html = self.client_http.get(f'/parts/create/?copy_from={self.capacitor.pk}').content.decode()
+
+        self.assertIn(f'href="{reverse("part_detail", args=[self.capacitor.pk])}"', html)
+
+    def test_back_from_editing_returns_to_the_parts_own_page(self):
+        html = self.client_http.get(f'/parts/{self.capacitor.pk}/edit/').content.decode()
+
+        self.assertIn(f'href="{reverse("part_detail", args=[self.capacitor.pk])}"', html)
 
 
 class EquipmentTypeDirectoryTests(TestCase):
@@ -13268,6 +13347,34 @@ class EquipmentMaterialScreensTests(TestCase):
         return reverse('repair_order_unit_detail',
                        args=[self.order.pk, self.roe.pk])
 
+    def test_back_from_the_unit_page_returns_there(self):
+        """«В карточке модели» со страницы единицы (материалов у модели
+        ещё нет) шлёт `?next=` — «Назад» и сохранение обязаны вернуть
+        туда же, а не в общий список моделей."""
+        unit_url = self._defect_url()
+
+        response = self.http.get(unit_url)
+        self.assertContains(response, f'{reverse("equipment_model_edit", args=[self.model.pk])}?next=')
+
+        html = self.http.get(self._edit_url(), {'next': unit_url}).content.decode()
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertIsNotNone(back_button)
+        self.assertEqual(back_button.group(1), unit_url)
+
+        response = self.http.post(self._edit_url(), {
+            'name': self.model.name, 'kind': '', 'equipment_type': '',
+            'next': unit_url,
+            'materials-TOTAL_FORMS': '0', 'materials-INITIAL_FORMS': '0',
+            'materials-MIN_NUM_FORMS': '0', 'materials-MAX_NUM_FORMS': '1000',
+        })
+        self.assertRedirects(response, unit_url)
+
+    def test_without_a_known_origin_the_edit_page_falls_back_to_the_list(self):
+        html = self.http.get(self._edit_url()).content.decode()
+
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertEqual(back_button.group(1), reverse('equipment_model_list'))
+
     def test_the_new_model_page_has_no_materials(self):
         """Пока модели нет, вешать ссылки не на что — и страница так
         и говорит, вместо пустой таблицы, которая ничего не сохранит."""
@@ -13552,6 +13659,52 @@ class TechCardScreensTests(TestCase):
         self.assertEqual(response.status_code, 302)
         card = TechCard.objects.get(title='Проверка на стенде')
         self.assertEqual(card.steps.get().text, 'Подключить питание')
+
+    def test_back_from_editing_returns_to_the_cards_own_page(self):
+        """Правку открыли с карточки карты — кнопка «Назад» не должна
+        уводить в общий список: там ту же карту пришлось бы искать заново.
+        (Ссылка на список в боковом меню при этом никуда не девается —
+        проверяем именно кнопку, а не отсутствие ссылки на странице.)"""
+        html = self.http.get(reverse('tech_card_edit', args=[self.card.pk])).content.decode()
+
+        back_button = re.search(r'<a href="([^"]+)"[^>]*>\s*<i class="bi bi-arrow-left[^>]*></i>Назад</a>', html)
+        self.assertIsNotNone(back_button)
+        self.assertEqual(back_button.group(1), reverse('tech_card_detail', args=[self.card.pk]))
+
+    def test_back_from_a_new_card_started_off_the_unit_page_returns_there(self):
+        """«Завести карту» со страницы единицы шлёт `?next=` — «Назад»
+        обязан вернуть туда же, а не в список карт: страница единицы —
+        вот где человек стоял, когда решил завести карту.
+
+        Ссылка показывается только когда у модели ещё нет ни одной карты
+        (иначе на странице список, а не приглашение завести первую) —
+        поэтому здесь отдельная модель без своих карт, не self.model."""
+        bare_model = EquipmentModel.objects.create(name='БУАД без карт')
+        bare_equipment = Equipment.objects.create(model=bare_model, serial_number='SN-TC-BARE')
+        bare_roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order, equipment=bare_equipment
+        )
+        unit_url = reverse('repair_order_unit_detail', args=[self.order.pk, bare_roe.pk])
+
+        response = self.http.get(unit_url)
+        self.assertContains(response, f'{reverse("tech_card_create")}?next=')
+
+        html = self.http.get(reverse('tech_card_create'), {'next': unit_url}).content.decode()
+
+        self.assertIn(f'href="{unit_url}', html)
+
+    def test_a_next_outside_the_site_is_not_trusted(self):
+        html = self.http.get(
+            reverse('tech_card_create'), {'next': 'https://evil.example/'}
+        ).content.decode()
+
+        self.assertNotIn('evil.example', html)
+        self.assertIn(reverse('tech_card_list'), html)
+
+    def test_a_new_card_without_a_known_origin_falls_back_to_the_list(self):
+        html = self.http.get(reverse('tech_card_create')).content.decode()
+
+        self.assertIn('href="%s"' % reverse('tech_card_list'), html)
 
     def test_a_new_card_offers_no_versions_yet(self):
         """Исполнения берутся у модели, а модель выбирают в этой же форме:
@@ -18637,7 +18790,7 @@ class OrderCardInitialConditionTests(TestCase):
         )
 
 
-# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.99.0) ============
+# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.97.0) ============
 
 
 class RepairerEarningsTests(TestCase):
@@ -18941,7 +19094,7 @@ class ClientContactTests(TestCase):
 
 class FaultTypeVersionScopeTests(TestCase):
     """Типовая неисправность бывает общей для модели или отмеченной
-    под несколько конкретных исполнений (с v2.99.0).
+    под несколько конкретных исполнений (с v2.97.0).
 
     Решение владельца: «привязка к нескольким исполнениям, а не
     к одному» — до этого отбора по исполнению не было вовсе.
@@ -19044,7 +19197,7 @@ class FaultTypeVersionScopeTests(TestCase):
         self.assertFalse(FaultType.objects.filter(name='плохая привязка').exists())
 
 
-# ============ ДОЛЖНОСТИ С ПРАВАМИ ВМЕСТО ЧЕТЫРЁХ РОЛЕЙ (v2.99.0) ============
+# ============ ДОЛЖНОСТИ С ПРАВАМИ ВМЕСТО ЧЕТЫРЁХ РОЛЕЙ (v2.98.0) ============
 
 
 class PositionMigrationTests(TestCase):
@@ -19463,3 +19616,102 @@ class NotificationsByPermissionTests(TestCase):
             [n.recipient for n in Notification.objects.filter(event='low_stock')],
             ['disp@example.com'],
         )
+
+
+class ClickableListRowsTests(TestCase):
+    """Строка списка ведёт на карточку — этап 5 (v2.100.0).
+
+    Не сплошной перебор всех списков программы: проверены те страницы,
+    где строка получила `data-href` в этом выпуске. Клик обрабатывает
+    общий скрипт в base.html (`.clickable-row`), здесь проверяется
+    только разметка — что нужный класс и адрес действительно попали
+    в отданный HTML.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='clickrow_admin', full_name='Админ', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def _assert_clickable(self, url, href):
+        response = self.http.get(url)
+        self.assertContains(response, 'clickable-row')
+        self.assertContains(response, href)
+
+    def test_fault_type_list(self):
+        model = EquipmentModel.objects.create(name='Emotron-клик')
+        fault = FaultType.objects.create(equipment_model=model, name='Клик-неисправность')
+
+        self._assert_clickable('/faults/', f'/faults/{fault.pk}/edit/')
+
+    def test_equipment_model_list(self):
+        model = EquipmentModel.objects.create(name='Клик-модель')
+
+        self._assert_clickable('/equipment/models/', f'/equipment/models/{model.pk}/edit/')
+
+    def test_equipment_type_list(self):
+        equipment_type = EquipmentType.objects.create(name='Клик-тип')
+
+        self._assert_clickable('/equipment/types/', f'/equipment/types/{equipment_type.pk}/edit/')
+
+    def test_equipment_version_list(self):
+        model = EquipmentModel.objects.create(name='Клик-версии')
+        version = EquipmentVersion.objects.create(equipment_model=model, name='.1')
+
+        self._assert_clickable('/equipment/versions/', f'/equipment/versions/{version.pk}/edit/')
+
+    def test_tech_card_list(self):
+        model = EquipmentModel.objects.create(name='Клик-карта')
+        card = TechCard.objects.create(equipment_model=model, title='Разобрать корпус')
+
+        self._assert_clickable('/tech-cards/', f'/tech-cards/{card.pk}/')
+
+    def test_inventory_list(self):
+        cabinet = Cabinet.objects.create(number=980, name='Клик-кассетница')
+        cabinet.apply_layout([2])
+        session = InventorySession.objects.create(cabinet=cabinet)
+
+        self._assert_clickable('/inventory/', f'/inventory/{session.pk}/')
+
+    def test_price_list_index(self):
+        customer = ClientModel.objects.create(name='ООО «КЛИК-ЗАКАЗЧИК»')
+        price_list = PriceList.objects.create(client=customer)
+
+        self._assert_clickable('/price-lists/', f'/price-lists/{price_list.pk}/edit/')
+
+    def test_cabinets_list(self):
+        cabinet = Cabinet.objects.create(number=981, name='Клик-ряд')
+        cabinet.apply_layout([2])
+
+        self._assert_clickable(
+            '/storage-cells/cabinets/', f'/storage-cells/cabinets/{cabinet.pk}/edit/'
+        )
+
+    def test_admin_users_list(self):
+        clerk = Employee.objects.create_user(
+            username='clickrow_clerk', full_name='Клик Кликов', password='pass',
+        )
+
+        self._assert_clickable('/management/users/', f'/management/users/{clerk.pk}/edit/')
+
+    def test_admin_positions_list(self):
+        self._assert_clickable(
+            '/management/positions/',
+            f'/management/positions/{position("Администратор").pk}/edit/',
+        )
+
+    def test_dashboard_ready_to_ship_and_recent_orders(self):
+        customer = ClientModel.objects.create(name='ООО «КЛИК-ДАШБОРД»')
+        order = RepairOrder.objects.create(client=customer)
+
+        self._assert_clickable('/', f'/repair-orders/{order.pk}/')
+
+    def test_purchase_plan_report(self):
+        part = SparePart.objects.create(
+            part_number='CLICK-1', name='Клик-конденсатор',
+            min_stock=5, current_stock=0,
+        )
+
+        self._assert_clickable('/reports/purchase-plan/', f'/parts/{part.pk}/')

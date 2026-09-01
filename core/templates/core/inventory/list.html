@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Инвентаризация — LiftTeam v2.99.0{% endblock %}
+{% block title %}Инвентаризация — LiftTeam v2.100.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -57,7 +57,7 @@
                 </thead>
                 <tbody>
                     {% for session in sessions %}
-                    <tr>
+                    <tr class="clickable-row" data-href="{% url 'inventory_detail' session.pk %}">
                         <td class="fw-bold" data-label="Кассетница">{{ session.cabinet.label }}</td>
                         <td data-label="Начата">{{ session.started_at|date:"d.m.Y H:i" }}</td>
                         <td data-label="Кем">{{ session.started_by.full_name|default:"—" }}</td>

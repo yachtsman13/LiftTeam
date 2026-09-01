@@ -125,7 +125,7 @@ def queue(event, recipient, subject, body, repair_order=None, part=None,
 
 
 def _queue_to_client(event, client, subject, body, **extra):
-    """Заказчику — по всем контактам с включённым каналом (с v2.99.0).
+    """Заказчику — по всем контактам с включённым каналом (с v2.97.0).
 
     Контактов не завели — используем то единственное поле, что было
     раньше (`Client.email`): так заказчик, для которого никто не открывал
