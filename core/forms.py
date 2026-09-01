@@ -15,6 +15,7 @@ from .models import (
     PriceList, PriceListLine, EquipmentMaterial, TechCard, TechCardStep,
     available_equipment_for_order,
     RepairOrderDetail, SparePart, StockMovement, Employee, Payment, Organization,
+    PERMISSIONS, Position, PositionPermission,
     parse_layout, format_spec,
 )
 
@@ -82,7 +83,7 @@ class ClientForm(forms.ModelForm):
 
 
 class ClientContactForm(forms.ModelForm):
-    """Одна строка контактов заказчика — с v2.97.0.
+    """Одна строка контактов заказчика — с v2.98.0.
 
     Три галочки решают, куда именно уходит переписка этому человеку;
     сама возможность писать заказчикам и включённость каждого канала —
@@ -1046,7 +1047,7 @@ class UnitDiagnosisForm(forms.ModelForm):
         # на модели, а не на исполнении: сохнут те же конденсаторы.
         # Чужая в списке означала бы рецепт деталей не от этого прибора
         #
-        # Внутри модели — ещё и по исполнению (с v2.97.0): неисправность
+        # Внутри модели — ещё и по исполнению (с v2.98.0): неисправность
         # без своих исполнений общая для всех, отмеченные — только для
         # них. Уже выбранные неисправности остаются в списке всегда, даже
         # если исполнение сменили задним числом или ограничение появилось
@@ -1355,7 +1356,7 @@ class EmployeeForm(forms.ModelForm):
     class Meta:
         model = Employee
         fields = ['username', 'full_name', 'email', 'max_user_id', 'telegram_chat_id',
-                  'role', 'is_active', 'default_provider',
+                  'position', 'is_active', 'default_provider',
                   'notify_by_email', 'notify_by_max', 'notify_by_telegram']
         widgets = {
             'username': forms.TextInput(attrs={'class': 'form-control'}),
@@ -1365,7 +1366,7 @@ class EmployeeForm(forms.ModelForm):
                                                   'inputmode': 'numeric'}),
             'telegram_chat_id': forms.TextInput(attrs={'class': 'form-control',
                                                        'inputmode': 'numeric'}),
-            'role': forms.Select(attrs={'class': 'form-select'}),
+            'position': forms.Select(attrs={'class': 'form-select'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'default_provider': forms.Select(attrs={'class': 'form-select'}),
             'notify_by_email': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
@@ -1378,7 +1379,7 @@ class EmployeeForm(forms.ModelForm):
             'email': 'Email',
             'max_user_id': 'ID в MAX',
             'telegram_chat_id': 'ID в Telegram',
-            'role': 'Роль',
+            'position': 'Должность',
             'is_active': 'Активен',
             'default_provider': 'Банк по умолчанию',
             'notify_by_email': 'Оповещения на почту',
@@ -1397,6 +1398,14 @@ class EmployeeForm(forms.ModelForm):
                                'это не касается',
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Пустое значение читается как ответ, а не как «не выбрано»:
+        # сотрудник без должности видит то, что открыто всем, и это
+        # осмысленное состояние, а не недозаполненная карточка
+        self.fields['position'].empty_label = 'Без особых прав'
+        self.fields['position'].queryset = Position.objects.all()
+
     def clean(self):
         cleaned_data = super().clean()
         password = cleaned_data.get('password')
@@ -1412,6 +1421,60 @@ class EmployeeForm(forms.ModelForm):
         if commit:
             user.save()
         return user
+
+
+class PositionForm(forms.ModelForm):
+    """Должность и её права — с v2.98.0.
+
+    Права не поля модели, а отдельные строки (`PositionPermission`),
+    поэтому набор галочек живёт здесь, а не в `Meta.fields`: форма
+    показывает то, что записано в явном списке `models.PERMISSIONS`,
+    и сохраняет только его. Выдать право, которого в списке нет,
+    нельзя — `choices` не пропустит.
+    """
+
+    permissions = forms.MultipleChoiceField(
+        label='Права', required=False,
+        choices=[(code, label) for code, label, _ in PERMISSIONS],
+        widget=forms.CheckboxSelectMultiple,
+    )
+
+    class Meta:
+        model = Position
+        fields = ['name', 'is_admin', 'note']
+        widgets = {
+            'name': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Мастер участка',
+            }),
+            'is_admin': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'note': forms.TextInput(attrs={'class': 'form-control'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.initial.setdefault('permissions', sorted(self.instance.codes))
+
+    def save(self, commit=True):
+        """Сохранить должность вместе с её галочками.
+
+        Права переписываются целиком, а не досыпаются: снятая галочка
+        обязана снимать право, иначе форма умела бы только выдавать.
+        """
+        position = super().save(commit=commit)
+        if not commit:
+            return position
+
+        chosen = set(self.cleaned_data.get('permissions') or [])
+        existing = position.codes
+        PositionPermission.objects.filter(
+            position=position, code__in=existing - chosen
+        ).delete()
+        PositionPermission.objects.bulk_create([
+            PositionPermission(position=position, code=code)
+            for code in chosen - existing
+        ])
+        return position
 
 
 class MyNotificationsForm(forms.ModelForm):

@@ -12,14 +12,14 @@ from .models import (
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ['username', 'full_name', 'email', 'role', 'is_active', 'is_staff', 'is_superuser']
-    list_filter = ['role', 'is_active', 'is_staff', 'is_superuser']
+    list_display = ['username', 'full_name', 'email', 'position', 'is_active', 'is_staff', 'is_superuser']
+    list_filter = ['position', 'is_active', 'is_staff', 'is_superuser']
     search_fields = ['username', 'full_name', 'email']
     ordering = ['username']
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
         ('Личная информация', {'fields': ('full_name', 'email')}),
-        ('Права доступа', {'fields': ('role', 'is_active', 'is_staff', 'is_superuser')}),
+        ('Права доступа', {'fields': ('position', 'is_active', 'is_staff', 'is_superuser')}),
         ('Важные даты', {'fields': ('last_login', 'date_joined')}),
     )
 

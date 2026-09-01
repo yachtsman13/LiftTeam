@@ -6,6 +6,7 @@ CRUD операции, дашборд, отчёты, визуальная сет
 import re
 import json
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 import openpyxl
@@ -38,6 +39,7 @@ from .models import (
     OrderStatusHistory, Employee,
     Notification, Payment, Organization, BankOperation, Cabinet,
     InventorySession, InventorySessionLine, SettingChange,
+    LastAdminError, Position, admin_access_exists, permissions_by_section,
     add_months, warranty_cutoff, warranty_months, plural_genitive,
 )
 from .forms import (
@@ -46,6 +48,7 @@ from .forms import (
     RepairOrderForm, RepairOrderDetailForm, SparePartForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
+    PositionForm,
     TechCardForm, TechCardStepFormSet, UnitDiagnosisForm, UnitRepairForm,
     UnitDiskFolderForm, OrderInfoForm,
     RepairOrderIntakeForm,
@@ -58,7 +61,7 @@ from .utils import (
     generate_qr_image,
     build_workbook, add_sheet, xlsx_response, excel_datetime,
 )
-from .decorators import role_required
+from .decorators import permission_required
 from . import (
     envfile, invoicing, messengers, notifications, restarter, scanning,
     selfcheck, tbank, updater, yadisk,
@@ -130,10 +133,10 @@ def my_notifications(request):
 def presence(request):
     """Кто из сотрудников сейчас на связи.
 
-    Видно всем вошедшим, роль не проверяем: это не надзор за подчинёнными,
-    а способ не идти через лабораторию к пустому терминалу. Тем же
-    декоратором закрыты склад и кассетницы; role_required оставлен
-    страницам с деньгами.
+    Видно всем вошедшим, права не спрашиваем: это не надзор
+    за подчинёнными, а способ не идти через лабораторию к пустому
+    терминалу. Правами закрыто только то, что и раньше было закрыто
+    ролями, — деньги, удаление и администрирование.
 
     Список рисуется сразу из базы, а не ждёт сокета: отметки хранятся
     в Employee.last_seen и переживают перезапуск сервера. Дальше страницу
@@ -207,7 +210,7 @@ def dashboard(request):
     # мастеру эта цифра ничего не говорит, а место на дашборде занимает
     unapplied_operations = (
         BankOperation.objects.filter(status='new').count()
-        if request.user.role in ('accountant', 'admin') else 0
+        if request.user.allows('bank_statement') else 0
     )
 
     context = {
@@ -328,7 +331,7 @@ def client_edit(request, pk):
     })
 
 
-@role_required('repair_manager')
+@permission_required('clients_delete')
 def client_delete(request, pk):
     client = get_object_or_404(Client, pk=pk)
     if request.method == 'POST':
@@ -594,7 +597,7 @@ def equipment_history_export(request, pk):
     )
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def equipment_delete(request, pk):
     eq = get_object_or_404(Equipment, pk=pk)
     if request.method == 'POST':
@@ -671,7 +674,7 @@ def equipment_model_edit(request, pk):
     })
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def equipment_model_delete(request, pk):
     model = get_object_or_404(EquipmentModel, pk=pk)
     if request.method == 'POST':
@@ -683,8 +686,8 @@ def equipment_model_delete(request, pk):
 
 # ==================== ТИПЫ ОБОРУДОВАНИЯ ====================
 # Права — как у EquipmentModel, соседнего справочника: список, создание
-# и правка открыты любому авторизованному, удаление — складу и мастеру
-# (роль admin проходит везде через role_required).
+# и правка открыты любому вошедшему, удаление — по праву `catalog_delete`
+# (должность с полным доступом проходит везде, см. decorators.py).
 
 @login_required
 def equipment_type_list(request):
@@ -724,7 +727,7 @@ def equipment_type_edit(request, pk):
     })
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def equipment_type_delete(request, pk):
     equipment_type = get_object_or_404(EquipmentType, pk=pk)
     if request.method == 'POST':
@@ -796,7 +799,7 @@ def equipment_version_edit(request, pk):
     })
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def equipment_version_delete(request, pk):
     version = get_object_or_404(EquipmentVersion, pk=pk)
     if request.method == 'POST':
@@ -812,8 +815,8 @@ def equipment_version_delete(request, pk):
 
 # ==================== ТИПОВЫЕ НЕИСПРАВНОСТИ ====================
 # Права — как у EquipmentModel, ближайшего по смыслу справочника:
-# создание и редактирование открыты любому авторизованному, удаление —
-# только складу и мастеру (роль admin проходит везде через role_required).
+# создание и редактирование открыты любому вошедшему, удаление —
+# по праву `catalog_delete` (полный доступ проходит везде).
 
 @login_required
 def fault_type_list(request):
@@ -923,7 +926,7 @@ def tech_card_edit(request, pk):
     return _tech_card_page(request, card, 'Правка технологической карты')
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def tech_card_delete(request, pk):
     card = get_object_or_404(TechCard, pk=pk)
     if request.method == 'POST':
@@ -1034,7 +1037,7 @@ def fault_type_edit(request, pk):
     })
 
 
-@role_required('repair_manager', 'warehouse')
+@permission_required('catalog_delete')
 def fault_type_delete(request, pk):
     fault_type = get_object_or_404(FaultType, pk=pk)
     if request.method == 'POST':
@@ -1945,7 +1948,7 @@ def repair_order_bulk_status(request):
     })
 
 
-@role_required('accountant')
+@permission_required('payments_manage')
 @require_POST
 def repair_order_add_payment(request, pk):
     """Внести поступившие деньги по заказу.
@@ -1984,7 +1987,7 @@ def repair_order_add_payment(request, pk):
     return redirect('repair_order_detail', pk=pk)
 
 
-@role_required('accountant')
+@permission_required('payments_manage')
 @require_POST
 def repair_order_delete_payment(request, pk, payment_pk):
     """Убрать ошибочно внесённую оплату.
@@ -2008,7 +2011,7 @@ def repair_order_delete_payment(request, pk, payment_pk):
     return redirect('repair_order_detail', pk=pk)
 
 
-@role_required('repair_manager', 'accountant')
+@permission_required('payment_status_change')
 @require_POST
 def repair_order_change_payment_status(request, pk):
     """Изменение статуса оплаты заказа с логированием."""
@@ -2040,7 +2043,7 @@ def repair_order_change_payment_status(request, pk):
     return redirect('repair_order_detail', pk=pk)
 
 
-@role_required('repair_manager')
+@permission_required('orders_delete')
 def repair_order_delete(request, pk):
     order = get_object_or_404(RepairOrder, pk=pk)
     if request.method == 'POST':
@@ -2379,7 +2382,7 @@ def part_edit(request, pk):
     })
 
 
-@role_required('warehouse')
+@permission_required('parts_delete')
 def part_bulk_delete(request):
     """Удаление отмеченных деталей — списком, а не по одной.
 
@@ -2424,7 +2427,7 @@ def part_bulk_delete(request):
     })
 
 
-@role_required('warehouse')
+@permission_required('parts_delete')
 def part_delete(request, pk):
     part = get_object_or_404(SparePart, pk=pk)
     if request.method == 'POST':
@@ -2754,7 +2757,7 @@ def storage_cell_grid(request):
 
 # ==================== КАССЕТНИЦЫ ====================
 
-@role_required('warehouse')
+@permission_required('cabinets_manage')
 def cabinet_list(request):
     """Список кассетниц с их раскладкой."""
     cabinets = Cabinet.objects.prefetch_related('cells')
@@ -2770,7 +2773,7 @@ def cabinet_list(request):
     return render(request, 'core/storage_cells/cabinets.html', {'rows': rows})
 
 
-@role_required('warehouse')
+@permission_required('cabinets_manage')
 def cabinet_create(request):
     """Новая кассетница: номер, название и раскладка по рядам."""
     if request.method == 'POST':
@@ -2789,7 +2792,7 @@ def cabinet_create(request):
     })
 
 
-@role_required('warehouse')
+@permission_required('cabinets_manage')
 def cabinet_edit(request, pk):
     """Правка кассетницы, в том числе раскладки.
 
@@ -2816,7 +2819,7 @@ def cabinet_edit(request, pk):
     })
 
 
-@role_required('warehouse')
+@permission_required('cabinets_manage')
 def cabinet_delete(request, pk):
     """Удаление кассетницы вместе с её ячейками.
 
@@ -3894,13 +3897,13 @@ def report_repair_analytics(request):
     «Инженер» здесь — суррогат, см. докстринг раздела выше.
     """
     date_from, date_to = _repair_analytics_period(request)
-    is_admin = request.user.role == 'admin'
-    viewer = None if is_admin else request.user
+    everyone = request.user.allows('reports_all_engineers')
+    viewer = None if everyone else request.user
 
     data = _repair_analytics_data(date_from, date_to, viewer=viewer)
 
     load_counts = _current_load()
-    if is_admin:
+    if everyone:
         load_rows = sorted(
             (
                 {'employee': e, 'count': load_counts.get(e.pk, 0)}
@@ -3914,7 +3917,7 @@ def report_repair_analytics(request):
     return render(request, 'core/reports/repair_analytics.html', {
         'date_from': date_from.isoformat(),
         'date_to': date_to.isoformat(),
-        'is_admin': is_admin,
+        'sees_everyone': everyone,
         'total_orders': data['total_orders'],
         'avg_days': data['avg_days'],
         'by_employee': data['by_employee'],
@@ -3929,13 +3932,13 @@ def report_repair_analytics_export(request):
     неисправности, по текущей загрузке). Права доступа те же, что
     и у страницы отчёта."""
     date_from, date_to = _repair_analytics_period(request)
-    is_admin = request.user.role == 'admin'
-    viewer = None if is_admin else request.user
+    everyone = request.user.allows('reports_all_engineers')
+    viewer = None if everyone else request.user
 
     data = _repair_analytics_data(date_from, date_to, viewer=viewer)
 
     load_counts = _current_load()
-    if is_admin:
+    if everyone:
         load_rows = [
             (e.full_name, load_counts.get(e.pk, 0))
             for e in Employee.objects.filter(is_active=True).order_by('full_name')
@@ -4054,7 +4057,7 @@ def _profit_data(date_from, date_to):
     }
 
 
-@role_required('accountant')
+@permission_required('reports_profit')
 def report_profit(request):
     """Прибыль по заказам за период: поступившие деньги минус себестоимость
     деталей, списанных по конкретным партиям прихода (не по средней
@@ -4073,7 +4076,7 @@ def report_profit(request):
     })
 
 
-@role_required('accountant')
+@permission_required('reports_profit')
 def report_profit_export(request):
     """Тот же отчёт в Excel — двумя листами (итог за период, разбивка
     по заказчику). Права доступа те же, что и у страницы отчёта."""
@@ -4300,13 +4303,13 @@ def ajax_client_create(request):
 
 # ==================== АДМИНИСТРИРОВАНИЕ ====================
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_users(request):
     users = Employee.objects.all().order_by('full_name')
     return render(request, 'core/admin/users.html', {'users': users})
 
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_user_create(request):
     if request.method == 'POST':
         form = EmployeeForm(request.POST)
@@ -4319,25 +4322,149 @@ def admin_user_create(request):
     return render(request, 'core/admin/user_form.html', {'form': form, 'title': 'Новый пользователь'})
 
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_user_edit(request, pk):
     user = get_object_or_404(Employee, pk=pk)
     if request.method == 'POST':
         form = EmployeeForm(request.POST, instance=user)
         if form.is_valid():
-            form.save()
-            messages.success(request, 'Пользователь обновлён')
-            return redirect('admin_users')
+            try:
+                _save_keeping_admin(form)
+            except LastAdminError:
+                messages.error(request, _NO_ADMIN_LEFT)
+            else:
+                messages.success(request, 'Пользователь обновлён')
+                return redirect('admin_users')
     else:
         form = EmployeeForm(instance=user)
     return render(request, 'core/admin/user_form.html', {'form': form, 'title': 'Редактирование пользователя', 'user_obj': user})
 
 
+# ==================== ДОЛЖНОСТИ И ПРАВА (v2.98.0) ====================
+#
+# Права заводит администратор, а не программист: до v2.98.0 ролей было
+# ровно четыре, они были зашиты в код, и пятая требовала правки исходников.
+
+_NO_ADMIN_LEFT = (
+    'Не сохранено: после этой правки в программе не осталось бы ни одного '
+    'действующего сотрудника с полным доступом. Сначала дайте полный доступ '
+    'кому-то ещё.'
+)
+
+
+@contextmanager
+def _admin_access_kept():
+    """Не дать правке отобрать последний полный доступ.
+
+    Проверяем **по факту**, уже после записи и внутри транзакции, а не
+    предсказыванием «что будет, если»: предсказание однажды окажется
+    неверным, и владелец останется снаружи собственной программы — чинить
+    это пришлось бы из консоли на самом Pi. То же соображение, что
+    и у `_keep_current_host` на странице настроек, только цена ошибки выше.
+
+    Сравниваем с тем, что было **до** правки: если доступа не было
+    и так (например, единственного администратора уволили раньше),
+    запрет только мешал бы чинить положение — «нельзя, потому что уже
+    сломано» это не защита, а ловушка.
+    """
+    had = admin_access_exists()
+    yield
+    if had and not admin_access_exists():
+        raise LastAdminError
+
+
+def _save_keeping_admin(form):
+    """Сохранить форму, откатив правку, которая отобрала бы полный доступ."""
+    with transaction.atomic(), _admin_access_kept():
+        return form.save()
+
+
+@permission_required('admin_access')
+def admin_positions(request):
+    """Должности со списком выданных прав и числом занятых."""
+    positions = (
+        Position.objects.prefetch_related('permissions')
+        .annotate(people=Count('employees'))
+    )
+    return render(request, 'core/admin/positions.html', {'positions': positions})
+
+
+@permission_required('admin_access')
+def admin_position_create(request):
+    if request.method == 'POST':
+        form = PositionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Должность заведена')
+            return redirect('admin_positions')
+    else:
+        form = PositionForm()
+    return render(request, 'core/admin/position_form.html', {
+        'form': form, 'title': 'Новая должность',
+        'sections': permissions_by_section(),
+    })
+
+
+@permission_required('admin_access')
+def admin_position_edit(request, pk):
+    position = get_object_or_404(Position, pk=pk)
+    if request.method == 'POST':
+        form = PositionForm(request.POST, instance=position)
+        if form.is_valid():
+            try:
+                _save_keeping_admin(form)
+            except LastAdminError:
+                messages.error(request, _NO_ADMIN_LEFT)
+            else:
+                messages.success(request, 'Должность обновлена')
+                return redirect('admin_positions')
+    else:
+        form = PositionForm(instance=position)
+    return render(request, 'core/admin/position_form.html', {
+        'form': form, 'title': 'Правка должности', 'position': position,
+        'sections': permissions_by_section(),
+    })
+
+
+@permission_required('admin_access')
+def admin_position_delete(request, pk):
+    """Удаление должности.
+
+    Занятую удалить нельзя — и не потому, что «нельзя», а потому что
+    иначе люди на ней молча лишились бы прав (`PROTECT` у поля). Страница
+    называет тех, кто на ней числится: переводить их всё равно придётся,
+    и лучше знать сразу, кого.
+    """
+    position = get_object_or_404(Position, pk=pk)
+    holders = list(position.employees.order_by('full_name'))
+
+    if request.method == 'POST':
+        if holders:
+            messages.error(
+                request,
+                'Не удалено: должность занята. Сначала переведите людей '
+                'на другую должность.'
+            )
+            return redirect('admin_positions')
+        try:
+            with transaction.atomic(), _admin_access_kept():
+                position.delete()
+        except LastAdminError:
+            messages.error(request, _NO_ADMIN_LEFT)
+            return redirect('admin_positions')
+        messages.success(request, 'Должность удалена')
+        return redirect('admin_positions')
+
+    return render(request, 'core/admin/position_delete.html', {
+        'position': position, 'holders': holders,
+    })
 
 
 
 
-@role_required('admin')
+
+
+@permission_required('admin_access')
 def admin_notifications(request):
     """Очередь оповещений: что ушло, что не ушло и почему.
 
@@ -4386,7 +4513,7 @@ def admin_notifications(request):
     })
 
 
-@role_required('admin')
+@permission_required('admin_access')
 @require_POST
 def admin_notification_retry(request, pk):
     """Вернуть неудачное оповещение в очередь.
@@ -4407,7 +4534,7 @@ def admin_notification_retry(request, pk):
 
 # ==================== НАСТРОЙКИ ====================
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_settings(request):
     """Страница настроек: правимое — здесь, секреты — только состоянием.
 
@@ -4460,7 +4587,7 @@ def _settings_notes():
     return notes
 
 
-@role_required('admin')
+@permission_required('admin_access')
 @require_POST
 def admin_settings_save(request):
     """Записать правимые настройки в файл.
@@ -4544,7 +4671,7 @@ def _keep_current_host(request, value):
     return ','.join([*hosts, host]), host
 
 
-@role_required('admin')
+@permission_required('admin_access')
 @require_POST
 def admin_settings_restart(request):
     """Заявка на перезапуск службы.
@@ -4574,7 +4701,7 @@ def admin_settings_restart(request):
     return redirect('admin_settings')
 
 
-@role_required('admin')
+@permission_required('admin_access')
 @require_POST
 def admin_settings_check(request):
     """Проверить связь со службой. Отвечает JSON — страница не уезжает.
@@ -4592,7 +4719,7 @@ def admin_settings_check(request):
 
 # ==================== ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ ====================
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_update(request):
     """Страница обновления. Само обновление выполняет служба systemd от root —
     приложение лишь оставляет заявку (подробности в core/updater.py)."""
@@ -4634,7 +4761,7 @@ def admin_update(request):
     })
 
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_update_status(request):
     """Ход обновления для опроса со страницы."""
     return JsonResponse(updater.read_status() or {'state': 'idle', 'message': '', 'log': []})
@@ -5035,7 +5162,7 @@ def _invoice_payload(provider, order, form_data):
     )
 
 
-@role_required('accountant')
+@permission_required('invoices_send')
 def repair_order_invoice(request, pk):
     """Выставление счёта заказчику через API банка.
 
@@ -5139,7 +5266,7 @@ def _send_invoice(request, order, form):
 # здесь ограничена подсказкой: ошибочно разнесённое поступление ищут потом
 # неделю, а нажать кнопку — секунда.
 
-@role_required('accountant')
+@permission_required('bank_statement')
 def bank_operations(request):
     """Поступления из выписки Т-Банка и подсказки, к каким они заказам."""
     status = request.GET.get('status', 'new')
@@ -5174,7 +5301,7 @@ def bank_operations(request):
     })
 
 
-@role_required('accountant')
+@permission_required('bank_statement')
 @require_POST
 def bank_operation_apply(request, pk):
     """Записать поступление оплатой по выбранному заказу."""
@@ -5216,7 +5343,7 @@ def bank_operation_apply(request, pk):
     return redirect('bank_operations')
 
 
-@role_required('accountant')
+@permission_required('bank_statement')
 @require_POST
 def bank_operation_skip(request, pk):
     """Пометить поступление как не относящееся к заказам.
@@ -5237,7 +5364,7 @@ def bank_operation_skip(request, pk):
     return redirect('bank_operations')
 
 
-@role_required('accountant')
+@permission_required('bank_statement')
 @require_POST
 def bank_operation_reset(request, pk):
     """Вернуть поступление в неразнесённые.
@@ -5270,7 +5397,7 @@ def _bank_payment_note(operation):
     return ', '.join(parts)[:255]
 
 
-@role_required('admin')
+@permission_required('admin_access')
 def admin_organization(request):
     """Справочник своих юрлиц: реквизиты, подписи, банк для счетов.
 

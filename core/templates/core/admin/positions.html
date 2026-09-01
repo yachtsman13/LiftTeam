@@ -1,0 +1,79 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Должности — LiftTeam v2.98.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2><i class="bi bi-person-badge me-2"></i>Должности</h2>
+    <a href="{% url 'admin_position_create' %}" class="btn btn-primary">
+        <i class="bi bi-plus-lg me-2"></i>Новая должность
+    </a>
+</div>
+
+{% comment %}
+    До v2.98.0 ролей было ровно четыре и жили они в коде: завести пятую
+    значило править исходники, а «мастеру можно выставлять счета, но
+    нельзя удалять заказы» не выражалось вовсе.
+
+    Права закрывают только то, что и раньше было закрыто ролями. Всё
+    остальное — приём заказа, работа по единице, склад, печать — открыто
+    любому вошедшему, и должность на это не влияет.
+{% endcomment %}
+<p class="text-muted">
+    Должность — это набор прав. Права закрывают деньги, удаление
+    и администрирование; приём заказов, работа по прибору, склад и печать
+    открыты всем вошедшим независимо от должности.
+</p>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive table-scroll">
+            <table class="table list-table align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Название</th>
+                        <th>Права</th>
+                        <th class="text-end">Человек</th>
+                        <th class="col-actions"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for position in positions %}
+                    <tr>
+                        <td data-label="Название">
+                            <a href="{% url 'admin_position_edit' position.pk %}" class="fw-bold text-decoration-none">{{ position.name }}</a>
+                            {% if position.is_admin %}
+                            <span class="badge bg-danger">полный доступ</span>
+                            {% endif %}
+                            {% if position.note %}
+                            <div class="small text-muted">{{ position.note }}</div>
+                            {% endif %}
+                        </td>
+                        <td data-label="Права" class="small">
+                            {% for label in position.permission_labels %}
+                            {{ label }}{% if not forloop.last %}; {% endif %}
+                            {% empty %}
+                            <span class="text-muted">без особых прав</span>
+                            {% endfor %}
+                        </td>
+                        <td class="text-end" data-label="Человек">{{ position.people }}</td>
+                        <td class="col-actions text-nowrap">
+                            <a href="{% url 'admin_position_edit' position.pk %}" class="btn btn-sm btn-outline-primary" title="Править"><i class="bi bi-pencil"></i></a>
+                            {% comment %}
+                                Удаление занятой должности не даётся:
+                                люди на ней молча лишились бы прав. Кнопка
+                                при этом остаётся — страница подтверждения
+                                называет, кого сначала перевести.
+                            {% endcomment %}
+                            <a href="{% url 'admin_position_delete' position.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить"><i class="bi bi-trash"></i></a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-center text-muted">Должностей нет</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -441,7 +441,7 @@ def _apply_tbank_invoice_paid(delivery, event):
             'Суммы в уведомлении банка нет, поэтому поступление в программу '
             'не внесено: внесите его по выписке, как обычно.',
         ]),
-        roles=notifications.DEBT_ROLES,
+        permission=notifications.DEBT_PERMISSION,
         repair_order=order,
     )
 

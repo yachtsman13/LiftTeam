@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.97.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.98.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -89,7 +89,7 @@ document.addEventListener('DOMContentLoaded', function () {
             Счёт выставляет бухгалтерия. Кнопка ведёт на страницу
             подтверждения, а не отправляет: документ уходит заказчику.
         {% endcomment %}
-        {% if user.role == 'accountant' or user.role == 'admin' %}
+        {% if user.can.invoices_send %}
         <a href="{% url 'repair_order_invoice' order.pk %}" class="btn btn-outline-success me-2">
             <i class="bi bi-receipt me-2"></i>{% if order.invoice_sent_at %}Счёт выставлен{% else %}Счёт{% endif %}
         </a>
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
             <div class="card-body">
                 {% comment %}
-                    Два столбца, а не общая сетка вперемешку (с v2.97.0):
+                    Два столбца, а не общая сетка вперемешку (с v2.98.0):
                     слева то, что относится к заказчику и деньгам, справа —
                     к ходу самого ремонта. Статус, заказчик и оплата
                     правятся прямо здесь, выпадающим списком — отдельных
@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                         <div class="mb-3">
                             <label class="form-label small mb-1 text-muted">Оплата</label>
-                            {% if user.role == 'accountant' or user.role == 'admin' %}
+                            {% if user.can.payment_status_change %}
                             <form method="post" action="{% url 'repair_order_change_payment_status' order.pk %}" class="d-flex gap-2">
                                 {% csrf_token %}
                                 <select name="payment_status" class="form-select form-select-sm">
@@ -197,7 +197,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         </div>
                         {% comment %}
                             Строки «Начальное состояние» здесь больше нет
-                            (с v2.97.0): поле живёт у единицы, а не у заказа
+                            (с v2.98.0): поле живёт у единицы, а не у заказа
                             (`RepairOrderEquipment.initial_condition`), и это
                             место обращалось к несуществующему полю заказа —
                             всегда показывало «—», сколько бы ни заполнили
@@ -321,7 +321,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </td>
                                 {% comment %}
                                     Готовность и действия — один столбец
-                                    (с v2.97.0): раньше отметка стояла
+                                    (с v2.98.0): раньше отметка стояла
                                     отдельно от кнопок, которые её и закрывают,
                                     и на телефоне это были две карточки
                                     подряд про одно и то же. Что именно
@@ -648,7 +648,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         привязывает деталь сама.
 
                         Варианта «на заказ целиком» здесь больше нет
-                        (с v2.97.0, решение владельца): деталь ставят
+                        (с v2.98.0, решение владельца): деталь ставят
                         в конкретный прибор, иначе по этой записи потом
                         не посчитать, во сколько обошёлся его ремонт.
                         Списания, сделанные раньше, так и остаются
@@ -805,7 +805,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <td data-label="Примечание">{{ payment.note|default:"—" }}</td>
                                 <td class="small text-muted" data-label="Внёс">{{ payment.created_by.full_name|default:"—" }}</td>
                                 <td class="text-end col-actions">
-                                    {% if user.role == 'accountant' or user.role == 'admin' %}
+                                    {% if user.can.payments_manage %}
                                     <form method="post" action="{% url 'repair_order_delete_payment' order.pk payment.pk %}"
                                           class="d-inline" onsubmit="return confirm('Удалить оплату {{ payment.amount }} ₽?');">
                                         {% csrf_token %}
@@ -824,7 +824,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <p class="text-muted mb-3">Оплат не вносили.</p>
                 {% endif %}
 
-                {% if user.role == 'accountant' or user.role == 'admin' %}
+                {% if user.can.payments_manage %}
                 {% comment %}
                     Статус оплаты после внесения пересчитывается сам, поэтому
                     отдельно его трогать не нужно — соседняя форма нужна лишь

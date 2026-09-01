@@ -55,9 +55,30 @@ from .models import (
     OrderCost, OrderStatusHistory, Payment,
     RepairOrder, RepairOrderDetail, RepairOrderEquipment, SparePart, StockAllocation, StockMovement,
     SettingChange, StorageCell, TechCard, TechCardStep, WebhookDelivery,
+    Position, PositionPermission, PERMISSIONS,
     complexity_css, order_status_css,
     parse_layout, plural_genitive, format_spec,
 )
+
+
+
+def position(name):
+    """Заводская должность по названию — их заводит миграция 0051.
+
+    Тесты просят должность, а не роль: ролей с v2.98.0 нет, права даёт
+    должность. Названия те же, что были у ролей, — так их и перенесла
+    миграция.
+    """
+    return Position.objects.get(name=name)
+
+
+def position_with(*codes, name='Проверочная должность'):
+    """Должность ровно с этими правами — для проверок самих прав."""
+    made = Position.objects.create(name=name)
+    PositionPermission.objects.bulk_create(
+        [PositionPermission(position=made, code=code) for code in codes]
+    )
+    return made
 
 
 class FakeChannelLayer:
@@ -89,7 +110,7 @@ class OrderNumberGenerationTests(TestCase):
 class StockMovementTests(TestCase):
     def setUp(self):
         self.user = Employee.objects.create_user(
-            username='warehouse1', full_name='Кладовщик', password='pass', role='warehouse'
+            username='warehouse1', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.part = SparePart.objects.create(
             part_number='P-001', name='Тестовая деталь', current_stock=10, min_stock=2
@@ -129,7 +150,7 @@ class StockMovementTests(TestCase):
 class RepairOrderAddDetailTests(TestCase):
     def setUp(self):
         self.user = Employee.objects.create_user(
-            username='manager1', full_name='Менеджер', password='pass', role='repair_manager'
+            username='manager1', full_name='Менеджер', password='pass', position=position('Менеджер по ремонту')
         )
         self.client_obj = ClientModel.objects.create(name='Заказчик 2')
         self.order = RepairOrder.objects.create(client=self.client_obj)
@@ -552,10 +573,10 @@ class ExcelImportExportTests(TestCase):
 class RolePermissionTests(TestCase):
     def setUp(self):
         self.warehouse_user = Employee.objects.create_user(
-            username='wh1', full_name='Кладовщик', password='pass', role='warehouse'
+            username='wh1', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.manager_user = Employee.objects.create_user(
-            username='rm1', full_name='Менеджер', password='pass', role='repair_manager'
+            username='rm1', full_name='Менеджер', password='pass', position=position('Менеджер по ремонту')
         )
         self.part = SparePart.objects.create(part_number='PERM-1', name='Деталь')
 
@@ -966,7 +987,7 @@ class UpdaterTests(TestCase):
             username='upd_admin', full_name='Админ', password='pass'
         )
         self.warehouse = Employee.objects.create_user(
-            username='upd_wh', full_name='Кладовщик', password='pass', role='warehouse'
+            username='upd_wh', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -2586,7 +2607,7 @@ class StockSocketTests(TestCase):
 
     def setUp(self):
         self.user = Employee.objects.create_user(
-            username='ws_user', full_name='Кладовщик', password='pass', role='warehouse'
+            username='ws_user', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.part = SparePart.objects.create(
             part_number='WS-1', name='Деталь', current_stock=10, min_stock=3
@@ -2698,7 +2719,7 @@ class PresenceStatusTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='presence_user', full_name='Кладовщик', password='pass', role='warehouse'
+            username='presence_user', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
 
     def _seen(self, seconds_ago):
@@ -2747,7 +2768,7 @@ class PresencePageTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='presence_page', full_name='Кладовщик Иванов', password='pass', role='warehouse'
+            username='presence_page', full_name='Кладовщик Иванов', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -2790,7 +2811,7 @@ class PresenceSocketTests(TestCase):
 
     def setUp(self):
         self.user = Employee.objects.create_user(
-            username='presence_ws', full_name='Кладовщик', password='pass', role='warehouse'
+            username='presence_ws', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
 
     def _communicator(self, user=None):
@@ -3122,15 +3143,15 @@ class LowStockNotificationTests(TestCase):
     def setUp(self):
         self.warehouse = Employee.objects.create_user(
             username='wh', full_name='Кладовщик', password='pass',
-            role='warehouse', email='wh@example.com',
+            position=position('Кладовщик'), email='wh@example.com',
         )
         Employee.objects.create_user(
             username='acc', full_name='Бухгалтер', password='pass',
-            role='accountant', email='acc@example.com',
+            position=position('Бухгалтер'), email='acc@example.com',
         )
         Employee.objects.create_user(
             username='wh_noemail', full_name='Без почты', password='pass',
-            role='warehouse',
+            position=position('Кладовщик'),
         )
         self.part = SparePart.objects.create(
             part_number='LOW-1', name='Резистор', current_stock=10, min_stock=5
@@ -3395,7 +3416,7 @@ class ActTests(TestCase):
             username='admin_act', full_name='Админ', password='pass')
         self.manager = Employee.objects.create_user(
             username='mgr_act', full_name='Менеджер', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
         self.client_http = TestClient()
         self.client_http.force_login(self.admin)
 
@@ -3727,7 +3748,7 @@ class OrganizationTests(TestCase):
             username='admin_org', full_name='Админ', password='pass')
         self.accountant = Employee.objects.create_user(
             username='buh_org', full_name='Бухгалтер', password='pass',
-            role='accountant')
+            position=position('Бухгалтер'))
         self.client_http = TestClient()
         self.client_http.force_login(self.admin)
 
@@ -3767,10 +3788,10 @@ class PaymentTests(TestCase):
     def setUp(self):
         self.accountant = Employee.objects.create_user(
             username='buh_pay', full_name='Бухгалтер', password='pass',
-            role='accountant')
+            position=position('Бухгалтер'))
         self.manager = Employee.objects.create_user(
             username='mgr_pay', full_name='Менеджер', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
         self.client_http = TestClient()
         self.client_http.force_login(self.accountant)
 
@@ -3971,11 +3992,11 @@ class DebtReminderTests(TestCase):
     def setUp(self):
         Employee.objects.create_user(
             username='buh', full_name='Бухгалтер', password='pass',
-            role='accountant', email='buh@example.com',
+            position=position('Бухгалтер'), email='buh@example.com',
         )
         Employee.objects.create_user(
             username='sklad_d', full_name='Кладовщик', password='pass',
-            role='warehouse', email='sklad@example.com',
+            position=position('Кладовщик'), email='sklad@example.com',
         )
         self.client_obj = ClientModel.objects.create(
             name='ООО Должник', email='debtor@example.com')
@@ -4135,11 +4156,11 @@ class OrderOverdueTests(TestCase):
     def setUp(self):
         self.manager = Employee.objects.create_user(
             username='rem', full_name='Менеджер по ремонту', password='pass',
-            role='repair_manager', email='rem@example.com',
+            position=position('Менеджер по ремонту'), email='rem@example.com',
         )
         Employee.objects.create_user(
             username='sklad_o', full_name='Кладовщик', password='pass',
-            role='warehouse', email='sklad_o@example.com',
+            position=position('Кладовщик'), email='sklad_o@example.com',
         )
         self.client_obj = ClientModel.objects.create(name='ООО Клиент')
 
@@ -4269,11 +4290,11 @@ class RepairAnalyticsTests(TestCase):
         self.admin = Employee.objects.create_superuser(
             username='admin_ra', full_name='Админ', password='pass')
         self.manager1 = Employee.objects.create_user(
-            username='rm1_ra', full_name='Иванов', password='pass', role='repair_manager')
+            username='rm1_ra', full_name='Иванов', password='pass', position=position('Менеджер по ремонту'))
         self.manager2 = Employee.objects.create_user(
-            username='rm2_ra', full_name='Петров', password='pass', role='repair_manager')
+            username='rm2_ra', full_name='Петров', password='pass', position=position('Менеджер по ремонту'))
         Employee.objects.create_user(
-            username='sklad_ra', full_name='Кладовщик', password='pass', role='warehouse')
+            username='sklad_ra', full_name='Кладовщик', password='pass', position=position('Кладовщик'))
         self.client_http = TestClient()
 
         self.model = EquipmentModel.objects.create(name='БУАД-аналитика')
@@ -4439,7 +4460,7 @@ class RepairAnalyticsTests(TestCase):
 
         resp = self._get(self.admin, date_from='2000-01-01')
 
-        self.assertTrue(resp.context['is_admin'])
+        self.assertTrue(resp.context['sees_everyone'])
         self.assertEqual(resp.context['total_orders'], 3)
         self.assertEqual(len(resp.context['by_employee']), 2)
 
@@ -4451,7 +4472,7 @@ class RepairAnalyticsTests(TestCase):
 
         resp = self._get(self.manager1, date_from='2000-01-01')
 
-        self.assertFalse(resp.context['is_admin'])
+        self.assertFalse(resp.context['sees_everyone'])
         self.assertEqual(resp.context['total_orders'], 1)
         self.assertEqual(resp.context['avg_days'], 9.0)
 
@@ -4477,7 +4498,7 @@ class RepairAnalyticsTests(TestCase):
 
         resp = self._get(warehouse, date_from='2000-01-01')
 
-        self.assertFalse(resp.context['is_admin'])
+        self.assertFalse(resp.context['sees_everyone'])
         self.assertEqual(resp.context['total_orders'], 0)
 
     def test_the_report_page_loads_without_error(self):
@@ -4673,15 +4694,15 @@ class MaxQueueTests(TestCase):
     def setUp(self):
         Employee.objects.create_user(
             username='wh_max', full_name='Кладовщик', password='pass',
-            role='warehouse', email='wh@example.com', max_user_id='842910',
+            position=position('Кладовщик'), email='wh@example.com', max_user_id='842910',
         )
         Employee.objects.create_user(
             username='wh_nomax', full_name='Без MAX', password='pass',
-            role='warehouse', email='wh2@example.com',
+            position=position('Кладовщик'), email='wh2@example.com',
         )
         Employee.objects.create_user(
             username='acc_max', full_name='Бухгалтер', password='pass',
-            role='accountant', email='acc@example.com', max_user_id='111',
+            position=position('Бухгалтер'), email='acc@example.com', max_user_id='111',
         )
         self.part = SparePart.objects.create(
             part_number='MAX-1', name='Резистор', current_stock=10, min_stock=5
@@ -4740,12 +4761,12 @@ class PersonalNotificationChoiceTests(TestCase):
     def setUp(self):
         self.opted_out = Employee.objects.create_user(
             username='wh_optout', full_name='Отключил MAX', password='pass',
-            role='warehouse', email='optout@example.com', max_user_id='555',
+            position=position('Кладовщик'), email='optout@example.com', max_user_id='555',
             notify_by_max=False,
         )
         self.opted_in = Employee.objects.create_user(
             username='wh_optin', full_name='Не отключал', password='pass',
-            role='warehouse', email='optin@example.com', max_user_id='777',
+            position=position('Кладовщик'), email='optin@example.com', max_user_id='777',
         )
         self.part = SparePart.objects.create(
             part_number='PNC-1', name='Резистор', current_stock=10, min_stock=5
@@ -4781,7 +4802,7 @@ class MyNotificationsPageTests(TestCase):
     def setUp(self):
         self.employee = Employee.objects.create_user(
             username='my_notif', full_name='Сотрудник', password='pass',
-            role='warehouse',
+            position=position('Кладовщик'),
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -4805,15 +4826,20 @@ class MyNotificationsPageTests(TestCase):
         self.assertTrue(self.employee.notify_by_max)
         self.assertFalse(self.employee.notify_by_telegram)
 
-    def test_does_not_touch_role_or_password(self):
-        """Своя форма не даёт поменять то, что не про личный выбор канала."""
+    def test_does_not_touch_the_position_or_password(self):
+        """Своя форма не даёт поменять то, что не про личный выбор канала.
+
+        Подсунутая должность особенно: это права, а раздаёт их
+        администратор на своей странице.
+        """
+        admin_position = position('Администратор')
         self.client_http.post('/my-notifications/', {
             'notify_by_email': 'on', 'notify_by_max': 'on', 'notify_by_telegram': 'on',
-            'role': 'admin',
+            'position': str(admin_position.pk),
         })
 
         self.employee.refresh_from_db()
-        self.assertEqual(self.employee.role, 'warehouse')
+        self.assertEqual(self.employee.position, position('Кладовщик'))
 
 
 class AdminEditsStaffNotificationChoiceTests(TestCase):
@@ -4825,7 +4851,7 @@ class AdminEditsStaffNotificationChoiceTests(TestCase):
         )
         self.staff = Employee.objects.create_user(
             username='staff_notif_edit', full_name='Кладовщик', password='pass',
-            role='warehouse', email='staff@example.com',
+            position=position('Кладовщик'), email='staff@example.com',
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.admin)
@@ -4838,7 +4864,7 @@ class AdminEditsStaffNotificationChoiceTests(TestCase):
                 'full_name': self.staff.full_name,
                 'email': self.staff.email,
                 'max_user_id': '', 'telegram_chat_id': '',
-                'role': 'warehouse', 'is_active': 'on',
+                'position': str(position('Кладовщик').pk), 'is_active': 'on',
                 'notify_by_email': '',
                 'notify_by_max': '',
                 'notify_by_telegram': '',
@@ -5002,11 +5028,11 @@ class TelegramQueueTests(TestCase):
     def setUp(self):
         Employee.objects.create_user(
             username='wh_tg', full_name='Кладовщик', password='pass',
-            role='warehouse', email='wh@example.com', telegram_chat_id='842910',
+            position=position('Кладовщик'), email='wh@example.com', telegram_chat_id='842910',
         )
         Employee.objects.create_user(
             username='wh_notg', full_name='Без Telegram', password='pass',
-            role='warehouse', email='wh2@example.com',
+            position=position('Кладовщик'), email='wh2@example.com',
         )
         self.part = SparePart.objects.create(
             part_number='TG-1', name='Резистор', current_stock=10, min_stock=5
@@ -5103,7 +5129,7 @@ class MaxRecipientDisplayTests(TestCase):
     def test_known_employee_is_shown_by_name(self):
         Employee.objects.create_user(
             username='wh_disp', full_name='Иванов И.И.', password='pass',
-            role='warehouse', max_user_id='842910',
+            position=position('Кладовщик'), max_user_id='842910',
         )
         note = Notification.objects.create(
             event='low_stock', channel='max', recipient='user:842910',
@@ -5129,7 +5155,7 @@ class MaxRecipientDisplayTests(TestCase):
     def test_telegram_employee_is_shown_by_name(self):
         Employee.objects.create_user(
             username='wh_tg_disp', full_name='Сидоров С.С.', password='pass',
-            role='warehouse', telegram_chat_id='842910',
+            position=position('Кладовщик'), telegram_chat_id='842910',
         )
         note = Notification.objects.create(
             event='low_stock', channel='telegram', recipient='842910',
@@ -5154,7 +5180,7 @@ class NotificationAdminPageTests(TestCase):
             username='admin_np', full_name='Админ', password='pass'
         )
         self.staff = Employee.objects.create_user(
-            username='wh_np', full_name='Кладовщик', password='pass', role='warehouse'
+            username='wh_np', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.admin)
@@ -5174,7 +5200,7 @@ class NotificationAdminPageTests(TestCase):
     def test_max_row_shows_the_channel_and_the_person(self):
         Employee.objects.create_user(
             username='wh_max_page', full_name='Петров П.П.', password='pass',
-            role='warehouse', max_user_id='842910',
+            position=position('Кладовщик'), max_user_id='842910',
         )
         Notification.objects.create(
             event='low_stock', channel='max', recipient='user:842910',
@@ -5395,10 +5421,10 @@ class BankOperationTests(TestCase):
     def setUp(self):
         self.accountant = Employee.objects.create_user(
             username='buh_bank', full_name='Бухгалтер', password='pass',
-            role='accountant')
+            position=position('Бухгалтер'))
         self.warehouse = Employee.objects.create_user(
             username='sklad_bank', full_name='Кладовщик', password='pass',
-            role='warehouse')
+            position=position('Кладовщик'))
         self.client_http = TestClient()
         self.client_http.force_login(self.accountant)
 
@@ -5785,10 +5811,10 @@ class TBankInvoiceSendingTests(TestCase):
     def setUp(self):
         self.accountant = Employee.objects.create_user(
             username='buh_inv', full_name='Бухгалтер', password='pass',
-            role='accountant')
+            position=position('Бухгалтер'))
         self.manager = Employee.objects.create_user(
             username='mgr_inv', full_name='Менеджер', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
         self.client_http = TestClient()
         self.client_http.force_login(self.accountant)
 
@@ -6397,10 +6423,10 @@ class CabinetTests(TestCase):
     def setUp(self):
         self.warehouse = Employee.objects.create_user(
             username='sklad_cab', full_name='Кладовщик', password='pass',
-            role='warehouse')
+            position=position('Кладовщик'))
         self.manager = Employee.objects.create_user(
             username='mgr_cab', full_name='Менеджер', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
         self.client_http = TestClient()
         self.client_http.force_login(self.warehouse)
 
@@ -6993,7 +7019,7 @@ class PartBulkDeleteTests(TestCase):
     def test_a_repair_manager_cannot_delete_parts(self):
         """Склад ведут кладовщики; удаление списком тем более не для всех."""
         manager = Employee.objects.create_user(
-            username='manager_bulk', full_name='Мастер', password='pass', role='repair_manager'
+            username='manager_bulk', full_name='Мастер', password='pass', position=position('Менеджер по ремонту')
         )
         client = TestClient()
         client.force_login(manager)
@@ -7598,7 +7624,7 @@ class FaultTypeAdminTests(TestCase):
 
     def test_a_repair_manager_can_create_a_fault_type(self):
         manager = Employee.objects.create_user(
-            username='manager_faults', full_name='Мастер', password='pass', role='repair_manager'
+            username='manager_faults', full_name='Мастер', password='pass', position=position('Менеджер по ремонту')
         )
         client = TestClient()
         client.force_login(manager)
@@ -7612,7 +7638,7 @@ class FaultTypeAdminTests(TestCase):
 
     def test_creating_a_fault_type_together_with_its_recipe(self):
         manager = Employee.objects.create_user(
-            username='manager_recipe', full_name='Мастер', password='pass', role='repair_manager'
+            username='manager_recipe', full_name='Мастер', password='pass', position=position('Менеджер по ремонту')
         )
         client = TestClient()
         client.force_login(manager)
@@ -7630,7 +7656,7 @@ class FaultTypeAdminTests(TestCase):
 
     def test_an_accountant_cannot_delete_a_fault_type(self):
         accountant = Employee.objects.create_user(
-            username='accountant_faults', full_name='Бухгалтер', password='pass', role='accountant'
+            username='accountant_faults', full_name='Бухгалтер', password='pass', position=position('Бухгалтер')
         )
         client = TestClient()
         client.force_login(accountant)
@@ -7642,7 +7668,7 @@ class FaultTypeAdminTests(TestCase):
 
     def test_warehouse_can_delete_a_fault_type(self):
         warehouse = Employee.objects.create_user(
-            username='warehouse_faults', full_name='Кладовщик', password='pass', role='warehouse'
+            username='warehouse_faults', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         client = TestClient()
         client.force_login(warehouse)
@@ -7747,7 +7773,7 @@ class OrderCostFromAllocationsTests(TestCase):
 
     def setUp(self):
         self.user = Employee.objects.create_user(
-            username='wh_cost', full_name='Кладовщик', password='pass', role='warehouse'
+            username='wh_cost', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.user)
@@ -7884,10 +7910,10 @@ class ProfitReportTests(TestCase):
 
     def setUp(self):
         self.accountant = Employee.objects.create_user(
-            username='buh_profit', full_name='Бухгалтер', password='pass', role='accountant'
+            username='buh_profit', full_name='Бухгалтер', password='pass', position=position('Бухгалтер')
         )
         self.warehouse = Employee.objects.create_user(
-            username='wh_profit', full_name='Кладовщик', password='pass', role='warehouse'
+            username='wh_profit', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.accountant)
@@ -7972,7 +7998,7 @@ class InventorySessionTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='wh_inv', full_name='Кладовщик', password='pass', role='warehouse'
+            username='wh_inv', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -8269,7 +8295,7 @@ class ConnectionResilienceTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='conn_user', full_name='Кладовщик', password='pass', role='warehouse'
+            username='conn_user', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -8601,7 +8627,7 @@ class PrintedDocumentsFollowTheInvoiceEntityTests(TestCase):
     def setUp(self):
         self.staff = Employee.objects.create_user(
             username='print_staff', full_name='Сотрудник', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
         self.http = TestClient()
         self.http.force_login(self.staff)
 
@@ -8860,13 +8886,13 @@ class InvoiceProviderChoiceOnTheFormTests(TestCase):
     def setUp(self):
         self.tochka_accountant = Employee.objects.create_user(
             username='buh_tochka', full_name='Бухгалтер Точки', password='pass',
-            role='accountant', default_provider='tochka')
+            position=position('Бухгалтер'), default_provider='tochka')
         self.tbank_accountant = Employee.objects.create_user(
             username='buh_tbank', full_name='Бухгалтер Т-Банка', password='pass',
-            role='accountant', default_provider='tbank')
+            position=position('Бухгалтер'), default_provider='tbank')
         self.manager = Employee.objects.create_user(
             username='mgr_prov', full_name='Менеджер', password='pass',
-            role='repair_manager')
+            position=position('Менеджер по ремонту'))
 
         self.first = Organization.objects.create(
             name='ООО «Первое»', inn='7701234567', provider='tbank',
@@ -9371,7 +9397,7 @@ class WebhookInvoicePaidTests(TestCase):
         self.http = TestClient()
         self.accountant = Employee.objects.create_user(
             username='buh_wh', full_name='Бухгалтер', password='pass',
-            role='accountant', email='buh@example.com',
+            position=position('Бухгалтер'), email='buh@example.com',
         )
         self.client_obj = ClientModel.objects.create(name='ООО Плательщик')
         self.order = RepairOrder.objects.create(
@@ -9585,7 +9611,7 @@ class PartSearchEndpointTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='search_user', full_name='Кладовщик', password='pass', role='warehouse'
+            username='search_user', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -12063,7 +12089,7 @@ class EquipmentTypeDirectoryTests(TestCase):
 
     def test_an_accountant_cannot_delete_a_type(self):
         accountant = Employee.objects.create_user(
-            username='accountant_types', full_name='Бухгалтер', password='pass', role='accountant'
+            username='accountant_types', full_name='Бухгалтер', password='pass', position=position('Бухгалтер')
         )
         client = TestClient()
         client.force_login(accountant)
@@ -12137,7 +12163,7 @@ class EquipmentVersionDirectoryTests(TestCase):
 
     def test_an_accountant_cannot_delete_a_version(self):
         accountant = Employee.objects.create_user(
-            username='accountant_versions', full_name='Бухгалтер', password='pass', role='accountant'
+            username='accountant_versions', full_name='Бухгалтер', password='pass', position=position('Бухгалтер')
         )
         client = TestClient()
         client.force_login(accountant)
@@ -12381,7 +12407,7 @@ class ScanPageTests(TestCase):
 
     def setUp(self):
         self.employee = Employee.objects.create_user(
-            username='scan_user', full_name='Кладовщик', password='pass', role='warehouse'
+            username='scan_user', full_name='Кладовщик', password='pass', position=position('Кладовщик')
         )
         self.client_http = TestClient()
         self.client_http.force_login(self.employee)
@@ -12941,7 +12967,7 @@ class WarehouseScanScreensTests(TestCase):
     def setUp(self):
         self.employee = Employee.objects.create_user(
             username='scan_warehouse', full_name='Кладовщик',
-            password='pass', role='warehouse',
+            password='pass', position=position('Кладовщик'),
         )
         self.http = TestClient()
         self.http.force_login(self.employee)
@@ -17516,7 +17542,6 @@ class SettingsPageTests(EnvFileMixin, TestCase):
         """Здесь токены и адреса банков — мастеру тут делать нечего."""
         master = Employee.objects.create_user(
             username='settings_master', full_name='Мастер', password='pass',
-            role='master',
         )
         other = TestClient()
         other.force_login(master)
@@ -17715,7 +17740,6 @@ class RestartFromTheInterfaceTests(EnvFileMixin, TestCase):
     def test_only_an_admin_may_ask(self):
         master = Employee.objects.create_user(
             username='restart_master', full_name='Мастер', password='pass',
-            role='master',
         )
         other = TestClient()
         other.force_login(master)
@@ -18550,7 +18574,7 @@ class OrderCardInitialConditionTests(TestCase):
         )
 
 
-# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.97.0) ============
+# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.98.0) ============
 
 
 class RepairerEarningsTests(TestCase):
@@ -18854,7 +18878,7 @@ class ClientContactTests(TestCase):
 
 class FaultTypeVersionScopeTests(TestCase):
     """Типовая неисправность бывает общей для модели или отмеченной
-    под несколько конкретных исполнений (с v2.97.0).
+    под несколько конкретных исполнений (с v2.98.0).
 
     Решение владельца: «привязка к нескольким исполнениям, а не
     к одному» — до этого отбора по исполнению не было вовсе.
@@ -18955,3 +18979,424 @@ class FaultTypeVersionScopeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(FaultType.objects.filter(name='плохая привязка').exists())
+
+
+# ============ ДОЛЖНОСТИ С ПРАВАМИ ВМЕСТО ЧЕТЫРЁХ РОЛЕЙ (v2.98.0) ============
+
+
+class PositionMigrationTests(TestCase):
+    """Перенос ролей в должности обязан быть тождественным.
+
+    Права каждой заводской должности — слепок того, что было зашито
+    в коде: в декораторах, в шаблонах и в списках получателей оповещений.
+    Разъедься эти два набора, и после обновления кто-то молча потерял бы
+    доступ, а кто-то приобрёл.
+    """
+
+    # То же, что записано в миграции 0051. Список здесь не «копия ради
+    # копии»: миграция — это разовое действие, а проверка отвечает
+    # на вопрос «а тот ли доступ у людей сейчас», и сверять его надо
+    # с тем, что было до перехода.
+    EXPECTED = {
+        'Администратор': None,          # полный доступ флагом
+        'Кладовщик': {
+            'catalog_delete', 'parts_delete', 'cabinets_manage',
+            'notify_low_stock',
+        },
+        'Менеджер по ремонту': {
+            'orders_delete', 'clients_delete', 'catalog_delete',
+            'payment_status_change', 'notify_overdue',
+        },
+        'Бухгалтер': {
+            'payments_manage', 'payment_status_change', 'invoices_send',
+            'bank_statement', 'reports_profit', 'notify_debts',
+        },
+    }
+
+    def test_all_four_factory_positions_exist(self):
+        """Заводим все четыре, а не только занятые: на свежей установке
+        иначе пришлось бы собирать «Кладовщика» галочками вручную."""
+        names = set(Position.objects.values_list('name', flat=True))
+
+        self.assertEqual(names, set(self.EXPECTED))
+
+    def test_each_position_kept_exactly_the_rights_of_its_role(self):
+        for name, codes in self.EXPECTED.items():
+            with self.subTest(position=name):
+                found = position(name)
+                if codes is None:
+                    self.assertTrue(found.is_admin)
+                else:
+                    self.assertFalse(found.is_admin)
+                    self.assertEqual(found.codes, codes)
+
+    def test_every_granted_code_is_a_real_one(self):
+        """Право, которого нет в списке, не выдаётся: подсунуть в базу
+        можно что угодно, а работать оно всё равно не будет."""
+        known = {code for code, _, _ in PERMISSIONS}
+        granted = set(PositionPermission.objects.values_list('code', flat=True))
+
+        self.assertLessEqual(granted, known)
+
+
+class PermissionChecksTests(TestCase):
+    """Что означает право и что означает его отсутствие."""
+
+    def setUp(self):
+        self.plain = Employee.objects.create_user(
+            username='plain', full_name='Без должности', password='pass',
+        )
+        self.warehouse = Employee.objects.create_user(
+            username='wh', full_name='Кладовщик', password='pass',
+            position=position('Кладовщик'),
+        )
+        self.admin = Employee.objects.create_superuser(
+            username='boss', full_name='Владелец', password='pass',
+        )
+
+    def test_no_position_means_no_special_rights(self):
+        """И это не поломка: такому сотруднику открыто то же, что всем —
+        приём заказа, работа по прибору, склад, печать."""
+        self.assertFalse(self.plain.allows('parts_delete'))
+        self.assertFalse(self.plain.is_admin)
+        self.assertEqual(set(self.plain.can.values()), {False})
+
+    def test_a_position_gives_exactly_its_own_codes(self):
+        self.assertTrue(self.warehouse.allows('parts_delete'))
+        self.assertFalse(self.warehouse.allows('invoices_send'))
+
+    def test_full_access_covers_rights_added_later(self):
+        """Право, появившееся в следующем выпуске, у полного доступа
+        есть само — иначе новая страница оказалась бы закрыта и для
+        владельца, ровно до того, как он вспомнит про галочку."""
+        self.assertTrue(self.admin.allows('invoices_send'))
+        self.assertTrue(self.admin.allows('право_из_будущего_выпуска'))
+
+    def test_superuser_flag_alone_does_not_open_anything(self):
+        """Источник прав один — должность. Два источника однажды
+        разошлись бы, и разбираться пришлось бы в двух местах."""
+        stray = Employee.objects.create_user(
+            username='stray', full_name='Странный', password='pass',
+            is_superuser=True,
+        )
+
+        self.assertFalse(stray.allows('admin_access'))
+
+    def test_the_template_map_matches_the_catalogue(self):
+        keys = set(self.warehouse.can)
+
+        self.assertEqual(keys, {code for code, _, _ in PERMISSIONS})
+
+
+class PermissionGateTests(TestCase):
+    """Закрытые страницы пускают по праву, а не по названию должности."""
+
+    def setUp(self):
+        self.http = TestClient()
+        self.order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='МУП «Лифты»')
+        )
+
+    def _as(self, employee):
+        self.http.force_login(employee)
+        return self.http
+
+    def test_a_right_lets_in_whatever_the_position_is_called(self):
+        """Смысл перехода: «мастеру участка можно выставлять счета» —
+        это галочка, а не новая ветка в коде."""
+        odd = Employee.objects.create_user(
+            username='master', full_name='Мастер участка', password='pass',
+            position=position_with('invoices_send', name='Мастер участка'),
+        )
+
+        response = self._as(odd).get(
+            reverse('repair_order_invoice', args=[self.order.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_without_the_right_the_page_is_refused(self):
+        plain = Employee.objects.create_user(
+            username='nobody', full_name='Без прав', password='pass',
+        )
+
+        response = self._as(plain).get(
+            reverse('repair_order_invoice', args=[self.order.pk]), follow=True
+        )
+        texts = [str(m) for m in response.context['messages']]
+
+        self.assertTrue(any('Недостаточно прав' in text for text in texts), texts)
+
+    def test_full_access_passes_every_gate(self):
+        boss = Employee.objects.create_superuser(
+            username='boss2', full_name='Владелец', password='pass',
+        )
+
+        for name in ('admin_positions', 'bank_operations', 'admin_settings'):
+            with self.subTest(page=name):
+                self.assertEqual(self._as(boss).get(reverse(name)).status_code, 200)
+
+    def test_the_sidebar_shows_only_what_is_open(self):
+        accountant = Employee.objects.create_user(
+            username='buh2', full_name='Бухгалтер', password='pass',
+            position=position('Бухгалтер'),
+        )
+
+        html = self._as(accountant).get(reverse('dashboard')).content.decode()
+
+        self.assertIn(reverse('bank_operations'), html)
+        self.assertNotIn(reverse('admin_positions'), html)
+
+
+class PermissionCodesInTemplatesTests(SimpleTestCase):
+    """Каждое `user.can.<право>` в разметке — настоящее право.
+
+    Опечатка в шаблоне даёт пустое значение, то есть кнопка молча
+    пропадает навсегда, и заметить это можно только глазами. Здесь
+    она роняет тесты.
+    """
+
+    TEMPLATES = Path(__file__).resolve().parent / 'templates'
+
+    def test_every_code_used_in_a_template_exists(self):
+        known = {code for code, _, _ in PERMISSIONS}
+        used = {}
+        for path in sorted(self.TEMPLATES.rglob('*.html')):
+            for code in re.findall(r'user\.can\.(\w+)', path.read_text(encoding='utf-8')):
+                used.setdefault(code, path.name)
+
+        self.assertTrue(used, 'проверка потеряла смысл: в шаблонах нет ни одного user.can')
+        for code, where in used.items():
+            with self.subTest(code=code, template=where):
+                self.assertIn(code, known)
+
+
+class PositionPagesTests(TestCase):
+    """Должности заводит администратор, а не программист."""
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='boss3', full_name='Владелец', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def test_a_position_is_created_with_the_chosen_rights(self):
+        response = self.http.post(reverse('admin_position_create'), {
+            'name': 'Мастер участка', 'note': 'чинит и выставляет счета',
+            'permissions': ['invoices_send', 'catalog_delete'],
+        })
+
+        self.assertEqual(response.status_code, 302)
+        made = Position.objects.get(name='Мастер участка')
+        self.assertEqual(made.codes, {'invoices_send', 'catalog_delete'})
+        self.assertFalse(made.is_admin)
+
+    def test_unchecking_a_box_takes_the_right_away(self):
+        """Форма должна уметь и снимать право, а не только выдавать."""
+        made = position_with('invoices_send', 'catalog_delete', name='Мастер')
+
+        self.http.post(reverse('admin_position_edit', args=[made.pk]), {
+            'name': made.name, 'note': '', 'permissions': ['catalog_delete'],
+        })
+
+        self.assertEqual(Position.objects.get(pk=made.pk).codes, {'catalog_delete'})
+
+    def test_an_unknown_code_is_not_granted(self):
+        response = self.http.post(reverse('admin_position_create'), {
+            'name': 'Хитрая должность', 'note': '',
+            'permissions': ['admin_access', 'сделай_меня_главным'],
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Position.objects.filter(name='Хитрая должность').exists())
+
+    def test_rights_change_takes_effect_for_everyone_on_the_position(self):
+        made = position_with(name='Приёмщик')
+        clerk = Employee.objects.create_user(
+            username='clerk', full_name='Приёмщик', password='pass', position=made,
+        )
+        self.assertFalse(clerk.allows('invoices_send'))
+
+        self.http.post(reverse('admin_position_edit', args=[made.pk]), {
+            'name': made.name, 'note': '', 'permissions': ['invoices_send'],
+        })
+
+        clerk.refresh_from_db()
+        self.assertTrue(clerk.allows('invoices_send'))
+
+    def test_an_occupied_position_is_not_deleted(self):
+        made = position_with('catalog_delete', name='Занятая')
+        Employee.objects.create_user(
+            username='holder', full_name='Держатель', password='pass', position=made,
+        )
+
+        response = self.http.post(
+            reverse('admin_position_delete', args=[made.pk]), follow=True
+        )
+        texts = [str(m) for m in response.context['messages']]
+
+        self.assertTrue(Position.objects.filter(pk=made.pk).exists())
+        self.assertTrue(any('занята' in text for text in texts), texts)
+
+    def test_the_delete_page_names_who_holds_it(self):
+        made = position_with(name='Занятая-2')
+        Employee.objects.create_user(
+            username='holder2', full_name='Иванов И. И.', password='pass', position=made,
+        )
+
+        html = self.http.get(
+            reverse('admin_position_delete', args=[made.pk])
+        ).content.decode()
+
+        self.assertIn('Иванов И. И.', html)
+
+    def test_a_free_position_is_deleted(self):
+        made = position_with(name='Свободная')
+
+        self.http.post(reverse('admin_position_delete', args=[made.pk]))
+
+        self.assertFalse(Position.objects.filter(pk=made.pk).exists())
+
+
+class LastAdminGuardTests(TestCase):
+    """Программа не даёт запереть себя снаружи.
+
+    Единственный полный доступ нельзя ни снять с должности, ни забрать
+    у последнего, кто её занимает: чинить это пришлось бы из консоли
+    на самом Pi.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='only_boss', full_name='Владелец', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def _edit_position(self, position_obj, **extra):
+        data = {'name': position_obj.name, 'note': '', 'permissions': []}
+        data.update(extra)
+        return self.http.post(
+            reverse('admin_position_edit', args=[position_obj.pk]), data, follow=True
+        )
+
+    def test_the_last_full_access_cannot_be_switched_off(self):
+        admin_position = self.admin.position
+
+        response = self._edit_position(admin_position)  # is_admin не отмечен
+
+        admin_position.refresh_from_db()
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(admin_position.is_admin)
+        self.assertTrue(any('полным доступом' in text for text in texts), texts)
+
+    def test_it_can_be_switched_off_when_someone_else_has_it(self):
+        spare = Position.objects.create(name='Второй владелец', is_admin=True)
+        Employee.objects.create_user(
+            username='spare_boss', full_name='Второй', password='pass', position=spare,
+        )
+
+        self._edit_position(self.admin.position)
+
+        self.admin.position.refresh_from_db()
+        self.assertFalse(self.admin.position.is_admin)
+
+    def test_the_last_admin_cannot_be_moved_to_another_position(self):
+        plain = position_with('catalog_delete', name='Обычная')
+
+        response = self.http.post(
+            reverse('admin_user_edit', args=[self.admin.pk]),
+            {'username': self.admin.username, 'full_name': self.admin.full_name,
+             'email': '', 'max_user_id': '', 'telegram_chat_id': '',
+             'position': str(plain.pk), 'is_active': 'on', 'default_provider': ''},
+            follow=True,
+        )
+
+        self.admin.refresh_from_db()
+        texts = [str(m) for m in response.context['messages']]
+        self.assertTrue(self.admin.is_admin)
+        self.assertTrue(any('полным доступом' in text for text in texts), texts)
+
+    def test_a_broken_state_can_still_be_repaired(self):
+        """Запрет «нельзя, потому что уже сломано» был бы ловушкой.
+
+        Полный доступ (`is_admin`) и право «Администрирование»
+        (`admin_access`) — разные вещи: второе можно выдать галочкой
+        обычной должности. Такой человек и чинит положение, когда
+        должности с полным доступом не осталось ни одной, — и запрет
+        не должен ему мешать.
+        """
+        manager = Employee.objects.create_user(
+            username='rights_manager', full_name='Кадровик', password='pass',
+            position=position_with('admin_access', name='Кадровик'),
+        )
+        Position.objects.filter(is_admin=True).update(is_admin=False)
+        plain = position_with('catalog_delete', name='Обычная-2')
+
+        http = TestClient()
+        http.force_login(manager)
+        response = http.post(
+            reverse('admin_user_edit', args=[self.admin.pk]),
+            {'username': self.admin.username, 'full_name': self.admin.full_name,
+             'email': '', 'max_user_id': '', 'telegram_chat_id': '',
+             'position': str(plain.pk), 'is_active': 'on', 'default_provider': ''},
+        )
+
+        self.admin.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.admin.position, plain)
+
+
+class NotificationsByPermissionTests(TestCase):
+    """Кому уходят внутренние оповещения — тоже право должности."""
+
+    def setUp(self):
+        self.part = SparePart.objects.create(
+            part_number='C-1', name='Конденсатор', current_stock=0, min_stock=5,
+        )
+
+    def test_the_stock_notice_goes_to_holders_of_its_right(self):
+        Employee.objects.create_user(
+            username='wh_notify', full_name='Кладовщик', password='pass',
+            email='wh@example.com', position=position('Кладовщик'),
+        )
+        Employee.objects.create_user(
+            username='buh_notify', full_name='Бухгалтер', password='pass',
+            email='buh@example.com', position=position('Бухгалтер'),
+        )
+
+        notifications.notify_low_stock(self.part)
+
+        recipients = set(
+            Notification.objects.filter(event='low_stock')
+            .values_list('recipient', flat=True)
+        )
+        self.assertEqual(recipients, {'wh@example.com'})
+
+    def test_full_access_receives_everything(self):
+        Employee.objects.create_superuser(
+            username='boss_notify', full_name='Владелец', password='pass',
+            email='boss@example.com',
+        )
+
+        notifications.notify_low_stock(self.part)
+
+        self.assertEqual(
+            [n.recipient for n in Notification.objects.filter(event='low_stock')],
+            ['boss@example.com'],
+        )
+
+    def test_a_new_position_can_be_subscribed_without_touching_the_code(self):
+        Employee.objects.create_user(
+            username='dispatcher', full_name='Диспетчер', password='pass',
+            email='disp@example.com',
+            position=position_with('notify_low_stock', name='Диспетчер'),
+        )
+
+        notifications.notify_low_stock(self.part)
+
+        self.assertEqual(
+            [n.recipient for n in Notification.objects.filter(event='low_stock')],
+            ['disp@example.com'],
+        )

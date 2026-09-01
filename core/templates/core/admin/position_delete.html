@@ -1,0 +1,45 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Удаление должности — LiftTeam v2.98.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-trash me-2"></i>Удалить должность</h2>
+    <a href="{% url 'admin_positions' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <p class="mb-3">
+            Удалить должность <strong>{{ position.name }}</strong>?
+        </p>
+
+        {% comment %}
+            Занятую должность не удаляем: люди на ней молча лишились бы
+            прав. Называем их поимённо — переводить всё равно придётся,
+            и лучше знать сразу, кого.
+        {% endcomment %}
+        {% if holders %}
+        <div class="alert alert-warning">
+            <div class="fw-bold mb-2">Должность занята — сначала переведите людей:</div>
+            <ul class="mb-0">
+                {% for holder in holders %}
+                <li>
+                    <a href="{% url 'admin_user_edit' holder.pk %}">{{ holder.full_name }}</a>
+                    {% if not holder.is_active %}<span class="text-muted">(не работает)</span>{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        <a href="{% url 'admin_positions' %}" class="btn btn-outline-secondary">К списку должностей</a>
+        {% else %}
+        <p class="text-muted">На этой должности сейчас никого нет.</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-2"></i>Удалить</button>
+            <a href="{% url 'admin_positions' %}" class="btn btn-outline-secondary">Отмена</a>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

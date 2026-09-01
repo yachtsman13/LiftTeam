@@ -8,6 +8,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Q
 
 from . import envfile
 from django.utils import timezone
@@ -24,18 +25,28 @@ def _setting(name, default):
     return envfile.setting(name, default)
 
 
-# Кому какие оповещения. Роли разные: детали заказывает склад, за деньгами
-# следит бухгалтерия, администратор нужен и там и там
-STOCK_ROLES = ('warehouse', 'admin')
-DEBT_ROLES = ('accountant', 'admin')
-ORDER_OVERDUE_ROLES = ('repair_manager', 'admin')
+# Кому какие оповещения. С v2.98.0 это **право должности**, а не роль:
+# «кому приходит про дефицит» решает тот же список галочек, что и всё
+# остальное про должность, и заводится новая должность без правки кода.
+# Названия прав — из явного списка `models.PERMISSIONS`.
+STOCK_PERMISSION = 'notify_low_stock'
+DEBT_PERMISSION = 'notify_debts'
+ORDER_OVERDUE_PERMISSION = 'notify_overdue'
 
 
-def _staff(roles=STOCK_ROLES):
-    return Employee.objects.filter(is_active=True, role__in=roles)
+def _staff(permission=STOCK_PERMISSION):
+    """Действующие сотрудники, которым дано это право.
+
+    Должность с полным доступом получает всё — так же, как прежняя роль
+    «Администратор» стояла во всех трёх списках получателей. `distinct`
+    обязателен: соединение с правами размножило бы строку сотрудника.
+    """
+    return Employee.objects.filter(is_active=True).filter(
+        Q(position__is_admin=True) | Q(position__permissions__code=permission)
+    ).distinct()
 
 
-def staff_recipients(roles=STOCK_ROLES):
+def staff_recipients(permission=STOCK_PERMISSION):
     """Почтовые адреса сотрудников.
 
     У кого не заполнена почта, тот и не получит, — это нормально и не ошибка.
@@ -43,13 +54,13 @@ def staff_recipients(roles=STOCK_ROLES):
     не ошибка, а его собственная настройка.
     """
     return list(
-        _staff(roles).filter(notify_by_email=True)
+        _staff(permission).filter(notify_by_email=True)
         .exclude(email='').values_list('email', flat=True)
     )
 
 
 def _messenger_recipients(enabled, configured, group_chat, id_field, notify_field,
-                          personal=str, group=str, roles=STOCK_ROLES):
+                          personal=str, group=str, permission=STOCK_PERMISSION):
     """Получатели складских оповещений в одном из мессенджеров.
 
     Если задан общий чат, пишем один раз в него: в маленькой конторе всем
@@ -68,12 +79,12 @@ def _messenger_recipients(enabled, configured, group_chat, id_field, notify_fiel
 
     return [
         personal(value)
-        for value in _staff(roles).filter(**{notify_field: True})
+        for value in _staff(permission).filter(**{notify_field: True})
         .exclude(**{id_field: ''}).values_list(id_field, flat=True)
     ]
 
 
-def staff_max_recipients(roles=STOCK_ROLES):
+def staff_max_recipients(permission=STOCK_PERMISSION):
     return _messenger_recipients(
         _setting('NOTIFY_MAX', False),
         messengers.max_is_configured(),
@@ -81,11 +92,11 @@ def staff_max_recipients(roles=STOCK_ROLES):
         'max_user_id', 'notify_by_max',
         personal=lambda value: messengers.format_recipient('user', value),
         group=lambda value: messengers.format_recipient('chat', value),
-        roles=roles,
+        permission=permission,
     )
 
 
-def staff_telegram_recipients(roles=STOCK_ROLES):
+def staff_telegram_recipients(permission=STOCK_PERMISSION):
     # Приставок «user:»/«chat:» здесь нет: в Telegram и человек, и группа —
     # это chat_id, и различать их в получателе незачем
     return _messenger_recipients(
@@ -93,7 +104,7 @@ def staff_telegram_recipients(roles=STOCK_ROLES):
         messengers.telegram_is_configured(),
         _setting('TELEGRAM_GROUP_CHAT_ID', ''),
         'telegram_chat_id', 'notify_by_telegram',
-        roles=roles,
+        permission=permission,
     )
 
 
@@ -114,7 +125,7 @@ def queue(event, recipient, subject, body, repair_order=None, part=None,
 
 
 def _queue_to_client(event, client, subject, body, **extra):
-    """Заказчику — по всем контактам с включённым каналом (с v2.97.0).
+    """Заказчику — по всем контактам с включённым каналом (с v2.98.0).
 
     Контактов не завели — используем то единственное поле, что было
     раньше (`Client.email`): так заказчик, для которого никто не открывал
@@ -150,7 +161,7 @@ def _queue_to_client(event, client, subject, body, **extra):
     return [item for item in queued if item is not None]
 
 
-def queue_for_staff(event, subject, body, roles=STOCK_ROLES, **extra):
+def queue_for_staff(event, subject, body, permission=STOCK_PERMISSION, **extra):
     """Одно и то же сообщение сотрудникам — почтой и в мессенджеры.
 
     В мессенджер тема уходит первой строкой текста: отдельного поля темы
@@ -158,11 +169,11 @@ def queue_for_staff(event, subject, body, roles=STOCK_ROLES, **extra):
     """
     queued = [
         queue(event, email, subject, body, **extra)
-        for email in staff_recipients(roles)
+        for email in staff_recipients(permission)
     ]
     for channel, recipients in (
-        (Notification.CHANNEL_MAX, staff_max_recipients(roles)),
-        (Notification.CHANNEL_TELEGRAM, staff_telegram_recipients(roles)),
+        (Notification.CHANNEL_MAX, staff_max_recipients(permission)),
+        (Notification.CHANNEL_TELEGRAM, staff_telegram_recipients(permission)),
     ):
         queued += [
             queue(event, recipient, subject, f'{subject}\n\n{body}',
@@ -181,7 +192,7 @@ def notify_order_status(order, changed_by=None):
     узнать о них. «Диагностика» и «ремонт» — внутренняя кухня, письмо
     о них выглядит как спам.
 
-    С v2.97.0 уходит не одним письмом на `Client.email`, а по всем
+    С v2.98.0 уходит не одним письмом на `Client.email`, а по всем
     контактам заказчика и их каналам — см. `_queue_to_client`.
     """
     if not _setting('NOTIFY_CLIENTS', False):
@@ -400,7 +411,7 @@ def notify_debt_digest(orders, without_invoice=()):
         f'{plural(len(orders), "заказ", "заказа", "заказов")} на {money(total)}'
         if orders else 'Задолженности: отгрузки без счёта'
     )
-    return queue_for_staff('debt_digest', subject, '\n'.join(lines), roles=DEBT_ROLES)
+    return queue_for_staff('debt_digest', subject, '\n'.join(lines), permission=DEBT_PERMISSION)
 
 
 def order_last_touched(order):
@@ -477,5 +488,5 @@ def notify_order_overdue(order):
         'Оповещение сформировано автоматической проверкой просроченных заказов.',
     ])
     return queue_for_staff(
-        'order_overdue', subject, body, roles=ORDER_OVERDUE_ROLES, repair_order=order
+        'order_overdue', subject, body, permission=ORDER_OVERDUE_PERMISSION, repair_order=order
     )

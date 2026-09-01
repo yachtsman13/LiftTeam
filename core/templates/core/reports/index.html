@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Отчёты — LiftTeam v2.97.0{% endblock %}
+{% block title %}Отчёты — LiftTeam v2.98.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -52,7 +52,7 @@
         Деньги видит бухгалтерия — тот же критерий, что и у пункта
         «Поступления» в боковом меню (core/templates/core/base.html).
     {% endcomment %}
-    {% if user.role == 'accountant' or user.role == 'admin' %}
+    {% if user.can.reports_profit %}
     <div class="col-md-4">
         <div class="card h-100">
             <div class="card-body text-center">

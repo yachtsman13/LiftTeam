@@ -20,6 +20,7 @@ from django.db.models.functions import Coalesce
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from django.utils import timezone
+from django.utils.functional import cached_property
 
 from . import envfile, invoicing
 
@@ -113,7 +114,7 @@ def complexity_css(value):
 
 
 def order_status_css(status):
-    """Цвет статуса заказа — один на всю программу (с v2.97.0).
+    """Цвет статуса заказа — один на всю программу (с v2.98.0).
 
     Ровно та беда, которую называет docstring `complexity_css` выше:
     цепочка `{% if status == '...' %}` была скопирована в список заказов,
@@ -182,6 +183,188 @@ def add_months(moment, months):
     return moment.replace(year=year, month=month, day=day)
 
 
+# ==================== ДОЛЖНОСТИ И ПРАВА ====================
+#
+# До v2.98.0 прав как таковых не было: у сотрудника стояла одна из четырёх
+# зашитых в код ролей, и каждая закрытая страница перечисляла роли,
+# которым она открыта. Завести пятую должность значило править код,
+# а «мастеру можно выставлять счета, но нельзя удалять заказы» не
+# выражалось вовсе. Решение владельца — полная система прав.
+#
+# Список прав **явный** и лежит здесь, а не собирается из чего попало:
+# то же правило, что у `envfile.EDITABLE` и `READINESS_CHECKS`. Право,
+# которого нет в этом списке, не выдаётся и не проверяется — подсунуть
+# в запрос или в шаблон можно что угодно.
+#
+# **Права ровно те, что уже закрыты сегодня.** Новых запретов переход
+# не вводит: страницы, открытые любому сотруднику (приём заказа, правка
+# единицы, списание деталей, инвентаризация, печать), такими и остаются.
+# Иначе перевод на должности молча отобрал бы у людей то, что у них было.
+#
+# Код — плоский, с подчёркиваниями, а не с точками: шаблон обращается
+# к нему через `{% if user.can.invoices_send %}`, а точку разметка
+# понимает как обращение к вложенному полю. Одно написание на код
+# и на шаблон — второе разошлось бы с первым при первой же правке.
+
+PERMISSION_SECTIONS = (
+    ('orders', 'Заказы'),
+    ('catalog', 'Справочники'),
+    ('money', 'Деньги'),
+    ('reports', 'Отчёты'),
+    ('admin', 'Администрирование'),
+    ('notify', 'Оповещения'),
+)
+
+PERMISSIONS = (
+    ('orders_delete', 'Удалять заказы', 'orders'),
+    ('clients_delete', 'Удалять заказчиков', 'orders'),
+    ('catalog_delete', 'Удалять записи справочников оборудования', 'catalog'),
+    ('parts_delete', 'Удалять радиодетали', 'catalog'),
+    ('cabinets_manage', 'Заводить и править кассетницы', 'catalog'),
+    ('payments_manage', 'Вносить и удалять оплаты', 'money'),
+    ('payment_status_change', 'Менять статус оплаты заказа', 'money'),
+    ('invoices_send', 'Выставлять счета', 'money'),
+    ('bank_statement', 'Видеть выписку банка и разносить поступления', 'money'),
+    ('reports_profit', 'Отчёт о прибыли', 'reports'),
+    ('reports_all_engineers', 'Аналитика по всем инженерам, а не только своя',
+     'reports'),
+    ('admin_access', 'Администрирование: пользователи, должности, настройки, '
+     'обновление, реквизиты', 'admin'),
+    ('notify_low_stock', 'Оповещения о дефиците деталей', 'notify'),
+    ('notify_debts', 'Оповещения о долгах заказчиков', 'notify'),
+    ('notify_overdue', 'Оповещения о зависших заказах', 'notify'),
+)
+
+PERMISSION_CODES = tuple(code for code, _, _ in PERMISSIONS)
+PERMISSION_LABELS = {code: label for code, label, _ in PERMISSIONS}
+
+
+def permissions_by_section():
+    """Права, сгруппированные по разделам — для формы должности.
+
+    Порядок разделов и прав внутри них значимый и берётся отсюда:
+    страница правки должности не должна перечислять их по-своему.
+    """
+    grouped = []
+    for section, title in PERMISSION_SECTIONS:
+        codes = [(code, label) for code, label, own in PERMISSIONS
+                 if own == section]
+        if codes:
+            grouped.append({'section': section, 'title': title, 'codes': codes})
+    return grouped
+
+
+class LastAdminError(Exception):
+    """Изменение оставило бы программу без единого администратора.
+
+    Проверка идёт **по факту**, уже после записи в базу и внутри
+    транзакции (см. `views._require_admin_remains`): предсказывать
+    «что будет после» отдельным условием — значит однажды предсказать
+    неверно и запереть владельца снаружи собственной программы.
+    """
+
+
+def admin_access_exists():
+    """Остался ли хоть один действующий сотрудник с полным доступом."""
+    return Employee.objects.filter(
+        is_active=True, position__is_admin=True
+    ).exists()
+
+
+class Position(models.Model):
+    """Должность сотрудника: название и набор прав.
+
+    Заводится и правится администратором, а не программистом. Четыре
+    прежние роли остались обычными записями этой таблицы — их создала
+    миграция 0051 с тем же набором прав, что был зашит в код, поэтому
+    после перехода никто ничего не потерял и не приобрёл.
+
+    `is_admin` — не просто «выданы все права из списка», а отдельный
+    флаг «полный доступ». Разница видна при следующем выпуске: право,
+    добавленное в `PERMISSIONS` позже, у такой должности появляется само.
+    Иначе новая страница оказалась бы закрыта для всех, включая владельца,
+    ровно до того, как он вспомнит про неё в списке галочек.
+    """
+    name = models.CharField('Название', max_length=100, unique=True)
+    is_admin = models.BooleanField(
+        'Полный доступ', default=False,
+        help_text='Все права, включая те, что появятся в будущих версиях.'
+    )
+    note = models.CharField(
+        'Примечание', max_length=255, blank=True,
+        help_text='Для своих: чем эта должность отличается от соседней.'
+    )
+
+    class Meta:
+        verbose_name = 'Должность'
+        verbose_name_plural = 'Должности'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def admin_position(cls):
+        """Должность с полным доступом — для команды заведения администратора.
+
+        Заводится, только если её нет ни одной: на рабочей установке её
+        создала миграция 0051, а на свежей — эта строка. Искать по имени
+        нельзя: должность переименовывают, и «Администратор» может
+        называться «Владелец».
+        """
+        existing = cls.objects.filter(is_admin=True).order_by('pk').first()
+        if existing is not None:
+            return existing
+        return cls.objects.create(name='Администратор', is_admin=True)
+
+    @property
+    def codes(self):
+        """Права этой должности — множеством, для проверок."""
+        return {item.code for item in self.permissions.all()}
+
+    def allows(self, code):
+        return self.is_admin or code in self.codes
+
+    @property
+    def permission_labels(self):
+        """Названия выданных прав, в порядке списка — для страницы должностей."""
+        if self.is_admin:
+            return ['полный доступ']
+        granted = self.codes
+        return [label for code, label, _ in PERMISSIONS if code in granted]
+
+
+class PositionPermission(models.Model):
+    """Одно право одной должности.
+
+    Отдельной строкой, а не списком в текстовом поле: по правам ищут
+    (кому уходит оповещение о дефиците — это запрос, а не перебор всех
+    должностей в Python), и разбирать строку ради каждого такого запроса
+    было бы и медленнее, и легче ошибиться.
+    """
+    position = models.ForeignKey(
+        Position, on_delete=models.CASCADE, related_name='permissions',
+        verbose_name='Должность'
+    )
+    code = models.CharField(
+        'Право', max_length=50,
+        choices=[(code, label) for code, label, _ in PERMISSIONS]
+    )
+
+    class Meta:
+        verbose_name = 'Право должности'
+        verbose_name_plural = 'Права должности'
+        ordering = ['code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['position', 'code'], name='unique_permission_per_position'
+            )
+        ]
+
+    def __str__(self):
+        return f'{self.position}: {PERMISSION_LABELS.get(self.code, self.code)}'
+
+
 class EmployeeManager(BaseUserManager):
     def create_user(self, username, full_name, password=None, **extra_fields):
         if not username:
@@ -194,19 +377,22 @@ class EmployeeManager(BaseUserManager):
     def create_superuser(self, username, full_name, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
-        extra_fields.setdefault('role', 'admin')
         extra_fields.setdefault('is_active', True)
+        # Полный доступ даёт должность, а не флаг `is_superuser`: источник
+        # прав в программе один, и им остаётся должность (с v2.98.0)
+        extra_fields.setdefault('position', Position.admin_position())
         return self.create_user(username, full_name, password, **extra_fields)
 
 
 class Employee(AbstractBaseUser, PermissionsMixin):
-    """Сотрудник / пользователь системы. Авторизация по логину (username)."""
-    ROLE_CHOICES = [
-        ('admin', 'Администратор'),
-        ('warehouse', 'Кладовщик'),
-        ('repair_manager', 'Менеджер по ремонту'),
-        ('accountant', 'Бухгалтер'),
-    ]
+    """Сотрудник / пользователь системы. Авторизация по логину (username).
+
+    Права с v2.98.0 даёт **должность** (`Position`), а не зашитая в код
+    роль: до этого их было ровно четыре, и пятая требовала правки кода.
+    Должности нет — сотрудник видит то, что открыто всем: приём заказа,
+    работу по единице, склад, печать. Закрытым остаётся только то, что
+    и раньше было закрыто (см. `PERMISSIONS`).
+    """
 
     username = models.CharField('Логин', max_length=150, unique=True)
     full_name = models.CharField('ФИО', max_length=255)
@@ -235,7 +421,13 @@ class Employee(AbstractBaseUser, PermissionsMixin):
         choices=invoicing.PROVIDER_CHOICES,
         help_text='Подставляется в форму счёта. Поменять можно на самой форме.'
     )
-    role = models.CharField('Роль', max_length=20, choices=ROLE_CHOICES, default='repair_manager')
+    # PROTECT, а не SET_NULL: удаление должности, которую кто-то занимает,
+    # молча забрало бы у него права. Пусть сначала переведут людей —
+    # страница удаления должности так и говорит, перечисляя, кто на ней
+    position = models.ForeignKey(
+        Position, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='employees', verbose_name='Должность'
+    )
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Сотрудник', default=False)
     date_joined = models.DateTimeField('Дата регистрации', auto_now_add=True)
@@ -263,13 +455,54 @@ class Employee(AbstractBaseUser, PermissionsMixin):
         ordering = ['full_name']
 
     def __str__(self):
-        return f"{self.full_name} ({self.get_role_display()})"
+        if self.position_id:
+            return f'{self.full_name} ({self.position})'
+        return self.full_name
 
     def has_perm(self, perm, obj=None):
         return self.is_superuser
 
     def has_module_perms(self, app_label):
         return self.is_superuser
+
+    # --- Права (с v2.98.0) ---
+    # Источник один — должность. `is_superuser` сюда не входит намеренно:
+    # два источника прав однажды разошлись бы, и разбираться, почему
+    # человек видит страницу, пришлось бы в двух местах сразу.
+
+    @property
+    def is_admin(self):
+        """Полный доступ — свойство должности, а не отдельный флаг у человека."""
+        return bool(self.position and self.position.is_admin)
+
+    def allows(self, code):
+        """Дано ли этому сотруднику право `code`.
+
+        Должности нет — нет и особых прав: остаётся то, что открыто всем.
+        """
+        if self.position is None:
+            return False
+        return self.position.allows(code)
+
+    @cached_property
+    def can(self):
+        """Права для разметки: `{% if user.can.invoices_send %}`.
+
+        Словарём, а не методом с доводом: вызвать метод с параметром
+        шаблонизатор Django не умеет вовсе. Считается один раз на запрос
+        (`cached_property`), поэтому десяток проверок в шаблоне — это
+        по-прежнему один запрос к правам должности.
+
+        Ключей ровно столько, сколько прав в `PERMISSIONS`: опечатка
+        в шаблоне даёт пустое значение, то есть кнопка молча пропадает,
+        — за этим следит `PermissionCodesInTemplatesTests`.
+        """
+        if self.position is None:
+            return {code: False for code in PERMISSION_CODES}
+        if self.position.is_admin:
+            return {code: True for code in PERMISSION_CODES}
+        granted = self.position.codes
+        return {code: code in granted for code in PERMISSION_CODES}
 
     @staticmethod
     def presence_cutoff():
@@ -506,7 +739,7 @@ class Client(models.Model):
 
 
 class ClientContact(models.Model):
-    """Контактное лицо заказчика — с v2.97.0.
+    """Контактное лицо заказчика — с v2.98.0.
 
     У заказчика бывает несколько адресатов (диспетчер, механик,
     бухгалтерия), и оповещать надо не «заказчика» вообще, а тех из них,
@@ -1129,7 +1362,7 @@ class FaultType(models.Model):
     # архитектуры, а необязательное уточнение поверх неё. Отмечены
     # исполнения — неисправность предлагается только на них: бывают
     # поломки одного конкретного исполнения (например, только там, где
-    # стоит вентилятор), и до v2.97.0 отбора по этому вовсе не было —
+    # стоит вентилятор), и до v2.98.0 отбора по этому вовсе не было —
     # неисправность либо была у всей модели, либо не существовала.
     #
     # Многие-ко-многим, а не одна версия: «привязка к нескольким
@@ -1470,7 +1703,7 @@ class RepairOrder(models.Model):
         # Смешанный исход: часть единиц заказа отремонтирована, часть —
         # нет (у них самих стоит «ремонт невозможен» по READINESS —
         # такого поля нет, это решает мастер по факту). Решение владельца,
-        # 2026-08-31 — с v2.97.0. Терминальный статус, как «Отгружен»
+        # 2026-08-31 — с v2.98.0. Терминальный статус, как «Отгружен»
         # и «Ремонт невозможен»: заказ им закрывают, а не проезжают мимо
         ('partially_repaired', 'Частично отремонтирован'),
     ]
@@ -2043,7 +2276,7 @@ class RepairOrderEquipment(models.Model):
     seal_numbers = models.CharField('Номера пломб', max_length=255, blank=True)
     initial_condition = models.TextField('Начальное состояние', blank=True)
     repair_cost = models.DecimalField('Стоимость ремонта', max_digits=12, decimal_places=2, null=True, blank=True)
-    # Кто чинил эту единицу — с v2.97.0. Не «ответственный по заказу»
+    # Кто чинил эту единицу — с v2.98.0. Не «ответственный по заказу»
     # (такого поля в программе нет и не будет, см. CLAUDE.md): единиц
     # в заказе бывает несколько, и чинят их разные люди. SET_NULL —
     # уволенный мастер не должен утаскивать за собой запись о ремонте
@@ -2452,7 +2685,7 @@ class RepairOrderEquipment(models.Model):
 
     @property
     def earnings(self):
-        """Заработок исполнителя по этой единице — с v2.97.0.
+        """Заработок исполнителя по этой единице — с v2.98.0.
 
         Считается от **фактической** стоимости ремонта (`repair_cost`),
         не от прайсовой оценки: по той же логике, по которой готовность

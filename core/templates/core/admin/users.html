@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Пользователи — LiftTeam v2.97.0{% endblock %}
+{% block title %}Пользователи — LiftTeam v2.98.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -19,7 +19,7 @@
                         <th>Email</th>
                         <th>MAX</th>
                         <th>Telegram</th>
-                        <th>Роль</th>
+                        <th>Должность</th>
                         <th>Статус</th>
                         <th class="text-end">Действия</th>
                     </tr>
@@ -32,7 +32,13 @@
                         <td data-label="Email">{{ u.email|default:"—" }}</td>
                         <td class="text-nowrap" data-label="MAX">{{ u.max_user_id|default:"—" }}</td>
                         <td class="text-nowrap" data-label="Telegram">{{ u.telegram_chat_id|default:"—" }}</td>
-                        <td data-label="Роль"><span class="badge bg-{% if u.role == 'admin' %}danger{% elif u.role == 'warehouse' %}warning{% elif u.role == 'accountant' %}info{% else %}primary{% endif %}">{{ u.get_role_display }}</span></td>
+                        <td data-label="Должность">
+                            {% if u.position %}
+                            <span class="badge {% if u.position.is_admin %}bg-danger{% else %}bg-primary{% endif %}">{{ u.position }}</span>
+                            {% else %}
+                            <span class="text-muted">не назначена</span>
+                            {% endif %}
+                        </td>
                         <td data-label="Статус">{% if u.is_active %}<span class="badge bg-success">Активен</span>{% else %}<span class="badge bg-secondary">Неактивен</span>{% endif %}</td>
                         <td class="col-actions text-end">
                             <a href="{% url 'admin_user_edit' u.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>

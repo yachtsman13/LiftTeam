@@ -122,11 +122,14 @@ class PresenceConsumer(AsyncWebsocketConsumer):
             {
                 'id': employee.pk,
                 'full_name': employee.full_name,
-                'role': employee.get_role_display(),
+                # Должность вместо роли (с v2.98.0). Браузер это поле
+                # не читает — строку под именем рисует сам шаблон, — но
+                # рассылать заведомо неверное «роль такая-то» нельзя
+                'position': str(employee.position) if employee.position_id else '',
                 'last_seen': employee.last_seen.isoformat() if employee.last_seen else None,
                 'online': employee.is_online,
             }
-            for employee in Employee.objects.filter(is_active=True)
+            for employee in Employee.objects.filter(is_active=True).select_related('position')
         ]
 
 

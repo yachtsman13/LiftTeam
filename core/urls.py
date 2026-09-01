@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.97.0
+v2.98.0
 """
 from django.urls import path
 from . import views
@@ -202,6 +202,11 @@ urlpatterns = [
     path('management/users/', views.admin_users, name='admin_users'),
     path('management/users/create/', views.admin_user_create, name='admin_user_create'),
     path('management/users/<int:pk>/edit/', views.admin_user_edit, name='admin_user_edit'),
+    # Должности с правами — с v2.98.0 вместо четырёх зашитых в код ролей
+    path('management/positions/', views.admin_positions, name='admin_positions'),
+    path('management/positions/create/', views.admin_position_create, name='admin_position_create'),
+    path('management/positions/<int:pk>/edit/', views.admin_position_edit, name='admin_position_edit'),
+    path('management/positions/<int:pk>/delete/', views.admin_position_delete, name='admin_position_delete'),
     path('management/organization/', views.admin_organization, name='admin_organization'),
     path('management/notifications/', views.admin_notifications, name='admin_notifications'),
     path('management/notifications/<int:pk>/retry/', views.admin_notification_retry, name='admin_notification_retry'),

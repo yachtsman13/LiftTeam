@@ -1,0 +1,93 @@
+{% extends 'core/base.html' %}
+
+{% block title %}{{ title }} — LiftTeam v2.98.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-person-badge me-2"></i>{{ title }}</h2>
+    <a href="{% url 'admin_positions' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-3">
+                <div class="col-md-5">
+                    <label class="form-label" for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+                    {{ form.name }}
+                    {% if form.name.errors %}<div class="text-danger small">{{ form.name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-7">
+                    <label class="form-label" for="{{ form.note.id_for_label }}">{{ form.note.label }}</label>
+                    {{ form.note }}
+                    <div class="form-text">{{ form.note.help_text }}</div>
+                </div>
+            </div>
+
+            {% comment %}
+                Полный доступ — не «все галочки разом», а отдельное
+                свойство должности: право, добавленное в следующем
+                выпуске, у неё появится само. Иначе новая страница
+                оказалась бы закрыта для всех, включая владельца, ровно
+                до того, как он вспомнит про неё в этом списке.
+            {% endcomment %}
+            <div class="form-check mt-4">
+                {{ form.is_admin }}
+                <label class="form-check-label fw-bold" for="{{ form.is_admin.id_for_label }}">
+                    {{ form.is_admin.label }}
+                </label>
+                <div class="form-text">{{ form.is_admin.help_text }}</div>
+            </div>
+
+            <hr class="my-4">
+            <h5 class="mb-3">Права</h5>
+            <p class="text-muted small">
+                Отмеченное здесь открывает то, что иначе закрыто. Всё
+                остальное — приём заказов, работа по прибору, склад, печать —
+                открыто любому вошедшему и от должности не зависит.
+            </p>
+
+            {% comment %}
+                Галочки разложены по разделам списком с сервера
+                (`models.permissions_by_section`), а не перечислены здесь:
+                новое право появляется на странице само, и порядок у него
+                тот же, что в коде.
+
+                `id` галочки собирается Django как `id_permissions_<N>`,
+                и попасть по подписи в нужную нельзя — поэтому подпись
+                оборачивает саму галочку, а не ссылается на неё `for`.
+            {% endcomment %}
+            <div class="row g-4">
+                {% for section in sections %}
+                <div class="col-md-6">
+                    <div class="fw-bold mb-2">{{ section.title }}</div>
+                    {% for code, label in section.codes %}
+                    <div class="form-check">
+                        <label class="form-check-label">
+                            <input type="checkbox" class="form-check-input" name="permissions"
+                                   value="{{ code }}"
+                                   {% if code in form.permissions.value %}checked{% endif %}>
+                            {{ label }}
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+            {% if form.permissions.errors %}<div class="text-danger small mt-2">{{ form.permissions.errors.0 }}</div>{% endif %}
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-2"></i>Сохранить</button>
+                <a href="{% url 'admin_positions' %}" class="btn btn-outline-secondary">Отмена</a>
+                {% if position and position.employees.exists %}
+                <span class="text-muted small ms-2">
+                    На этой должности: {{ position.employees.count }}.
+                    Правка прав подействует на всех сразу.
+                </span>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
