@@ -1,14 +1,30 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.98.0{% endblock %}
+{% block title %}Поступления — LiftTeam v2.99.0{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center mb-2">
     <h2><i class="bi bi-bank me-2"></i>Поступления из банка</h2>
+    {% if configured %}
+    <form method="post" action="{% url 'bank_statement_fetch' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-primary">
+            <i class="bi bi-arrow-repeat me-2"></i>Загрузить выписку сейчас
+        </button>
+    </form>
+    {% endif %}
 </div>
 
+{% if configured %}
+<div class="text-muted small mb-4">
+    Последняя загрузка:
+    {% if last_fetch_at %}{{ last_fetch_at|date:"d.m.Y H:i" }}{% else %}ещё не было{% endif %}.
+    Дальше — по расписанию (настройка на странице «Настройки») или по этой кнопке.
+</div>
+{% endif %}
+
 {% if not configured %}
-<div class="alert alert-warning">
+<div class="alert alert-warning mb-4">
     Выписка Т-Банка не настроена: не задан <code>TBANK_TOKEN</code>.
     Пока он пустой, список пополняться не будет — см. DEPLOY.md.
 </div>

@@ -409,6 +409,70 @@ def incoming_operations(payload):
     return found
 
 
+class TBankFetchResult(dict):
+    """Итог загрузки выписки — для команды и для кнопки на странице.
+
+    Обычный dict с именованными ключами вместо кортежа: у вызывающих
+    два разных желания (напечатать в консоль или показать сообщением),
+    и оба должны читать одни и те же поля, а не гадать порядок.
+    """
+
+
+def fetch_and_store(days=None):
+    """Тянет выписку и сохраняет новые поступления — одно место.
+
+    Зовут и команда по расписанию, и кнопка «Загрузить сейчас» на
+    странице поступлений: второй такой код разошёлся бы с первым,
+    а перезаписывать один заказ дважды из-за такого расхождения
+    нельзя. `TBankError` не ловится — решает вызывающий, как показать
+    отказ (в консоль или сообщением на странице).
+    """
+    from datetime import timedelta
+
+    from django.db import IntegrityError
+
+    from .models import BankOperation
+
+    days = days or envfile.setting('TBANK_STATEMENT_DAYS', 30)
+    date_to = timezone.localdate()
+    date_from = date_to - timedelta(days=days)
+
+    payload = get_statement(date_from, date_to)
+    operations = incoming_operations(payload)
+    total = len(operation_list(payload))
+
+    added = 0
+    for operation in operations:
+        # get_or_create, а не exists()+create: выписку может тянуть
+        # и таймер, и человек со страницы одновременно
+        try:
+            _, created = BankOperation.objects.get_or_create(
+                external_id=operation['external_id'],
+                defaults={
+                    'operation_date': operation['operation_date'],
+                    'amount': operation['amount'],
+                    'purpose': operation['purpose'],
+                    'counterparty': operation['counterparty'],
+                    'counterparty_inn': operation['counterparty_inn'],
+                    'document_number': operation['document_number'],
+                },
+            )
+        except IntegrityError:
+            continue
+        if created:
+            added += 1
+
+    # Отметка ставится **после** удачной загрузки: сорвись запрос
+    # к банку, следующий тик (или следующее нажатие кнопки) обязан
+    # попробовать снова, а не ждать положенный промежуток
+    mark_fetched()
+
+    return TBankFetchResult(
+        date_from=date_from, date_to=date_to,
+        total=total, incoming=len(operations), added=added,
+    )
+
+
 # --- Выставление счёта ---------------------------------------------------
 #
 # Схема запроса подтверждена по рабочему стороннему SDK

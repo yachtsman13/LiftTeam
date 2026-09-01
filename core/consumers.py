@@ -122,7 +122,7 @@ class PresenceConsumer(AsyncWebsocketConsumer):
             {
                 'id': employee.pk,
                 'full_name': employee.full_name,
-                # Должность вместо роли (с v2.98.0). Браузер это поле
+                # Должность вместо роли (с v2.99.0). Браузер это поле
                 # не читает — строку под именем рисует сам шаблон, — но
                 # рассылать заведомо неверное «роль такая-то» нельзя
                 'position': str(employee.position) if employee.position_id else '',

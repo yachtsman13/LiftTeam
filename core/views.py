@@ -4340,9 +4340,9 @@ def admin_user_edit(request, pk):
     return render(request, 'core/admin/user_form.html', {'form': form, 'title': 'Редактирование пользователя', 'user_obj': user})
 
 
-# ==================== ДОЛЖНОСТИ И ПРАВА (v2.98.0) ====================
+# ==================== ДОЛЖНОСТИ И ПРАВА (v2.99.0) ====================
 #
-# Права заводит администратор, а не программист: до v2.98.0 ролей было
+# Права заводит администратор, а не программист: до v2.99.0 ролей было
 # ровно четыре, они были зашиты в код, и пятая требовала правки исходников.
 
 _NO_ADMIN_LEFT = (
@@ -5298,7 +5298,36 @@ def bank_operations(request):
             for value, label in BankOperation.STATUS_CHOICES
         ],
         'configured': tbank.is_configured(),
+        'last_fetch_at': tbank.last_fetch_at(),
     })
+
+
+@permission_required('bank_statement')
+@require_POST
+def bank_statement_fetch(request):
+    """«Загрузить сейчас» — тот же путь, что у таймера, но по нажатию.
+
+    Промежуток из настроек здесь не спрашивается (как и у ручного запуска
+    команды): нажавший кнопку хочет выписку сейчас, а не ждать оставшуюся
+    часть промежутка.
+    """
+    if not tbank.is_configured():
+        messages.error(request, 'Т-Банк не настроен: пустой TBANK_TOKEN')
+        return redirect('bank_operations')
+
+    try:
+        result = tbank.fetch_and_store()
+    except tbank.TBankError as exc:
+        messages.error(request, f'Выписка не получена: {exc}')
+        return redirect('bank_operations')
+
+    messages.success(
+        request,
+        f'Выписка с {result["date_from"]:%d.%m.%Y} по {result["date_to"]:%d.%m.%Y}: '
+        f'операций {result["total"]}, поступлений {result["incoming"]}, '
+        f'новых {result["added"]}.'
+    )
+    return redirect('bank_operations')
 
 
 @permission_required('bank_statement')

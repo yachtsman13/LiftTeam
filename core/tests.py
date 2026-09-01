@@ -65,7 +65,7 @@ from .models import (
 def position(name):
     """Заводская должность по названию — их заводит миграция 0051.
 
-    Тесты просят должность, а не роль: ролей с v2.98.0 нет, права даёт
+    Тесты просят должность, а не роль: ролей с v2.99.0 нет, права даёт
     должность. Названия те же, что были у ролей, — так их и перенесла
     миграция.
     """
@@ -5592,6 +5592,69 @@ class BankOperationTests(TestCase):
         resp = self.client_http.get('/')
 
         self.assertFalse(resp.context['unapplied_operations'])
+
+
+class BankStatementFetchButtonTests(TestCase):
+    """Кнопка «Загрузить выписку сейчас» на странице поступлений."""
+
+    PAYLOAD = {'operations': [
+        {'id': 'op-btn-1', 'typeOfOperation': 'Credit', 'amount': 5000,
+         'operationDate': '2026-08-10', 'paymentPurpose': 'Оплата',
+         'payerName': 'ООО «БАНК-КНОПКА»'},
+    ]}
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_fetch', full_name='Бухгалтер', password='pass',
+            position=position('Бухгалтер'))
+        self.warehouse = Employee.objects.create_user(
+            username='sklad_fetch', full_name='Кладовщик', password='pass',
+            position=position('Кладовщик'))
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_the_button_loads_the_statement_right_away(self):
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertEqual(BankOperation.objects.count(), 1)
+        self.assertContains(resp, 'новых 1')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_the_last_fetch_time_is_shown_on_the_page(self):
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            self.client_http.post('/bank/operations/fetch/')
+
+        resp = self.client_http.get('/bank/operations/')
+
+        self.assertContains(resp, 'Последняя загрузка')
+        self.assertNotContains(resp, 'ещё не было')
+
+    @override_settings(TBANK_TOKEN='')
+    def test_without_a_token_the_button_refuses(self):
+        resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertContains(resp, 'не настроен')
+        self.assertEqual(BankOperation.objects.count(), 0)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
+    def test_a_bank_failure_is_shown_as_a_message(self):
+        with patch('core.tbank.get_statement',
+                   side_effect=tbank.TBankError('Т-Банк недоступен')):
+            resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertContains(resp, 'Выписка не получена')
+        self.assertContains(resp, 'Т-Банк недоступен')
+
+    @override_settings(TBANK_TOKEN='secret')
+    def test_the_warehouse_cannot_trigger_a_fetch(self):
+        self.client_http.force_login(self.warehouse)
+
+        resp = self.client_http.post('/bank/operations/fetch/')
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(BankOperation.objects.count(), 0)
 
 
 class TBankStatementCommandTests(TestCase):
@@ -18574,7 +18637,7 @@ class OrderCardInitialConditionTests(TestCase):
         )
 
 
-# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.98.0) ============
+# ============ ЭТАП 4, МЕЛКИЕ СУЩНОСТИ (v2.99.0) ============
 
 
 class RepairerEarningsTests(TestCase):
@@ -18878,7 +18941,7 @@ class ClientContactTests(TestCase):
 
 class FaultTypeVersionScopeTests(TestCase):
     """Типовая неисправность бывает общей для модели или отмеченной
-    под несколько конкретных исполнений (с v2.98.0).
+    под несколько конкретных исполнений (с v2.99.0).
 
     Решение владельца: «привязка к нескольким исполнениям, а не
     к одному» — до этого отбора по исполнению не было вовсе.
@@ -18981,7 +19044,7 @@ class FaultTypeVersionScopeTests(TestCase):
         self.assertFalse(FaultType.objects.filter(name='плохая привязка').exists())
 
 
-# ============ ДОЛЖНОСТИ С ПРАВАМИ ВМЕСТО ЧЕТЫРЁХ РОЛЕЙ (v2.98.0) ============
+# ============ ДОЛЖНОСТИ С ПРАВАМИ ВМЕСТО ЧЕТЫРЁХ РОЛЕЙ (v2.99.0) ============
 
 
 class PositionMigrationTests(TestCase):

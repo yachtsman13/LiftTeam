@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.98.0
+v2.99.0
 """
 from django.urls import path
 from . import views
@@ -170,6 +170,7 @@ urlpatterns = [
 
     # Поступления из банка
     path('bank/operations/', views.bank_operations, name='bank_operations'),
+    path('bank/operations/fetch/', views.bank_statement_fetch, name='bank_statement_fetch'),
     path('bank/operations/<int:pk>/apply/', views.bank_operation_apply, name='bank_operation_apply'),
     path('bank/operations/<int:pk>/skip/', views.bank_operation_skip, name='bank_operation_skip'),
     path('bank/operations/<int:pk>/reset/', views.bank_operation_reset, name='bank_operation_reset'),
@@ -202,7 +203,7 @@ urlpatterns = [
     path('management/users/', views.admin_users, name='admin_users'),
     path('management/users/create/', views.admin_user_create, name='admin_user_create'),
     path('management/users/<int:pk>/edit/', views.admin_user_edit, name='admin_user_edit'),
-    # Должности с правами — с v2.98.0 вместо четырёх зашитых в код ролей
+    # Должности с правами — с v2.99.0 вместо четырёх зашитых в код ролей
     path('management/positions/', views.admin_positions, name='admin_positions'),
     path('management/positions/create/', views.admin_position_create, name='admin_position_create'),
     path('management/positions/<int:pk>/edit/', views.admin_position_edit, name='admin_position_edit'),

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.98.0{% endblock %}
+{% block title %}Акт дефектации {{ order_equipment.equipment.serial_number }} — LiftTeam v2.99.0{% endblock %}
 
 {% block content %}
 <div class="no-print mb-3 d-flex gap-2 align-items-center flex-wrap">
@@ -9,7 +9,7 @@
     </button>
     {% comment %}
         Правка — в разделе «Приём и диагностика» на странице единицы:
-        своей страницы у дефектации с v2.98.0 нет.
+        своей страницы у дефектации с v2.99.0 нет.
     {% endcomment %}
     <a href="{% url 'repair_order_unit_detail' order.pk order_equipment.pk %}#diagnosis"
        class="btn btn-outline-primary">

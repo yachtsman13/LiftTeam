@@ -21,11 +21,9 @@
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
-from django.db import IntegrityError
 from django.utils import timezone
 
 from core import envfile, tbank
-from core.models import BankOperation
 
 
 class Command(BaseCommand):
@@ -69,21 +67,19 @@ class Command(BaseCommand):
                 return
 
         days = options['days'] or envfile.setting('TBANK_STATEMENT_DAYS', 30)
-        date_to = timezone.localdate()
-        date_from = date_to - timedelta(days=days)
-
-        try:
-            payload = tbank.get_statement(date_from, date_to)
-        except tbank.TBankError as exc:
-            # Не падаем с трассировкой: команду запускает таймер, и в журнале
-            # systemd нужна причина, а не стек
-            self.stderr.write(f'Выписка не получена: {exc}')
-            return
-
-        operations = tbank.incoming_operations(payload)
-        total = len(tbank.operation_list(payload))
 
         if options['dry_run']:
+            date_to = timezone.localdate()
+            date_from = date_to - timedelta(days=days)
+            try:
+                payload = tbank.get_statement(date_from, date_to)
+            except tbank.TBankError as exc:
+                # Не падаем с трассировкой: команду запускает таймер, и в журнале
+                # systemd нужна причина, а не стек
+                self.stderr.write(f'Выписка не получена: {exc}')
+                return
+            operations = tbank.incoming_operations(payload)
+            total = len(tbank.operation_list(payload))
             for operation in operations:
                 self.stdout.write(
                     f'[проверка] {operation["operation_date"]} '
@@ -95,13 +91,17 @@ class Command(BaseCommand):
             )
             return
 
-        added = self._store(operations)
-        # Отметка ставится **после** удачной загрузки: сорвись запрос
-        # к банку, следующий тик обязан попробовать снова, а не ждать час
-        tbank.mark_fetched()
+        # Само сохранение — в core/tbank.py: тот же путь, что у кнопки
+        # «Загрузить сейчас» на странице поступлений
+        try:
+            result = tbank.fetch_and_store(days=days)
+        except tbank.TBankError as exc:
+            self.stderr.write(f'Выписка не получена: {exc}')
+            return
         self.stdout.write(
-            f'Выписка с {date_from} по {date_to}: операций {total}, '
-            f'поступлений {len(operations)}, новых {added}.'
+            f'Выписка с {result["date_from"]} по {result["date_to"]}: '
+            f'операций {result["total"]}, поступлений {result["incoming"]}, '
+            f'новых {result["added"]}.'
         )
 
     def _show_accounts(self):
@@ -121,26 +121,3 @@ class Command(BaseCommand):
             number = account.get('accountNumber') or account.get('number') or '?'
             name = account.get('name') or account.get('accountType') or ''
             self.stdout.write(f'{number} {name}'.strip())
-
-    def _store(self, operations):
-        added = 0
-        for operation in operations:
-            # get_or_create, а не exists()+create: выписку может тянуть
-            # и таймер, и человек со страницы одновременно
-            try:
-                _, created = BankOperation.objects.get_or_create(
-                    external_id=operation['external_id'],
-                    defaults={
-                        'operation_date': operation['operation_date'],
-                        'amount': operation['amount'],
-                        'purpose': operation['purpose'],
-                        'counterparty': operation['counterparty'],
-                        'counterparty_inn': operation['counterparty_inn'],
-                        'document_number': operation['document_number'],
-                    },
-                )
-            except IntegrityError:
-                continue
-            if created:
-                added += 1
-        return added
