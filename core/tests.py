@@ -17897,6 +17897,46 @@ class SettingsPageTests(EnvFileMixin, TestCase):
 
         self.assertIn('кириллическая', result.message)
 
+    def test_each_section_is_its_own_form(self):
+        """Раздел сохраняется отдельно (с v2.101.0): правка «Т-Банка»
+        не должна ждать, пока сохранят «Оповещения» в соседней вкладке.
+        Полей внутри формы столько же, сколько строк в разделе, — лишние
+        имена значили бы, что разделы всё-таки слиты в одну форму."""
+        html = self.http.get(self.url).content.decode()
+        sections = envfile.editable_sections()
+
+        forms = re.findall(
+            r'<form method="post" action="%s">(.*?)</form>' % reverse('admin_settings_save'),
+            html, re.S,
+        )
+        self.assertEqual(len(forms), len(sections))
+
+        for form_html, (title, rows) in zip(forms, sections):
+            for row in rows:
+                self.assertIn('name="%s"' % row['name'], form_html, title)
+            other_names = {
+                other_row['name']
+                for other_title, other_rows in sections if other_title != title
+                for other_row in other_rows
+            }
+            leaked = [name for name in other_names if 'name="%s"' % name in form_html]
+            self.assertEqual(leaked, [], 'раздел «%s» видит чужие поля' % title)
+
+    def test_saving_one_section_does_not_touch_a_setting_from_another(self):
+        self.write('QUOTE_VALID_DAYS=14\nMAX_GROUP_CHAT_ID=old\n')
+
+        # Ровно то, что уйдёт из формы раздела «Работа» — без полей
+        # «Оповещений», которые стоят в отдельной форме на странице
+        self.http.post(reverse('admin_settings_save'), {'QUOTE_VALID_DAYS': '30'})
+
+        envfile.forget()
+        self.assertEqual(envfile.values()['QUOTE_VALID_DAYS'], '30')
+        self.assertEqual(envfile.values()['MAX_GROUP_CHAT_ID'], 'old')
+        self.assertEqual(
+            list(SettingChange.objects.values_list('name', flat=True)),
+            ['QUOTE_VALID_DAYS'],
+        )
+
 
 class SettingsPageIsListedTests(TestCase):
     """Пункт меню: страница, до которой нельзя дойти, всё равно что
@@ -19619,7 +19659,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.100.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.101.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

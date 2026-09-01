@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Настройки — LiftTeam v2.100.0{% endblock %}
+{% block title %}Настройки — LiftTeam v2.101.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -84,9 +84,20 @@
     </div>
 </div>
 
+{% comment %}
+    Раздел — своя форма и своя кнопка (с v2.101.0), а не одна форма
+    на всю страницу: правка «Т-Банка» не должна ждать, пока сохранят
+    «Оповещения» в соседней вкладке, и наоборот. Разделов на странице
+    восемь, правит их обычно один администратор, но сохранение — то
+    самое место, где действие всегда должно быть явным, а не
+    подразумеваемым чужой кнопкой снизу страницы. Представление
+    (`admin_settings_save`) уже готово к этому: оно и раньше писало
+    только те поля, что пришли в запросе, — второй формы заводить
+    не пришлось.
+{% endcomment %}
+{% for title, rows in sections %}
 <form method="post" action="{% url 'admin_settings_save' %}">
     {% csrf_token %}
-    {% for title, rows in sections %}
     <div class="card mb-4">
         <div class="card-header">
             <h5 class="mb-0">{{ title }}</h5>
@@ -138,20 +149,20 @@
                 </div>
                 {% endfor %}
             </div>
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-lg me-2"></i>Сохранить
+                </button>
+            </div>
         </div>
     </div>
-    {% endfor %}
-
-    <div class="mb-4 d-flex gap-2 align-items-center flex-wrap">
-        <button type="submit" class="btn btn-primary">
-            <i class="bi bi-check-lg me-2"></i>Сохранить
-        </button>
-        <span class="text-muted small">
-            Записывается только изменённое; перед записью рядом остаётся
-            копия <code>.env.bak</code>.
-        </span>
-    </div>
 </form>
+{% endfor %}
+
+<p class="text-muted small mb-4">
+    Каждый раздел сохраняется отдельно и пишет только изменённое в нём;
+    перед записью рядом остаётся копия <code>.env.bak</code>.
+</p>
 
 {% comment %}
     «Нужен перезапуск» нигде не хранится: это вывод из того, что в файле
