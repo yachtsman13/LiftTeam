@@ -9089,24 +9089,79 @@ class TochkaCustomerListTests(SimpleTestCase):
         self.assertIsNone(tochka.business_customer_code({'Data': [self.PERSONAL]}))
 
 
+class TochkaAccountListTests(SimpleTestCase):
+    """Разбор списка счетов — чтобы найти свой TOCHKA_ACCOUNT_ID.
+
+    Тот же вопрос, что и у customerCode: accountId (счёт и БИК через
+    косую черту) не собрать из реквизитов, узнать его можно только этим
+    запросом. Форма обёртки ответа не подтверждена, разбор терпимый,
+    тем же приёмом, что и customer_list.
+    """
+
+    ACCOUNT = {'accountId': '40802810900000012345/044525104', 'accountStatus': 'Open'}
+
+    def test_a_bare_list_is_understood(self):
+        self.assertEqual(tochka.account_list([self.ACCOUNT]), [self.ACCOUNT])
+
+    def test_a_wrapped_list_is_understood(self):
+        for key in ('Data', 'data', 'Account', 'accounts', 'items', 'result'):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    tochka.account_list({key: [self.ACCOUNT]}), [self.ACCOUNT]
+                )
+
+    def test_a_doubly_wrapped_list_is_understood(self):
+        self.assertEqual(
+            tochka.account_list({'Data': {'Account': [self.ACCOUNT]}}),
+            [self.ACCOUNT],
+        )
+
+    def test_anything_else_gives_nothing_instead_of_an_error(self):
+        for payload in (None, 42, 'счета', {}, {'Data': 'нет'}):
+            with self.subTest(payload=payload):
+                self.assertEqual(tochka.account_list(payload), [])
+
+
 class TochkaCheckCommandTests(TestCase):
-    """Команда `tochka_check` — единственный способ узнать customerCode:
-    у Точки, в отличие от Т-Банка, нет способа увидеть его в личном
+    """Команда `tochka_check` — единственный способ узнать customerCode
+    и accountId: у Точки, в отличие от Т-Банка, их не увидеть в личном
     кабинете напрямую (см. DEPLOY.md)."""
 
-    PAYLOAD = {'Data': [
+    CUSTOMERS = {'Data': [
         {'customerCode': '300000092', 'customerType': 'Business', 'name': 'ООО «ЛИФТПРОЕКТ»'},
     ]}
+    ACCOUNTS = {'Data': [
+        {'accountId': '40802810900000012345/044525104', 'accountStatus': 'Open'},
+    ]}
+
+    def _run(self, customers_error=None, accounts_error=None):
+        out = io.StringIO()
+        customers_kwargs = (
+            {'side_effect': customers_error} if customers_error
+            else {'return_value': self.CUSTOMERS}
+        )
+        accounts_kwargs = (
+            {'side_effect': accounts_error} if accounts_error
+            else {'return_value': self.ACCOUNTS}
+        )
+        with patch('core.tochka.get_customers', **customers_kwargs):
+            with patch('core.tochka.get_accounts', **accounts_kwargs):
+                call_command('tochka_check', stdout=out, stderr=out)
+        return out.getvalue()
 
     @override_settings(TOCHKA_TOKEN='secret')
     def test_the_business_customer_is_marked(self):
-        out = io.StringIO()
-        with patch('core.tochka.get_customers', return_value=self.PAYLOAD):
-            call_command('tochka_check', stdout=out)
+        output = self._run()
 
-        output = out.getvalue()
         self.assertIn('300000092', output)
         self.assertIn('TOCHKA_CUSTOMER_CODE', output)
+
+    @override_settings(TOCHKA_TOKEN='secret')
+    def test_the_account_id_is_shown(self):
+        output = self._run()
+
+        self.assertIn('40802810900000012345/044525104', output)
+        self.assertIn('TOCHKA_ACCOUNT_ID', output)
 
     @override_settings(TOCHKA_TOKEN='')
     def test_without_a_token_the_command_says_so_and_stops(self):
@@ -9116,13 +9171,18 @@ class TochkaCheckCommandTests(TestCase):
         self.assertIn('не настроена', out.getvalue())
 
     @override_settings(TOCHKA_TOKEN='secret')
-    def test_a_bank_failure_is_reported_without_a_traceback(self):
-        out = io.StringIO()
-        with patch('core.tochka.get_customers',
-                   side_effect=tochka.TochkaError('Точка недоступна')):
-            call_command('tochka_check', stdout=out, stderr=out)
+    def test_a_customers_failure_is_reported_without_a_traceback(self):
+        output = self._run(customers_error=tochka.TochkaError('Точка недоступна'))
 
-        self.assertIn('не получен', out.getvalue())
+        self.assertIn('не получен', output)
+
+    @override_settings(TOCHKA_TOKEN='secret')
+    def test_an_accounts_failure_is_reported_without_a_traceback(self):
+        output = self._run(accounts_error=tochka.TochkaError('Точка недоступна'))
+
+        self.assertIn('не получен', output)
+        # Отказ по счетам не должен скрыть уже показанных клиентов
+        self.assertIn('300000092', output)
 
     @override_settings(TOCHKA_TOKEN='secret')
     def test_an_unexpected_shape_shows_the_raw_answer(self):
@@ -19861,7 +19921,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.104.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.105.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

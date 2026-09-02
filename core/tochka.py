@@ -248,6 +248,38 @@ def business_customer_code(payload):
     return None
 
 
+# --- Счета: узнать свой TOCHKA_ACCOUNT_ID ---------------------------------
+#
+# Тот же вопрос, что и с customerCode, — код клиента не подобрать
+# из реквизитов, а `accountId` тем более: это счёт и БИК банка через
+# косую черту одной строкой («40802.../044525104»), а не то, что печатают
+# в справке о счёте. Путь метода подтверждён примером curl из самой
+# документации Точки, страница «Авторизация по JWT-токену»:
+# `GET /uapi/open-banking/v1.0/accounts` — тот же формат, что у клиентов,
+# только без customerType.
+
+def get_accounts(timeout=30):
+    """Список счетов Точки — чтобы найти свой TOCHKA_ACCOUNT_ID."""
+    return _call('/open-banking/v1.0/accounts', method='GET', timeout=timeout)
+
+
+def account_list(payload):
+    """Счета из ответа — тем же терпимым разбором, что и у клиентов
+    (`customer_list`) и у выписки Т-Банка (`tbank.account_list`)."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ('Data', 'data', 'Account', 'accounts', 'items', 'result'):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = account_list(value)
+                if nested:
+                    return nested
+    return []
+
+
 # --- Сборка счёта --------------------------------------------------------
 
 def _amount(value):
