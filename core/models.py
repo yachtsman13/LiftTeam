@@ -233,6 +233,7 @@ PERMISSIONS = (
     ('notify_low_stock', 'Оповещения о дефиците деталей', 'notify'),
     ('notify_debts', 'Оповещения о долгах заказчиков', 'notify'),
     ('notify_overdue', 'Оповещения о зависших заказах', 'notify'),
+    ('notify_payments', 'Оповещения о новых поступлениях из выписки', 'notify'),
 )
 
 PERMISSION_CODES = tuple(code for code, _, _ in PERMISSIONS)
@@ -3421,6 +3422,7 @@ class Notification(models.Model):
         ('debt_digest', 'Сводка по задолженностям'),
         ('order_overdue', 'Заказ завис в статусе'),
         ('invoice_paid', 'Банк сообщил об оплате счёта'),
+        ('new_payment', 'Новое поступление из выписки'),
     ]
     STATUS_CHOICES = [
         ('pending', 'В очереди'),

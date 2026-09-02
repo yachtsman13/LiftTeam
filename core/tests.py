@@ -3203,6 +3203,67 @@ class LowStockNotificationTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 
+class NewPaymentNotificationTests(TestCase):
+    """Оповещения бухгалтерии о новом поступлении из выписки Т-Банка."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_pay', full_name='Бухгалтер', password='pass',
+            position=position_with('notify_payments', name='Бухгалтер с оповещениями'),
+            email='buh@example.com',
+        )
+        Employee.objects.create_user(
+            username='mgr_pay', full_name='Менеджер', password='pass',
+            position=position('Менеджер по ремонту'), email='mgr@example.com',
+        )
+        self.operation = BankOperation.objects.create(
+            external_id='pay-notif-1',
+            operation_date=datetime.date(2026, 8, 10),
+            amount=Decimal('14000'),
+            purpose='Оплата по счету 942',
+            counterparty='ООО «ЛИФТПРОЕКТ»',
+            counterparty_inn='9722051089',
+        )
+
+    def test_only_the_permission_holder_is_notified(self):
+        notifications.notify_new_payment(self.operation)
+
+        recipients = set(Notification.objects.values_list('recipient', flat=True))
+        self.assertEqual(recipients, {'buh@example.com'})
+
+    def test_the_letter_names_the_amount_and_the_payer(self):
+        notifications.notify_new_payment(self.operation)
+
+        letter = Notification.objects.get()
+        self.assertIn('14', letter.subject)
+        self.assertIn('ЛИФТПРОЕКТ', letter.subject)
+        self.assertIn('9722051089', letter.body)
+        self.assertIn('942', letter.body)
+
+    @override_settings(NOTIFY_NEW_PAYMENTS=False)
+    def test_can_be_disabled(self):
+        notifications.notify_new_payment(self.operation)
+
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_fetching_the_statement_notifies_about_new_operations_only(self):
+        """Второй тик по той же операции не должен слать письмо заново —
+        BankOperation.objects.get_or_create отдаёт её как уже существующую."""
+        payload = {'operations': [
+            {'id': 'pay-notif-2', 'typeOfOperation': 'Credit', 'amount': 5000,
+             'operationDate': '2026-08-11', 'paymentPurpose': 'Оплата',
+             'payerName': 'ООО «Второй»'},
+        ]}
+        with override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123'):
+            with patch('core.tbank.get_statement', return_value=payload):
+                tbank.fetch_and_store()
+                tbank.fetch_and_store()
+
+        new_payment_letters = Notification.objects.filter(event='new_payment')
+        self.assertEqual(new_payment_letters.count(), 1)
+        self.assertIn('5', new_payment_letters.get().subject)
+
+
 class SendNotificationsCommandTests(TestCase):
     """Команда отправки: выключатель, повторы, просроченные."""
 
@@ -19750,7 +19811,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.102.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.103.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

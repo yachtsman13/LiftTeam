@@ -221,9 +221,19 @@ Django не умеет звать метод с аргументом, а точ�
 
 Получателей оповещений выбирает **право**, а не роль
 (`notifications._staff(permission)`, константы `STOCK_PERMISSION`,
-`DEBT_PERMISSION`, `ORDER_OVERDUE_PERMISSION`). Полный доступ получает
-всё (`Q(position__is_admin=True) | Q(position__permissions__code=...)`,
-и `.distinct()` обязателен — соединение по правам двоит строки).
+`DEBT_PERMISSION`, `ORDER_OVERDUE_PERMISSION`, `PAYMENT_PERMISSION`).
+Полный доступ получает всё (`Q(position__is_admin=True) |
+Q(position__permissions__code=...)`, и `.distinct()` обязателен —
+соединение по правам двоит строки).
+
+Оповещение о новом поступлении (`notify_new_payment`, право
+`notify_payments`, с v2.103.0) зовётся из `tbank.fetch_and_store` —
+того же общего места, что и у команды по расписанию, и у кнопки
+«Загрузить сейчас» — один раз на каждую **новую** строку выписки, без
+кулдауна: в отличие от дефицита детали, одна операция создаётся ровно
+один раз (`get_or_create` по `external_id`), и оповещать о ней повторно
+неоткуда. Само поступление письмом не разносится — оно только
+подсказывает зайти на «Поступления» и разнести руками, как и раньше.
 
 Страница «Настройки» — с v2.87.0 (`views.admin_settings`,
 `/management/settings/`, только администратору). Правит то, и только то,

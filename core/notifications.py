@@ -25,13 +25,14 @@ def _setting(name, default):
     return envfile.setting(name, default)
 
 
-# Кому какие оповещения. С v2.99.0 это **право должности**, а не роль:
+# Кому какие оповещения. С v2.98.0 это **право должности**, а не роль:
 # «кому приходит про дефицит» решает тот же список галочек, что и всё
 # остальное про должность, и заводится новая должность без правки кода.
 # Названия прав — из явного списка `models.PERMISSIONS`.
 STOCK_PERMISSION = 'notify_low_stock'
 DEBT_PERMISSION = 'notify_debts'
 ORDER_OVERDUE_PERMISSION = 'notify_overdue'
+PAYMENT_PERMISSION = 'notify_payments'
 
 
 def _staff(permission=STOCK_PERMISSION):
@@ -192,7 +193,7 @@ def notify_order_status(order, changed_by=None):
     узнать о них. «Диагностика» и «ремонт» — внутренняя кухня, письмо
     о них выглядит как спам.
 
-    С v2.99.0 уходит не одним письмом на `Client.email`, а по всем
+    С v2.97.0 уходит не одним письмом на `Client.email`, а по всем
     контактам заказчика и их каналам — см. `_queue_to_client`.
     """
     if not _setting('NOTIFY_CLIENTS', False):
@@ -269,6 +270,38 @@ def notify_low_stock(part):
     ])
 
     return queue_for_staff('low_stock', subject, body, part=part)
+
+
+def notify_new_payment(operation):
+    """Бухгалтерии — о новом поступлении, найденном в выписке банка.
+
+    Зовётся из `tbank.fetch_and_store` для каждой новой строки — и по
+    расписанию, и по кнопке «Загрузить сейчас». Разносит поступление
+    по-прежнему человек: письмо только подсказывает, что на странице
+    «Поступления» появилось что-то неразнесённое, чтобы не проверять
+    её самому по расписанию. Своего кулдауна не нужно — в отличие от
+    дефицита детали, одна и та же операция создаётся ровно один раз
+    (по внешнему идентификатору банка), и оповещение зовётся тоже один раз.
+    """
+    if not _setting('NOTIFY_NEW_PAYMENTS', True):
+        return []
+
+    subject = (
+        f'Новое поступление: {money(operation.amount)} '
+        f'от {operation.counterparty or "неизвестного плательщика"}'
+    )
+    lines = [
+        f'Сумма: {money(operation.amount)}.',
+        f'Дата: {operation.operation_date:%d.%m.%Y}.' if operation.operation_date else '',
+        'Плательщик: ' + (operation.counterparty or 'не указан')
+        + (f' (ИНН {operation.counterparty_inn})' if operation.counterparty_inn else '') + '.',
+        f'Назначение платежа: {operation.purpose}' if operation.purpose else '',
+        '',
+        'Разнести на заказ — на странице «Поступления».',
+    ]
+    body = '\n'.join(line for line in lines if line)
+
+    return queue_for_staff('new_payment', subject, body, permission=PAYMENT_PERMISSION)
 
 
 def money(value):

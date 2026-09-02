@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Оповещения — LiftTeam v2.102.0{% endblock %}
+{% block title %}Оповещения — LiftTeam v2.103.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
@@ -114,6 +114,13 @@
                             <a href="{% url 'repair_order_detail' item.repair_order.pk %}" class="btn btn-sm btn-outline-secondary">Заказ</a>
                             {% elif item.part %}
                             <a href="{% url 'part_detail' item.part.pk %}" class="btn btn-sm btn-outline-secondary">Деталь</a>
+                            {% elif item.event == 'new_payment' %}
+                            {% comment %}
+                                У поступления своей карточки нет — оно ещё
+                                ничему не сопоставлено, для этого письмо
+                                и написано. Ведём сразу в «Поступления».
+                            {% endcomment %}
+                            <a href="{% url 'bank_operations' %}" class="btn btn-sm btn-outline-secondary">Поступления</a>
                             {% endif %}
                         </td>
                     </tr>

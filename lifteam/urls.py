@@ -1,6 +1,6 @@
 """
 URL configuration for lifteam project.
-v2.102.0
+v2.103.0
 """
 from django.contrib import admin
 from django.urls import path, include

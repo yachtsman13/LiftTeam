@@ -431,6 +431,7 @@ def fetch_and_store(days=None):
 
     from django.db import IntegrityError
 
+    from . import notifications
     from .models import BankOperation
 
     days = days or envfile.setting('TBANK_STATEMENT_DAYS', 30)
@@ -446,7 +447,7 @@ def fetch_and_store(days=None):
         # get_or_create, а не exists()+create: выписку может тянуть
         # и таймер, и человек со страницы одновременно
         try:
-            _, created = BankOperation.objects.get_or_create(
+            stored, created = BankOperation.objects.get_or_create(
                 external_id=operation['external_id'],
                 defaults={
                     'operation_date': operation['operation_date'],
@@ -461,6 +462,9 @@ def fetch_and_store(days=None):
             continue
         if created:
             added += 1
+            # Оповещение зовётся один раз, ровно когда строка новая:
+            # повторный тик по той же операции ничего не найдёт заново
+            notifications.notify_new_payment(stored)
 
     # Отметка ставится **после** удачной загрузки: сорвись запрос
     # к банку, следующий тик (или следующее нажатие кнопки) обязан

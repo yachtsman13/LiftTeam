@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.102.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.103.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -240,6 +240,10 @@ DEBT_DIGEST_COOLDOWN_DAYS = int(os.getenv('DEBT_DIGEST_COOLDOWN_DAYS', '7'))
 # начинаться само собой после обновления оно не должно.
 NOTIFY_DEBTS = os.getenv('NOTIFY_DEBTS', 'False').lower() == 'true'
 DEBT_REMINDER_COOLDOWN_DAYS = int(os.getenv('DEBT_REMINDER_COOLDOWN_DAYS', '7'))
+
+# Оповещение бухгалтерии о новом поступлении, найденном в выписке Т-Банка.
+# Внутреннее, заказчик его не видит, поэтому включено сразу.
+NOTIFY_NEW_PAYMENTS = os.getenv('NOTIFY_NEW_PAYMENTS', 'True').lower() == 'true'
 
 # --- Просроченные заказы (SLA) -------------------------------------------
 # Через сколько дней без движения в одном статусе заказ считается «зависшим».
