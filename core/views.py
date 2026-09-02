@@ -2925,6 +2925,50 @@ def storage_cell_move(request):
 
 @login_required
 @require_POST
+def storage_cell_move_all(request):
+    """Перемещение ячейки целиком — со всем содержимым — в другую (AJAX).
+
+    Тот же приём, что и у перемещения одной детали (`storage_cell_move`,
+    выше): адресат может быть не пустым, тогда детали просто объединяются.
+    Сама ячейка-источник никуда не девается — адрес и место в кассетнице
+    у неё не меняются, меняется только то, что в ней лежит.
+    """
+    from_cell_id = request.POST.get('from_cell')
+    to_cell_id = request.POST.get('to_cell')
+
+    if not from_cell_id or not to_cell_id:
+        return JsonResponse({'error': 'Не указана ячейка отправления или назначения'}, status=400)
+    if from_cell_id == to_cell_id:
+        return JsonResponse({'error': 'Ячейка отправления и назначения совпадают'}, status=400)
+
+    try:
+        with transaction.atomic():
+            from_cell = StorageCell.objects.select_for_update().get(pk=from_cell_id)
+            to_cell = StorageCell.objects.select_for_update().get(pk=to_cell_id)
+
+            parts = list(from_cell.parts.all())
+            if not parts:
+                return JsonResponse({'error': 'В ячейке нет деталей'}, status=400)
+
+            for part in parts:
+                from_cell.parts.remove(part)
+                to_cell.parts.add(part)
+                _send_stock_update(part)
+
+            return JsonResponse({
+                'success': True,
+                'message': f'Перемещено деталей: {len(parts)}',
+                'address': to_cell.address,
+                'count': len(parts),
+            })
+    except StorageCell.DoesNotExist:
+        return JsonResponse({'error': 'Ячейка не найдена'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+@login_required
+@require_POST
 def storage_cell_add_part(request, pk):
     """Добавление детали в ячейку (одна из нескольких деталей, которые может хранить ячейка)."""
     cell = get_object_or_404(StorageCell, pk=pk)

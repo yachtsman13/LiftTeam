@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.103.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.104.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -261,7 +261,7 @@
 <div class="grid-page">
     <!-- Баннер режима перемещения -->
     <div id="moveModeBanner" class="move-mode-banner" style="display: none;">
-        <span><i class="bi bi-arrows-move me-2"></i><strong>Режим перемещения</strong> — кликните по ячейке назначения (можно и не пустую)</span>
+        <span><i class="bi bi-arrows-move me-2"></i><strong>Режим перемещения</strong> — <span id="moveModeBannerText">кликните по ячейке назначения (можно и не пустую)</span></span>
         <button type="button" class="btn-close btn-close-white" onclick="cancelMoveMode()"></button>
     </div>
 
@@ -350,6 +350,17 @@
                     <a href="{% url 'part_list' %}" class="btn btn-outline-info btn-sm">
                         <i class="bi bi-search me-1"></i>Все детали
                     </a>
+                    {% comment %}
+                        Переместить не одну деталь, а всё содержимое ячейки
+                        разом — та же кассетница может понадобиться под
+                        другую раскладку, и разбирать её деталь за деталью
+                        неудобно. Показывается, только когда есть что
+                        переносить — showCellInfo прячет её для пустой ячейки.
+                    {% endcomment %}
+                    <button type="button" id="moveCellButton" class="btn btn-outline-warning btn-sm ms-auto"
+                            onclick="startMoveModeForCell()" hidden>
+                        <i class="bi bi-boxes me-1"></i>Переместить ячейку целиком
+                    </button>
                 </div>
             </div>
         </div>
@@ -361,11 +372,11 @@
     <div class="modal-dialog modal-dialog-centered modal-sm">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-arrows-move me-2"></i>Перемещение детали</h5>
+                <h5 class="modal-title" id="moveCabinetModalTitle"><i class="bi bi-arrows-move me-2"></i>Перемещение детали</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted small">Выберите кассетницу, в которую хотите переместить деталь. Затем кликните по ячейке назначения (можно занятую — деталь просто добавится к её содержимому).</p>
+                <p class="text-muted small" id="moveCabinetModalText">Выберите кассетницу, в которую хотите переместить деталь. Затем кликните по ячейке назначения (можно занятую — деталь просто добавится к её содержимому).</p>
                 <div class="list-group">
                     {% for c in cabinets %}
                     <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectMoveCabinet({{ c.number }})">
@@ -394,6 +405,9 @@ window.CELLS_DATA = CELLS_DATA;
 let selectedCellId = null;
 let moveFromCellId = null;
 let moveFromPartId = null;
+// Перемещение всей ячейки разом, а не одной детали (moveFromPartId
+// в этом случае не используется вовсе — берётся всё, что в ячейке лежит)
+let moveWholeCell = false;
 let moveToCabinet = null;
 let cellInfoModal = null;
 let moveCabinetModal = null;
@@ -416,8 +430,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const moveFrom = urlParams.get('move_from');
     if (moveFrom) {
         moveFromCellId = moveFrom;
+        moveWholeCell = urlParams.get('move_all') === '1';
         isMoveMode = true;
-        document.getElementById('moveModeBanner').style.display = 'flex';
+        showMoveModeBanner();
         highlightMoveTargets();
     }
 
@@ -474,11 +489,13 @@ function scanCell(scan) {
 
     if (isMoveMode) {
         if (String(scan.id) === String(moveFromCellId)) {
-            return {ok: false, text: 'Деталь и так лежит в ячейке ' + data.address};
+            return {ok: false, text: moveWholeCell
+                ? 'Это и есть ячейка-источник — выберите другую'
+                : 'Деталь и так лежит в ячейке ' + data.address};
         }
         return performMoveToCell(String(scan.id)).then(function (moved) {
             return moved
-                ? 'Деталь переложена в ячейку ' + data.address
+                ? (moveWholeCell ? 'Ячейка перенесена в ' : 'Деталь переложена в ячейку ') + data.address
                 : {ok: false, text: 'Переложить в ячейку ' + data.address + ' не удалось'};
         });
     }
@@ -562,6 +579,7 @@ function showCellInfo(el) {
     const data = CELLS_DATA[selectedCellId] || { address: el.dataset.address, parts: [] };
 
     document.getElementById('infoAddress').textContent = data.address;
+    document.getElementById('moveCellButton').hidden = data.parts.length === 0;
 
     const listEl = document.getElementById('infoPartsList');
     if (data.parts.length === 0) {
@@ -661,13 +679,49 @@ function startMoveMode(partId) {
     if (cellInfoModal) cellInfoModal.hide();
     moveFromCellId = selectedCellId;
     moveFromPartId = partId;
+    moveWholeCell = false;
 
     if (!moveFromCellId || !moveFromPartId) {
         alert('Ошибка: не выбрана деталь для перемещения');
         return;
     }
 
+    openMoveCabinetModal('Перемещение детали',
+        'Выберите кассетницу, в которую хотите переместить деталь. Затем кликните ' +
+        'по ячейке назначения (можно занятую — деталь просто добавится к её содержимому).');
+}
+
+// Та же цепочка модальных окон, что и у перемещения одной детали, но
+// без выбранной детали: moveFromPartId не участвует, забирается всё,
+// что лежит в ячейке-источнике
+function startMoveModeForCell() {
+    if (cellInfoModal) cellInfoModal.hide();
+    moveFromCellId = selectedCellId;
+    moveFromPartId = null;
+    moveWholeCell = true;
+
+    if (!moveFromCellId) {
+        alert('Ошибка: не выбрана ячейка для перемещения');
+        return;
+    }
+
+    openMoveCabinetModal('Перемещение ячейки целиком',
+        'Выберите кассетницу, в которую хотите переместить всё содержимое ячейки. ' +
+        'Затем кликните по ячейке назначения (можно занятую — содержимое объединится).');
+}
+
+function openMoveCabinetModal(title, text) {
+    document.getElementById('moveCabinetModalTitle').innerHTML =
+        '<i class="bi bi-arrows-move me-2"></i>' + title;
+    document.getElementById('moveCabinetModalText').textContent = text;
     if (moveCabinetModal) moveCabinetModal.show();
+}
+
+function showMoveModeBanner() {
+    document.getElementById('moveModeBannerText').textContent = moveWholeCell
+        ? 'кликните по ячейке назначения, чтобы перенести туда всё содержимое (можно и не пустую)'
+        : 'кликните по ячейке назначения (можно и не пустую)';
+    document.getElementById('moveModeBanner').style.display = 'flex';
 }
 
 function selectMoveCabinet(cabinet) {
@@ -675,10 +729,16 @@ function selectMoveCabinet(cabinet) {
     if (moveCabinetModal) moveCabinetModal.hide();
 
     isMoveMode = true;
-    document.getElementById('moveModeBanner').style.display = 'flex';
+    showMoveModeBanner();
 
     if (cabinet != {{ cabinet.number }}) {
-        window.location.href = '?cabinet=' + cabinet + '&move_from=' + moveFromCellId + '&move_part=' + moveFromPartId;
+        let url = '?cabinet=' + cabinet + '&move_from=' + moveFromCellId;
+        if (moveWholeCell) {
+            url += '&move_all=1';
+        } else {
+            url += '&move_part=' + moveFromPartId;
+        }
+        window.location.href = url;
         return;
     }
 
@@ -687,9 +747,11 @@ function selectMoveCabinet(cabinet) {
 
 function highlightMoveTargets() {
     const urlParams = new URLSearchParams(window.location.search);
-    const movePart = urlParams.get('move_part');
-    if (movePart) {
-        moveFromPartId = movePart;
+    if (!moveWholeCell) {
+        const movePart = urlParams.get('move_part');
+        if (movePart) {
+            moveFromPartId = movePart;
+        }
     }
     document.querySelectorAll('.cell-item[data-cell-id]').forEach(function(el) {
         if (el.dataset.cellId !== moveFromCellId) {
@@ -702,29 +764,54 @@ function cancelMoveMode() {
     isMoveMode = false;
     moveFromCellId = null;
     moveFromPartId = null;
+    moveWholeCell = false;
     moveToCabinet = null;
     document.getElementById('moveModeBanner').style.display = 'none';
     document.querySelectorAll('.cell-item').forEach(function(el) {
         el.classList.remove('move-target');
     });
+
+    // Перемещение между разными кассетницами кладёт move_from/move_part
+    // (или move_all) в адресную строку — иначе после переезда на страницу
+    // соседней кассетницы её не на чем показать. Но раз они там остаются,
+    // а performMoveToCell после успеха зовёт просто location.reload(),
+    // без очистки этот же перезагруженный адрес снова включал бы режим
+    // перемещения: пунктирные рамки не снимались, и той же деталью можно
+    // было промахнуться ещё в одну ячейку. Чистим строку заранее,
+    // до самого reload().
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has('move_from') || urlParams.has('move_part') || urlParams.has('move_all')) {
+        urlParams.delete('move_from');
+        urlParams.delete('move_part');
+        urlParams.delete('move_all');
+        const query = urlParams.toString();
+        history.replaceState(null, '', window.location.pathname + (query ? '?' + query : ''));
+    }
 }
 
 function performMoveToCell(toCellId) {
-    if (!moveFromPartId || !toCellId) {
+    if (!toCellId || (!moveWholeCell && !moveFromPartId) || (moveWholeCell && !moveFromCellId)) {
         alert('Ошибка: не выбрана деталь или ячейка назначения');
         return Promise.resolve(false);
     }
 
+    const url = moveWholeCell
+        ? '{% url "storage_cell_move_all" %}'
+        : '{% url "storage_cell_move" %}';
+    const body = moveWholeCell
+        ? 'from_cell=' + moveFromCellId + '&to_cell=' + toCellId
+        : 'from_cell=' + moveFromCellId + '&to_cell=' + toCellId + '&part_id=' + moveFromPartId;
+
     // Исход возвращается наружу: щелчок по ячейке его не смотрит,
     // а скану он нужен — сказать «переложено», когда перекладка не удалась,
     // хуже, чем не сказать ничего.
-    return LiftTeamWS.fetch('{% url "storage_cell_move" %}', {
+    return LiftTeamWS.fetch(url, {
         method: 'POST',
         headers: {
             'X-CSRFToken': '{{ csrf_token }}',
             'Content-Type': 'application/x-www-form-urlencoded'
         },
-        body: 'from_cell=' + moveFromCellId + '&to_cell=' + toCellId + '&part_id=' + moveFromPartId
+        body: body
     }).then(r => r.json()).then(data => {
         cancelMoveMode();
         if (data.success) {
@@ -735,7 +822,7 @@ function performMoveToCell(toCellId) {
         return false;
     }).catch(err => {
         cancelMoveMode();
-        alert(LiftTeamWS.errorText(err, 'Не удалось переместить деталь. Попробуйте ещё раз.'));
+        alert(LiftTeamWS.errorText(err, 'Не удалось переместить. Попробуйте ещё раз.'));
         return false;
     });
 }

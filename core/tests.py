@@ -475,6 +475,56 @@ class StorageCellMultiPartTests(TestCase):
         self.assertEqual(self.cell2.parts.count(), 2)
         self.assertEqual(self.cell1.parts.count(), 0)
 
+    def test_move_all_moves_every_part_of_the_cell(self):
+        self.cell1.parts.add(self.part1, self.part2)
+
+        resp = self.client_http.post('/storage-cells/move-all/', {
+            'from_cell': self.cell1.pk, 'to_cell': self.cell2.pk,
+        })
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(data['count'], 2)
+        self.assertEqual(self.cell1.parts.count(), 0)
+        self.assertEqual(set(self.cell2.parts.all()), {self.part1, self.part2})
+
+    def test_move_all_merges_with_the_targets_own_parts(self):
+        """Тот же приём, что у перемещения одной детали: адресат может
+        быть занят, тогда содержимое просто объединяется."""
+        self.cell1.parts.add(self.part1)
+        third = SparePart.objects.create(part_number='CELL-3', name='Деталь C')
+        self.cell2.parts.add(self.part2, third)
+
+        self.client_http.post('/storage-cells/move-all/', {
+            'from_cell': self.cell1.pk, 'to_cell': self.cell2.pk,
+        })
+
+        self.assertEqual(set(self.cell2.parts.all()), {self.part1, self.part2, third})
+
+    def test_move_all_refuses_an_empty_source_cell(self):
+        resp = self.client_http.post('/storage-cells/move-all/', {
+            'from_cell': self.cell1.pk, 'to_cell': self.cell2.pk,
+        })
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('error', resp.json())
+
+    def test_move_all_refuses_the_same_cell_as_source_and_target(self):
+        self.cell1.parts.add(self.part1)
+
+        resp = self.client_http.post('/storage-cells/move-all/', {
+            'from_cell': self.cell1.pk, 'to_cell': self.cell1.pk,
+        })
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.cell1.parts.count(), 1)
+
+    def test_move_all_requires_both_cells(self):
+        resp = self.client_http.post('/storage-cells/move-all/', {'from_cell': self.cell1.pk})
+
+        self.assertEqual(resp.status_code, 400)
+
 
 class ExcelImportExportTests(TestCase):
     def setUp(self):
@@ -19811,7 +19861,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.103.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.104.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

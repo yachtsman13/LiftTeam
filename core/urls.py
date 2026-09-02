@@ -1,6 +1,6 @@
 """
 URL-маршруты приложения core.
-v2.103.0
+v2.104.0
 """
 from django.urls import path
 from . import views
@@ -151,6 +151,7 @@ urlpatterns = [
     path('storage-cells/cabinets/<int:pk>/edit/', views.cabinet_edit, name='cabinet_edit'),
     path('storage-cells/cabinets/<int:pk>/delete/', views.cabinet_delete, name='cabinet_delete'),
     path('storage-cells/move/', views.storage_cell_move, name='storage_cell_move'),
+    path('storage-cells/move-all/', views.storage_cell_move_all, name='storage_cell_move_all'),
     path('storage-cells/<int:pk>/label/', views.storage_cell_label, name='storage_cell_label'),
     path('storage-cells/labels/', views.storage_cell_labels_batch, name='storage_cell_labels_batch'),
     path('storage-cells/<int:pk>/add-part/', views.storage_cell_add_part, name='storage_cell_add_part'),
