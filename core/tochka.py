@@ -193,6 +193,61 @@ def _call(path, payload=None, method=None, timeout=30, retries=0):
         raise TochkaError(f'Точка вернула не JSON: {redact(body[:200], token())}')
 
 
+# --- Клиенты: узнать свой customerCode ------------------------------------
+#
+# Появилось после первого настоящего отказа банка — 403 «Forbidden by
+# consent». Собственная страница Точки «Вопросы и ошибки» называет эту
+# ошибку частой и первой причиной — неверный TOCHKA_CUSTOMER_CODE, а
+# способ узнать верный один: этот метод, объект с полем
+# customerType: "Business". У Точки нет команды вроде --accounts
+# у Т-Банка, а customerCode подобрать неоткуда — отсюда и такая же по духу
+# команда здесь: core/management/commands/tochka_check.py.
+#
+# Путь подтверждён дважды независимо: он совпадает у стороннего PHP SDK
+# (github.com/lee-to/php-tochka-api-v2-sdk, Models/Customer.php) и у их же
+# самих ссылок на редок-документацию в README. Форма обёртки ответа
+# (Data.Customer, голый список и т.п.) не подтверждена ничем — сайт
+# документации из среды разработки недоступен, поэтому разбор терпимый,
+# как и у выписки Т-Банка.
+
+def get_customers(timeout=30):
+    """Список клиентов Точки — чтобы найти свой customerCode."""
+    return _call('/open-banking/v1.0/customers', method='GET', timeout=timeout)
+
+
+def customer_list(payload):
+    """Клиенты из ответа — одним местом, терпимо к форме обёртки."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ('Data', 'data', 'Customer', 'customers', 'items', 'result'):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = customer_list(value)
+                if nested:
+                    return nested
+    return []
+
+
+def business_customer_code(payload):
+    """customerCode вашей организации — из объекта с customerType Business.
+
+    Точное имя поля с кодом и типом клиента подтверждено документацией
+    Точки текстом («customerCode», «customerType: "Business"»), но не
+    подтверждено на живом ответе — сверяем терпимо, по паре кандидатов,
+    тем же приёмом, что и у полей операции в выписке Т-Банка.
+    """
+    for customer in customer_list(payload):
+        kind = str(customer.get('customerType') or customer.get('customer_type') or '')
+        if kind.lower() == 'business':
+            code = customer.get('customerCode') or customer.get('customer_code')
+            if code:
+                return str(code)
+    return None
+
+
 # --- Сборка счёта --------------------------------------------------------
 
 def _amount(value):

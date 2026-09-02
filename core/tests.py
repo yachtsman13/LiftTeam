@@ -8933,6 +8933,97 @@ class TochkaInvoiceTests(TestCase):
         self.assertEqual(tochka.invoice_pdf_url({'Data': {'documentId': 'x'}}), '')
 
 
+class TochkaCustomerListTests(SimpleTestCase):
+    """Разбор списка клиентов — чтобы найти свой customerCode.
+
+    Появилось после первого настоящего отказа банка — 403 «Forbidden by
+    consent», частая причина которого, по словам самой Точки, — неверный
+    customerCode. Форма обёртки ответа не подтверждена (сайт документации
+    из среды разработки недоступен), поэтому разбор терпимый, как и у
+    выписки Т-Банка: см. TBankAccountListTests.
+    """
+
+    BUSINESS = {'customerCode': '300000092', 'customerType': 'Business',
+                'name': 'ООО «ЛИФТПРОЕКТ»'}
+    PERSONAL = {'customerCode': '111222333', 'customerType': 'Personal'}
+
+    def test_a_bare_list_is_understood(self):
+        self.assertEqual(tochka.customer_list([self.BUSINESS]), [self.BUSINESS])
+
+    def test_a_wrapped_list_is_understood(self):
+        for key in ('Data', 'data', 'Customer', 'customers', 'items', 'result'):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    tochka.customer_list({key: [self.BUSINESS]}), [self.BUSINESS]
+                )
+
+    def test_a_doubly_wrapped_list_is_understood(self):
+        self.assertEqual(
+            tochka.customer_list({'Data': {'Customer': [self.BUSINESS]}}),
+            [self.BUSINESS],
+        )
+
+    def test_anything_else_gives_nothing_instead_of_an_error(self):
+        for payload in (None, 42, 'клиенты', {}, {'Data': 'нет'}):
+            with self.subTest(payload=payload):
+                self.assertEqual(tochka.customer_list(payload), [])
+
+    def test_the_business_code_is_found_among_several_customers(self):
+        self.assertEqual(
+            tochka.business_customer_code({'Data': [self.PERSONAL, self.BUSINESS]}),
+            '300000092',
+        )
+
+    def test_without_a_business_customer_nothing_is_guessed(self):
+        self.assertIsNone(tochka.business_customer_code({'Data': [self.PERSONAL]}))
+
+
+class TochkaCheckCommandTests(TestCase):
+    """Команда `tochka_check` — единственный способ узнать customerCode:
+    у Точки, в отличие от Т-Банка, нет способа увидеть его в личном
+    кабинете напрямую (см. DEPLOY.md)."""
+
+    PAYLOAD = {'Data': [
+        {'customerCode': '300000092', 'customerType': 'Business', 'name': 'ООО «ЛИФТПРОЕКТ»'},
+    ]}
+
+    @override_settings(TOCHKA_TOKEN='secret')
+    def test_the_business_customer_is_marked(self):
+        out = io.StringIO()
+        with patch('core.tochka.get_customers', return_value=self.PAYLOAD):
+            call_command('tochka_check', stdout=out)
+
+        output = out.getvalue()
+        self.assertIn('300000092', output)
+        self.assertIn('TOCHKA_CUSTOMER_CODE', output)
+
+    @override_settings(TOCHKA_TOKEN='')
+    def test_without_a_token_the_command_says_so_and_stops(self):
+        out = io.StringIO()
+        call_command('tochka_check', stdout=out)
+
+        self.assertIn('не настроена', out.getvalue())
+
+    @override_settings(TOCHKA_TOKEN='secret')
+    def test_a_bank_failure_is_reported_without_a_traceback(self):
+        out = io.StringIO()
+        with patch('core.tochka.get_customers',
+                   side_effect=tochka.TochkaError('Точка недоступна')):
+            call_command('tochka_check', stdout=out, stderr=out)
+
+        self.assertIn('не получен', out.getvalue())
+
+    @override_settings(TOCHKA_TOKEN='secret')
+    def test_an_unexpected_shape_shows_the_raw_answer(self):
+        """Молчаливое «клиентов нет» на исправном токене хуже, чем
+        сырой ответ, который можно переслать для разбора."""
+        out = io.StringIO()
+        with patch('core.tochka.get_customers', return_value={'weird': 'shape'}):
+            call_command('tochka_check', stdout=out)
+
+        self.assertIn('weird', out.getvalue())
+
+
 class BankSecretsInLogsTests(TestCase):
     """Токен в журнале живёт до ротации и уезжает в резервную копию."""
 
@@ -19659,7 +19750,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.101.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.102.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
