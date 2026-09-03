@@ -234,13 +234,22 @@ def dashboard(request):
 
 # ==================== КЛИЕНТЫ ====================
 
+CLIENT_LIST_SORT_FIELDS = {
+    'name': 'name',
+    'inn': 'inn',
+    'contact_person': 'contact_person',
+    'phone': 'phone',
+}
+
+
 @login_required
 def client_list(request):
     search = request.GET.get('q', '')
     clients = Client.objects.all()
     if search:
         clients = clients.filter(Q(name__icontains=search) | Q(inn__icontains=search))
-    paginator = Paginator(clients.order_by('name'), 25)
+    clients = sorted_by_request(clients.order_by('name'), request, CLIENT_LIST_SORT_FIELDS)
+    paginator = Paginator(clients, 25)
     page = request.GET.get('page')
     return render(request, 'core/clients/list.html', {
         'clients': paginator.get_page(page),
@@ -398,6 +407,34 @@ def list_back_url(request, key, url_name):
     """Адрес списка вместе с последним отбором."""
     query = request.session.get('list_query:%s' % key, '')
     return f'{reverse(url_name)}?{query}' if query else reverse(url_name)
+
+
+def sorted_by_request(queryset, request, fields):
+    """Сортировка списка по клику на шапку таблицы — одно место на всю
+    программу (с v2.106.0), под общий `sortable-table.js`.
+
+    `fields` — словарь {имя в адресе: выражение для `order_by`}. Список
+    разрешённых явный, тем же приёмом, что у `envfile.EDITABLE`
+    и `READINESS_CHECKS`: подставленное в запрос имя мимо списка не сортирует
+    ничего, а не роняет страницу и не сортирует по случайному полю модели.
+
+    Без `?sort=` в адресе список остаётся в том порядке, что уже задал сам
+    вызывающий (обычно самое естественное упорядочение — по номеру, по дате
+    приёма), и трогать его, пока по шапке не кликнули, незачем.
+
+    Сортирует **сервер**, а не браузер: списки почти всегда постраничные,
+    и пересортировка в браузере отсортировала бы только одну открытую
+    страницу. Разметке нужен только `<th data-sort="имя">` — ссылки
+    и обработчик клика рисует сам скрипт.
+    """
+    key = request.GET.get('sort', '')
+    if key not in fields:
+        return queryset
+    direction = 'desc' if request.GET.get('dir') == 'desc' else 'asc'
+    order_expr = fields[key]
+    if direction == 'desc':
+        order_expr = '-' + order_expr
+    return queryset.order_by(order_expr)
 
 
 @login_required
@@ -1143,9 +1180,23 @@ def _filter_orders(request):
     }
 
 
+# «Стоимость» и «Готовность» тут нет: первая — агрегат по единицам
+# (`total_repair_cost`), сортировка по нему потребовала бы Sum-аннотации
+# поверх уже двух M2M-джойнов (единицы, поиск) и рисковала бы задвоить
+# суммы вместе с distinct(); вторая — вовсе не поле, а разбор чек-листа.
+ORDER_LIST_SORT_FIELDS = {
+    'order_number': 'order_number',
+    'client': 'client__name',
+    'status': 'status',
+    'payment_status': 'payment_status',
+    'date_received': 'date_received',
+}
+
+
 @login_required
 def repair_order_list(request):
     orders, filter_context = _filter_orders(request)
+    orders = sorted_by_request(orders, request, ORDER_LIST_SORT_FIELDS)
 
     # Готовность считается по единицам, поэтому по каждому заказу нужны
     # и его строки, и то, что спрашивает чек-лист. Предзагрузка — на одну
@@ -2184,11 +2235,24 @@ def _filter_parts(params):
     return parts, context
 
 
+# Сортируемые столбцы списка радиодеталей — «Ячейка» не в их числе:
+# `current_cell` не поле, а python-свойство (первая ячейка из M2M),
+# `order_by` до неё не дотянется.
+PART_LIST_SORT_FIELDS = {
+    'part_number': 'part_number',
+    'name': 'name',
+    'component_type': 'component_type',
+    'current_stock': 'current_stock',
+    'min_stock': 'min_stock',
+}
+
+
 @login_required
 def part_list(request):
     parts, filter_context = _filter_parts(request.GET)
+    parts = sorted_by_request(parts.order_by('part_number'), request, PART_LIST_SORT_FIELDS)
 
-    paginator = Paginator(parts.order_by('part_number'), 25)
+    paginator = Paginator(parts, 25)
     page = request.GET.get('page')
     remember_list_query(request, 'parts')
     return render(request, 'core/parts/list.html', {
@@ -2741,6 +2805,7 @@ def storage_cell_grid(request):
                     'part_number': p.part_number,
                     'name': p.name,
                     'component_type': p.component_type,
+                    'package': p.package,
                     'stock': p.current_stock,
                     'min_stock': p.min_stock,
                 }
@@ -3346,7 +3411,12 @@ def _cell_label(cell, base_url):
         title, specs = part.part_number, _label_specs(part)
         description, package = part.label_text, part.package
     elif grouped:
-        title = f'Набор {plural_genitive(component_types.copy().pop()).lower()}'
+        # В нижний регистр — только первое слово: «Диод Шоттки» просклоняется
+        # в «Диодов Шоттки», а .lower() всей строки стёр бы заглавную у
+        # «Шоттки» — она у эпонима не двигается вслед за типом.
+        plural = plural_genitive(component_types.copy().pop())
+        head, sep, rest = plural.partition(' ')
+        title = f'Набор {head.lower()}{sep}{rest}'
         # Номинал — то, чем детали набора различаются; если его не заполнили,
         # различить их можно только по артикулу
         specs, items = _grouped_specs(parts)

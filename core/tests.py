@@ -3048,6 +3048,24 @@ class GridLiveUpdateMarkupTests(TestCase):
         content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
         self.assertIn('data-cell-id=', content)
 
+    def test_cells_carry_whether_they_are_free(self):
+        """Нужно фильтру «Только свободные» — гасит занятые по этому атрибуту."""
+        content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
+        self.assertIn('data-is-free="false"', content)
+        self.assertIn('data-is-free="true"', content)
+
+    def test_the_free_cells_filter_is_on_the_page(self):
+        content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
+        self.assertIn('onlyFreeFilter', content)
+        self.assertIn('toggleFreeFilter', content)
+
+    def test_package_reaches_the_script_for_the_cell_info_window(self):
+        """Тип и корпус — чтобы отличить похожие артикулы, не открывая карточку."""
+        self.part.package = '0805'
+        self.part.save()
+        content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
+        self.assertIn('"package": "0805"', content)
+
 
 @override_settings(NOTIFY_CLIENTS=True)
 class OrderNotificationTests(TestCase):
@@ -6911,6 +6929,20 @@ class CommonLabelLayoutTests(TestCase):
         # Корпус общий на всю ячейку — он у всех один
         self.assertEqual(response.context['package'], '0805')
 
+    def test_a_set_of_a_multi_word_type_keeps_the_eponym_capitalised(self):
+        """«Диод Шоттки» → «Набор диодов Шоттки»: склоняется только первое
+        слово, а .lower() всей строки не должен стирать заглавную у эпонима."""
+        another_cell = self.cabinet.cells.all()[1]
+        for number in ('SH-1', 'SH-2'):
+            another_cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Диод {number}',
+                component_type='Диод Шоттки',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{another_cell.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'Набор диодов Шоттки')
+
     def test_what_a_set_has_in_common_is_printed_once(self):
         """«0.125Вт» у каждого номинала — это шум, а место на этикетке жёсткое."""
         self.part.power, self.part.power_unit = 0.125, 'Вт'
@@ -7047,6 +7079,105 @@ class PluralGenitiveTests(TestCase):
     def test_an_empty_type_gives_an_empty_string(self):
         self.assertEqual(plural_genitive(''), '')
         self.assertEqual(plural_genitive(None), '')
+
+    def test_multi_word_types_decline_only_the_first_word(self):
+        """«Диод Шоттки» → «Диодов Шоттки», а не «Диод Шотткиов»: склоняется
+        только считаемый предмет, эпоним при нём остаётся неизменным."""
+        cases = {
+            'Диод Шоттки': 'Диодов Шоттки',
+            'Транзистор MOSFET': 'Транзисторов MOSFET',
+            'Конденсатор SMD': 'Конденсаторов SMD',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(plural_genitive(word), expected)
+
+
+class SortableTableTests(TestCase):
+    """Сортировка по клику на шапку (с v2.106.0) — сервер её и делает,
+    JS (sortable-table.js) только строит ссылку и подсвечивает столбец.
+
+    Без ?sort= список не трогается, с валидным полем — order_by меняется,
+    с чужим или битым — тихо игнорируется (views.sorted_by_request):
+    подставленное в запрос имя мимо разрешённого словаря не должно ронять
+    страницу и не должно сортировать по случайному полю модели.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_sort', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def test_the_helper_ignores_an_unknown_field(self):
+        SparePart.objects.create(part_number='B', name='B')
+        SparePart.objects.create(part_number='A', name='A')
+        qs = SparePart.objects.order_by('part_number')
+        request = RequestFactory().get('/?sort=current_stock; DROP TABLE parts')
+
+        self.assertEqual(
+            list(views.sorted_by_request(qs, request, {'name': 'name'})),
+            list(qs),
+        )
+
+    def test_the_helper_declines_and_reverses(self):
+        SparePart.objects.create(part_number='B', name='B')
+        SparePart.objects.create(part_number='A', name='A')
+        fields = {'name': 'name'}
+        qs = SparePart.objects.all()
+
+        asc = RequestFactory().get('/?sort=name')
+        desc = RequestFactory().get('/?sort=name&dir=desc')
+
+        self.assertEqual(
+            [p.name for p in views.sorted_by_request(qs, asc, fields)], ['A', 'B']
+        )
+        self.assertEqual(
+            [p.name for p in views.sorted_by_request(qs, desc, fields)], ['B', 'A']
+        )
+
+    def test_without_sort_the_query_is_untouched(self):
+        qs = SparePart.objects.order_by('part_number')
+        request = RequestFactory().get('/')
+
+        self.assertEqual(
+            list(views.sorted_by_request(qs, request, {'name': 'name'})), list(qs)
+        )
+
+    def test_part_list_sorts_by_the_requested_column(self):
+        SparePart.objects.create(part_number='B-1', name='Бета', current_stock=1)
+        SparePart.objects.create(part_number='A-1', name='Альфа', current_stock=9)
+
+        content = self.http.get('/parts/?sort=name').content.decode()
+        self.assertLess(content.index('Альфа'), content.index('Бета'))
+
+    def test_part_list_headers_carry_data_sort(self):
+        content = self.http.get('/parts/').content.decode()
+        self.assertIn('data-sort="part_number"', content)
+        self.assertIn('data-sort="current_stock"', content)
+        # Ячейка — python-свойство, не поле: сортировки по ней нет и быть
+        # не может, шапка не должна её обещать
+        self.assertNotIn('data-sort="current_cell"', content)
+
+    def test_client_list_sorts_by_the_requested_column(self):
+        ClientModel.objects.create(name='Яков')
+        ClientModel.objects.create(name='Антон')
+
+        content = self.http.get('/clients/?sort=name').content.decode()
+        self.assertLess(content.index('Антон'), content.index('Яков'))
+
+    def test_repair_order_list_sorts_by_the_requested_column(self):
+        client_obj = ClientModel.objects.create(name='Заказчик')
+        RepairOrder.objects.create(client=client_obj, order_number='O-2')
+        RepairOrder.objects.create(client=client_obj, order_number='O-1')
+
+        content = self.http.get('/repair-orders/?sort=order_number').content.decode()
+        self.assertLess(content.index('O-1'), content.index('O-2'))
+
+    def test_the_shared_script_is_loaded(self):
+        content = self.http.get('/parts/').content.decode()
+        self.assertIn('js/sortable-table.js', content)
 
 
 class SpecFormattingTests(TestCase):
@@ -19921,7 +20052,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.105.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.106.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

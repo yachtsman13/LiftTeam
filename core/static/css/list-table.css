@@ -22,6 +22,31 @@
     ровно такими же, какими были.
 */
 
+/* Сортировка по клику на шапку (sortable-table.js) — стрелка рисуется
+   здесь же, чтобы не заводить второй файл ради трёх правил. На телефоне
+   шапка вообще не рисуется (.list-table > thead ниже), так что сама
+   стрелка там не нужна и не мешает. */
+th[data-sort] {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+th[data-sort].sortable-active::after {
+    display: inline-block;
+    margin-left: 5px;
+    font-size: 0.7em;
+    opacity: 0.7;
+}
+
+th[data-sort].sortable-active.sort-asc::after {
+    content: '▲';
+}
+
+th[data-sort].sortable-active.sort-desc::after {
+    content: '▼';
+}
+
 /* Подстраховка для любой широкой таблицы. Ведёт себя так же, как
    .table-responsive у Bootstrap, поэтому на компьютере ничего не меняется. */
 .table-scroll {

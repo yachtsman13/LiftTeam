@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.105.0{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.106.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -135,6 +135,9 @@
     .cell-item.selected { background: #0d6efd !important; color: #fff !important; border-color: #0a58ca; }
     .cell-item:hover { transform: scale(1.06); box-shadow: 0 2px 10px rgba(0,0,0,0.25); z-index: 10; }
     .cell-item.highlighted { border-color: #ffc107; box-shadow: 0 0 0 3px rgba(255,193,7,0.3); }
+    /* Только свободные: занятые ячейки гаснут, а не пропадают — сетка
+       остаётся полной раскладкой ящиков, просто ненужное сейчас неярко. */
+    .cell-item.free-filter-dimmed { opacity: 0.2; filter: grayscale(70%); }
     .cell-item.move-target {
         border: 2px dashed #0d6efd !important;
         background: #e7f1ff !important;
@@ -242,6 +245,18 @@
             {% endfor %}
         </select>
         {% comment %}
+            Фильтр по свободным ячейкам — не отдельный запрос к серверу:
+            занятость уже пришла в разметке (`data-is-free`), и прятать
+            занятые ячейки нельзя — сетка это раскладка настоящих ящиков,
+            и «пропавшая» на экране ячейка выглядела бы как физически
+            отсутствующая. Занятые вместо этого гаснут, свободные остаются
+            как есть.
+        {% endcomment %}
+        <div class="form-check form-check-inline d-flex align-items-center mb-0 text-nowrap">
+            <input class="form-check-input" type="checkbox" id="onlyFreeFilter" onchange="toggleFreeFilter(this.checked)">
+            <label class="form-check-label ms-1" for="onlyFreeFilter">Только свободные</label>
+        </div>
+        {% comment %}
             Показать деталь на сетке. Раньше здесь был список всего каталога;
             теперь общий выбор детали — с поиском, отборами, остатком
             и адресом ячейки. Выбранная деталь подсвечивается сразу:
@@ -289,7 +304,7 @@
                          data-cell-id="{{ item.cell.pk }}"
                          data-address="{{ item.cell.address }}"
                          data-is-free="{% if item.part_count == 0 %}true{% else %}false{% endif %}"
-                         title="{{ item.cell.address }}{% for p in item.cell.parts.all %} — {{ p.name }} ({{ p.current_stock }}){% endfor %}"
+                         title="{{ item.cell.address }}{% for p in item.cell.parts.all %} — {{ p.name }}{% if p.component_type %}, {{ p.component_type }}{% endif %}{% if p.package %}, {{ p.package }}{% endif %} ({{ p.current_stock }}){% endfor %}"
                          onclick="handleCellClick(this)">
                         <span class="cell-num">{{ item.cell.cell_row }}</span>
                         {% if item.part_count == 1 %}
@@ -561,6 +576,15 @@ function scanPart(scan) {
     });
 })();
 
+// Только свободные — гасит занятые ячейки, не убирая их с сетки: номер
+// ряда и позиция ячейки должны совпадать с настоящим ящиком всегда,
+// даже когда фильтр включён.
+function toggleFreeFilter(onlyFree) {
+    document.querySelectorAll('.cell-item[data-cell-id]').forEach(function(el) {
+        el.classList.toggle('free-filter-dimmed', onlyFree && el.dataset.isFree !== 'true');
+    });
+}
+
 function handleCellClick(el) {
     const cellId = el.dataset.cellId;
 
@@ -594,10 +618,14 @@ function showCellInfo(el) {
             } else if (p.min_stock > 0 && p.stock === p.min_stock) {
                 stockClass = 'text-warning-emphasis fw-bold';
             }
+            // Тип и корпус — чтобы отличить друг от друга детали с похожими
+            // артикулами, не открывая карточку. Оба необязательны, поэтому
+            // склеиваются только заполненные
+            var meta = [p.component_type, p.package].filter(Boolean).map(escapeHtml).join(' · ');
             return '<div class="cell-part-row">' +
                 '<div class="cell-part-info">' +
                     '<div class="name">' + escapeHtml(p.part_number) + ' — ' + escapeHtml(p.name) + '</div>' +
-                    '<div class="meta">' + escapeHtml(p.component_type || '') + ' · Остаток: ' +
+                    '<div class="meta">' + (meta ? meta + ' · ' : '') + 'Остаток: ' +
                         '<span class="' + stockClass + '">' + p.stock + ' / ' + p.min_stock + '</span>' +
                     '</div>' +
                 '</div>' +

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказы на ремонт — LiftTeam v2.105.0{% endblock %}
+{% block title %}Заказы на ремонт — LiftTeam v2.106.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -117,13 +117,13 @@
                             <input type="checkbox" class="form-check-input" id="selectAllOrders" title="Отметить всё на странице"
                                    onclick="document.querySelectorAll('#bulkForm .row-check').forEach(c => c.checked = this.checked); updateBulkOrdersBar();">
                         </th>
-                        <th>№ заказа</th>
-                        <th>Заказчик</th>
-                        <th>Статус</th>
+                        <th data-sort="order_number">№ заказа</th>
+                        <th data-sort="client">Заказчик</th>
+                        <th data-sort="status">Статус</th>
                         <th>Готовность</th>
-                        <th>Оплата</th>
+                        <th data-sort="payment_status">Оплата</th>
                         <th>Стоимость</th>
-                        <th>Дата</th>
+                        <th data-sort="date_received">Дата</th>
                         <th class="text-end">Действия</th>
                     </tr>
                 </thead>

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.105.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.106.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -148,11 +148,11 @@
                             <input type="checkbox" class="form-check-input" title="Отметить всё на странице"
                                    onclick="document.querySelectorAll('#labelsForm .row-check').forEach(c => c.checked = this.checked);">
                         </th>
-                        <th>Артикул</th>
-                        <th>Название</th>
-                        <th>Тип и корпус</th>
-                        <th>Остаток</th>
-                        <th>Мин.</th>
+                        <th data-sort="part_number">Артикул</th>
+                        <th data-sort="name">Название</th>
+                        <th data-sort="component_type">Тип и корпус</th>
+                        <th data-sort="current_stock">Остаток</th>
+                        <th data-sort="min_stock">Мин.</th>
                         <th class="col-cell">Ячейка</th>
                         <th class="text-end col-actions">Действия</th>
                     </tr>
