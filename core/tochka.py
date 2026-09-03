@@ -49,9 +49,18 @@
   как есть и никак не разбирается;
 * обязательность secondSideName.
 
-Ссылки на PDF счёта Точка не отдаёт вовсе: файл забирается методом
-`…/file` по токену. Поэтому `invoice_pdf_url` здесь всегда пусто —
-это не недоделка, а свойство банка.
+Ссылки на PDF счёта Точка не отдаёт вовсе: файл забирается отдельным
+запросом по document_id (`get_invoice_pdf`). Поэтому `invoice_pdf_url`
+здесь всегда пусто — это не недоделка, а свойство банка; ссылку
+«Открыть PDF» на карточке заказа собирает `invoicing.TochkaProvider.pdf_link`
+через прокси-представление, а не эта функция.
+
+Путь подтверждён тем же способом, что у клиентов и счетов (два независимых
+источника сходятся): TypeScript SDK, сгенерированный из OpenAPI банка
+(github.com/FatherOctber/tochka-sdk, tochka-api.ts, метод getInvoice,
+`GET /invoice/{apiVersion}/bills/{customerCode}/{documentId}/file`) и
+независимый Go SDK (github.com/sharpvik/tochka, invoice.go,
+`GetInvoicePDF`, тот же путь). Ответ — не JSON-обёртка, а голый файл.
 """
 import json
 import logging
@@ -133,10 +142,14 @@ def missing_settings():
     return absent
 
 
-def _call(path, payload=None, method=None, timeout=30, retries=0):
+def _call(path, payload=None, method=None, timeout=30, retries=0, raw=False):
     """Запрос к API Точки. Возвращает разобранный ответ.
 
     `retries` больше нуля допустим только для чтений — см. READ_RETRIES.
+
+    `raw=True` — для единственного бинарного метода банка (PDF счёта,
+    `get_invoice_pdf`): тело возвращается байтами как есть, без
+    `json.loads`, и `Accept` не сужается до `application/json`.
     """
     if not token():
         raise TochkaError('Не задан TOCHKA_TOKEN')
@@ -150,7 +163,7 @@ def _call(path, payload=None, method=None, timeout=30, retries=0):
     method = method or ('POST' if data else 'GET')
     headers = {
         'Authorization': f'Bearer {token()}',
-        'Accept': 'application/json',
+        'Accept': 'application/json' if not raw else '*/*',
     }
     if data is not None:
         headers['Content-Type'] = 'application/json'
@@ -167,7 +180,7 @@ def _call(path, payload=None, method=None, timeout=30, retries=0):
             req.add_header(name, value)
         try:
             with request.urlopen(req, timeout=timeout) as response:
-                body = response.read().decode('utf-8', errors='replace')
+                body = response.read() if raw else response.read().decode('utf-8', errors='replace')
             break
         except error.HTTPError as exc:
             detail = redact(exc.read().decode('utf-8', errors='replace')[:300], token())
@@ -186,6 +199,9 @@ def _call(path, payload=None, method=None, timeout=30, retries=0):
                            last_error, attempt + 1, retries + 1)
     else:
         raise last_error
+
+    if raw:
+        return body
 
     try:
         return json.loads(body) if body else {}
@@ -428,12 +444,33 @@ def document_id(response):
 
 
 def invoice_pdf_url(response):
-    """У Точки ссылки на PDF нет: файл отдаётся по токену методом …/file.
+    """У Точки ссылки на PDF нет: файл достаётся отдельным запросом
+    по document_id, а не по прямому адресу — см. `get_invoice_pdf`.
 
     Возвращаем пусто осознанно, чтобы не подставлять в заказ адрес,
     который заказчик всё равно не откроет.
     """
     return ''
+
+
+def get_invoice_pdf(document_id, timeout=30):
+    """PDF выставленного счёта — байты, не ссылка (путь подтверждён
+    дважды независимо, см. шапку модуля).
+
+    Тот же customerCode и токен, что и у выставления счёта; второго
+    согласия банк не спрашивает. Читающий запрос — с повтором, как
+    у остальных чтений этого модуля.
+    """
+    if not customer_code():
+        raise TochkaError('Не задан TOCHKA_CUSTOMER_CODE')
+    if not document_id:
+        raise TochkaError('Нет идентификатора счёта в Точке')
+
+    path = f'/invoice/{api_version()}/bills/{customer_code()}/{document_id}/file'
+    pdf = _call(path, method='GET', timeout=timeout, retries=READ_RETRIES, raw=True)
+    if not pdf:
+        raise TochkaError('Точка вернула пустой файл счёта')
+    return pdf
 
 
 def send_invoice_to_email(document, email, timeout=30):

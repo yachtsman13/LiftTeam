@@ -2087,6 +2087,20 @@ class RepairOrder(models.Model):
                 return bound
         return Organization.get_solo()
 
+    @property
+    def invoice_pdf_link(self):
+        """Ссылка «Открыть PDF» — шаблону не нужно знать, какой банк
+        выставил счёт и даёт ли он прямую ссылку (см. `InvoiceProvider.pdf_link`,
+        `core/invoicing.py`). Пусто — счёт не выставлен, банк неизвестен
+        программе, или банк ничего не вернул для этого счёта."""
+        if not self.invoice_provider:
+            return ''
+        try:
+            provider = invoicing.get_provider(self.invoice_provider)
+        except invoicing.InvoiceError:
+            return ''
+        return provider.pdf_link(self)
+
     def invoice_items(self):
         """Позиции счёта — по единице оборудования на строку.
 

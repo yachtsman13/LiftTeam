@@ -8973,6 +8973,97 @@ class OrderLegalEntityTests(TestCase):
         self.assertEqual(order.legal_entity().pk, self.first.pk)
 
 
+class InvoicePdfLinkTests(TestCase):
+    """`RepairOrder.invoice_pdf_link` — шаблону не нужно знать, какой банк
+    выставил счёт и даёт ли он прямую ссылку сразу."""
+
+    def setUp(self):
+        client_obj = ClientModel.objects.create(name='Заказчик PDF')
+        self.tbank_order = RepairOrder.objects.create(
+            client=client_obj, invoice_provider='tbank',
+            invoice_pdf_url='https://acdn.tbank.ru/static/documents/x.pdf',
+        )
+        self.tochka_order = RepairOrder.objects.create(
+            client=client_obj, invoice_provider='tochka',
+            invoice_external_id='a1b2c3',
+        )
+        self.tochka_order_without_id = RepairOrder.objects.create(
+            client=client_obj, invoice_provider='tochka',
+        )
+        self.order_without_invoice = RepairOrder.objects.create(client=client_obj)
+
+    def test_tbank_uses_its_own_direct_link(self):
+        self.assertEqual(self.tbank_order.invoice_pdf_link,
+                         'https://acdn.tbank.ru/static/documents/x.pdf')
+
+    def test_tochka_uses_the_proxy_view(self):
+        self.assertEqual(
+            self.tochka_order.invoice_pdf_link,
+            reverse('repair_order_invoice_pdf', args=[self.tochka_order.pk]),
+        )
+
+    def test_tochka_without_a_document_id_has_nothing_to_show(self):
+        self.assertEqual(self.tochka_order_without_id.invoice_pdf_link, '')
+
+    def test_no_invoice_means_no_link(self):
+        self.assertEqual(self.order_without_invoice.invoice_pdf_link, '')
+
+
+class RepairOrderInvoicePdfViewTests(TestCase):
+    """Представление, которое достаёт PDF из банка на лету (Точка) —
+    Т-Банк сюда не заходит вовсе, у него уже есть прямая ссылка."""
+
+    def setUp(self):
+        self.staff = Employee.objects.create_user(
+            username='pdf_staff', full_name='Бухгалтер', password='pass',
+            position=position_with('invoices_send', name='Бухгалтер-PDF'))
+        self.http = TestClient()
+        self.http.force_login(self.staff)
+
+        client_obj = ClientModel.objects.create(name='Заказчик PDF-2')
+        self.tochka_order = RepairOrder.objects.create(
+            client=client_obj, invoice_provider='tochka',
+            invoice_external_id='a1b2c3',
+        )
+        self.order_without_invoice = RepairOrder.objects.create(client=client_obj)
+
+    def _url(self, order):
+        return reverse('repair_order_invoice_pdf', args=[order.pk])
+
+    def test_requires_the_invoices_send_permission(self):
+        powerless = Employee.objects.create_user(
+            username='pdf_powerless', full_name='Мастер', password='pass',
+            position=position_with(name='Без прав на счета'))
+        http = TestClient()
+        http.force_login(powerless)
+
+        response = http.get(self._url(self.tochka_order))
+
+        self.assertRedirects(response, reverse('dashboard'))
+
+    def test_an_order_without_an_invoice_is_404(self):
+        response = self.http.get(self._url(self.order_without_invoice))
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_pdf_is_returned_as_is(self):
+        with patch('core.tochka.get_invoice_pdf', return_value=b'%PDF-1.4 ...'):
+            response = self.http.get(self._url(self.tochka_order))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertEqual(response.content, b'%PDF-1.4 ...')
+
+    def test_a_bank_failure_is_shown_and_does_not_crash_the_page(self):
+        with patch('core.tochka.get_invoice_pdf',
+                   side_effect=tochka.TochkaError('Точка недоступна')):
+            response = self.http.get(self._url(self.tochka_order), follow=True)
+
+        self.assertRedirects(response, reverse('repair_order_detail',
+                                               args=[self.tochka_order.pk]))
+        messages_text = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Точка недоступна' in m for m in messages_text))
+
+
 class PrintedDocumentsFollowTheInvoiceEntityTests(TestCase):
     """Акты и предложение печатаются от юрлица счёта, а не всегда основного."""
 
@@ -9189,6 +9280,38 @@ class TochkaInvoiceTests(TestCase):
     def test_no_pdf_link_is_invented(self):
         """У Точки ссылки на PDF нет: файл отдаётся по токену."""
         self.assertEqual(tochka.invoice_pdf_url({'Data': {'documentId': 'x'}}), '')
+
+    def test_get_invoice_pdf_returns_the_bytes_as_is(self):
+        """Ответ — голый файл, не JSON-обёртка: разбирать в нём нечего."""
+        with patch('core.tochka._call', return_value=b'%PDF-1.4 ...') as called:
+            pdf = tochka.get_invoice_pdf('a1b2c3')
+
+        self.assertEqual(pdf, b'%PDF-1.4 ...')
+        # raw=True — иначе _call попытается json.loads() бинарные байты
+        self.assertTrue(called.call_args.kwargs.get('raw'))
+
+    def test_get_invoice_pdf_requires_a_document_id(self):
+        with self.assertRaises(tochka.TochkaError) as caught:
+            tochka.get_invoice_pdf('')
+
+        self.assertIn('идентификатор', str(caught.exception))
+
+    def test_an_empty_pdf_is_refused(self):
+        """Пустой ответ 200 — не файл, и подсовывать его браузеру нельзя."""
+        with patch('core.tochka._call', return_value=b''):
+            with self.assertRaises(tochka.TochkaError) as caught:
+                tochka.get_invoice_pdf('a1b2c3')
+
+        self.assertIn('пустой файл', str(caught.exception))
+
+    def test_reading_the_pdf_is_retried(self):
+        """То же правило, что у статуса счёта: чтение, а не запись."""
+        with patch('core.tochka.request.urlopen',
+                   side_effect=TimeoutError()) as opened:
+            with self.assertRaises(tochka.TochkaError):
+                tochka.get_invoice_pdf('a1b2c3')
+
+        self.assertEqual(opened.call_count, tochka.READ_RETRIES + 1)
 
 
 class TochkaCustomerListTests(SimpleTestCase):
@@ -20076,7 +20199,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.106.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.107.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.106.1{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.107.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -175,6 +175,9 @@ document.addEventListener('DOMContentLoaded', function () {
                             <strong>Счёт:</strong>
                             {% if order.invoice_sent_at %}
                             выставлен {{ order.invoice_sent_at|date:"d.m.Y" }}
+                            {% if order.invoice_pdf_link %}
+                            — <a href="{{ order.invoice_pdf_link }}" target="_blank" rel="noopener">Открыть PDF</a>
+                            {% endif %}
                             {% else %}
                             <span class="text-muted">не выставлен</span>
                             {% endif %}

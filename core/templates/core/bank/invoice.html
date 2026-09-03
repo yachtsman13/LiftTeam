@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.106.1{% endblock %}
+{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.107.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -54,8 +54,8 @@
     По этому заказу уже выставлен счёт <strong>№ {{ order.invoice_number }}</strong>
     от {{ order.invoice_sent_at|date:"d.m.Y H:i" }}{% if order.invoice_provider %}
     через {{ order.get_invoice_provider_display }}{% endif %}.
-    {% if order.invoice_pdf_url %}
-    <a href="{{ order.invoice_pdf_url }}" target="_blank" rel="noopener">Открыть PDF</a>.
+    {% if order.invoice_pdf_link %}
+    <a href="{{ order.invoice_pdf_link }}" target="_blank" rel="noopener">Открыть PDF</a>.
     {% endif %}
     Отправка ещё раз создаст в банке второй счёт.
 </div>

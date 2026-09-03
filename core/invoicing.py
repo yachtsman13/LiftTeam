@@ -104,8 +104,27 @@ class InvoiceProvider:
         raise NotImplementedError
 
     def invoice_pdf_url(self, response):
-        """Ссылка на PDF счёта. Пусто — банк её не даёт."""
+        """Ссылка на PDF счёта из ответа банка на выставление. Пусто —
+        банк не отдаёт её сразу (тогда PDF смотрят через `pdf_link`)."""
         raise NotImplementedError
+
+    def pdf_link(self, order):
+        """Ссылка «Открыть PDF» для карточки заказа — то, что показывает
+        шаблон, не заботясь, какой банк выставил счёт.
+
+        У банка, отдающего прямую ссылку сразу (Т-Банк), это она и есть.
+        У банка без прямой ссылки (Точка) — адрес нашего прокси
+        (`views.repair_order_invoice_pdf`), который достаёт файл через
+        `invoice_pdf_bytes` и отдаёт как есть. Пусто — смотреть нечем
+        (счёт не выставлен или банк не вернул идентификатор).
+        """
+        raise NotImplementedError
+
+    def invoice_pdf_bytes(self, order):
+        """Байты PDF по уже выставленному счёту — только для банков без
+        прямой ссылки. По умолчанию не поддерживается: банк с прямой
+        ссылкой (`pdf_link` уже указывает на неё) сюда не должен попасть."""
+        raise InvoiceError(f'{self.label} не поддерживает получение PDF этим способом')
 
     def external_id(self, response):
         """Идентификатор счёта в банке. Пусто — банк его не возвращает."""
@@ -168,6 +187,11 @@ class TBankProvider(InvoiceProvider):
 
     def invoice_pdf_url(self, response):
         return self._api.invoice_pdf_url(response)
+
+    def pdf_link(self, order):
+        # Т-Банк отдаёт прямую ссылку сразу при выставлении — она уже
+        # лежит в заказе, второй запрос за ней не нужен
+        return order.invoice_pdf_url
 
     def external_id(self, response):
         # Нужен, чтобы уведомление банка об оплате нашло заказ: в нём
@@ -247,6 +271,22 @@ class TochkaProvider(InvoiceProvider):
 
     def invoice_pdf_url(self, response):
         return self._api.invoice_pdf_url(response)
+
+    def pdf_link(self, order):
+        # Прямой ссылки у Точки нет — ведём на свой прокси. Без
+        # идентификатора счёта в банке достать файл нечем
+        if not order.invoice_external_id:
+            return ''
+        from django.urls import reverse
+        return reverse('repair_order_invoice_pdf', args=[order.pk])
+
+    def invoice_pdf_bytes(self, order):
+        if not order.invoice_external_id:
+            raise InvoiceError('У заказа нет идентификатора счёта в Точке')
+        try:
+            return self._api.get_invoice_pdf(order.invoice_external_id)
+        except self._api.TochkaError as exc:
+            raise InvoiceError(str(exc)) from exc
 
     def external_id(self, response):
         return self._api.document_id(response)

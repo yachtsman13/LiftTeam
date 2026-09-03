@@ -20,7 +20,7 @@ from django.db.models import (
     Count, DecimalField, F, Max, OuterRef, Prefetch, Q, Subquery, Sum, Value,
 )
 from django.db.models.functions import Coalesce
-from django.http import JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.core.paginator import Paginator
@@ -5422,6 +5422,30 @@ def _send_invoice(request, order, form):
 
     messages.success(request, f'Счёт № {order.invoice_number} выставлен')
     return redirect('repair_order_detail', pk=order.pk)
+
+
+@permission_required('invoices_send')
+def repair_order_invoice_pdf(request, pk):
+    """PDF уже выставленного счёта — для банков без прямой ссылки (Точка).
+
+    Т-Банк отдаёт ссылку сразу при выставлении, и `order.invoice_pdf_link`
+    ведёт прямо на неё — сюда такой заказ не попадает вовсе. Здесь только
+    случай, когда файл нужно каждый раз доставать из банка заново
+    (`InvoiceProvider.invoice_pdf_bytes`), поэтому вида не сохраняем —
+    отдаём как есть и на этом всё.
+    """
+    order = get_object_or_404(RepairOrder, pk=pk)
+    if not order.invoice_provider:
+        raise Http404('По заказу не выставлен счёт')
+
+    try:
+        provider = invoicing.get_provider(order.invoice_provider)
+        pdf = provider.invoice_pdf_bytes(order)
+    except invoicing.InvoiceError as exc:
+        messages.error(request, f'PDF счёта не получен: {exc}')
+        return redirect('repair_order_detail', pk=order.pk)
+
+    return HttpResponse(pdf, content_type='application/pdf')
 
 
 # ==================== ПОСТУПЛЕНИЯ ИЗ БАНКА ====================
