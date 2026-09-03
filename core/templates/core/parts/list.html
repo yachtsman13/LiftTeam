@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.106.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.106.1{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -75,7 +75,7 @@
                 </button>
             </div>
 
-            <div class="collapse {% if current_from or current_to or power_from or power_to or stock_from or stock_to or stock_state %}show{% endif %}" id="morePartFilters">
+            <div class="collapse {% if current_from or current_to or power_from or power_to or stock_from or stock_to or stock_state or no_cell %}show{% endif %}" id="morePartFilters">
                 <div class="row g-2 mt-1">
                     <div class="col-md-3">
                         <div class="input-group input-group-sm">
@@ -105,6 +105,12 @@
                             <option value="below" {% if stock_state == 'below' %}selected{% endif %}>Только дефицит</option>
                             <option value="at_minimum" {% if stock_state == 'at_minimum' %}selected{% endif %}>Только на минимуме</option>
                         </select>
+                    </div>
+                    <div class="col-md-3 d-flex align-items-center">
+                        <div class="form-check form-check-sm">
+                            <input type="checkbox" name="no_cell" value="1" id="noCellFilter" class="form-check-input" {% if no_cell %}checked{% endif %}>
+                            <label class="form-check-label" for="noCellFilter">Без ячейки</label>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -161,10 +161,15 @@
         var query = part(root, '.part-picker-query');
         var type = part(root, '.part-picker-type');
         var inStock = part(root, '.part-picker-in-stock');
-        if (query && query.value.trim()) params.set('q', query.value.trim());
+        var hasQuery = query && query.value.trim();
+        if (hasQuery) params.set('q', query.value.trim());
         if (type && type.value) params.set('component_type', type.value);
         if (inStock && inStock.checked) params.set('in_stock', '1');
         if (root.dataset.exclude) params.set('exclude', root.dataset.exclude);
+        // default_no_cell: пока ничего не набрали — приоритет деталям без
+        // ячейки, их сюда и кладут чаще всего. Начали печатать — ищем
+        // по всему каталогу, ограничение снимается.
+        if (!hasQuery && root.dataset.defaultNoCell) params.set('no_cell', '1');
         if (!componentTypes && !componentTypesAsked) {
             // Флаг ставится здесь, а не у вызывающего: иначе первый же
             // запрос помечал бы список типов запрошенным, сам его

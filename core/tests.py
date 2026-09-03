@@ -2418,6 +2418,20 @@ class PartStockFilterTests(TestCase):
         """Ссылки вида ?below_min=1 могли остаться в закладках."""
         self.assertEqual(self._found('?below_min=1'), {'PF-BELOW'})
 
+    def test_no_cell_filter_finds_unplaced_parts(self):
+        """«Без ячейки» — вкладка радиодеталей, а не сетка кассетниц:
+        фильтр по неназначенным ячейкам нужен именно здесь."""
+        cabinet = Cabinet.objects.create(number=71, name='Без ячейки')
+        cabinet.apply_layout([4])
+        cabinet.cells.first().parts.add(SparePart.objects.get(part_number='PF-OK'))
+
+        self.assertEqual(self._found('?no_cell=1'), {'PF-BELOW', 'PF-AT'})
+
+    def test_no_cell_checkbox_reflects_the_query(self):
+        resp = self.client_http.get('/parts/?no_cell=1')
+        self.assertContains(resp, 'id="noCellFilter"')
+        self.assertContains(resp, 'name="no_cell" value="1" id="noCellFilter" class="form-check-input" checked')
+
     def test_stock_range(self):
         self.assertEqual(self._found('?stock_from=2&stock_to=10'), {'PF-AT'})
 
@@ -3048,16 +3062,18 @@ class GridLiveUpdateMarkupTests(TestCase):
         content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
         self.assertIn('data-cell-id=', content)
 
-    def test_cells_carry_whether_they_are_free(self):
-        """Нужно фильтру «Только свободные» — гасит занятые по этому атрибуту."""
+    def test_the_add_part_picker_defaults_to_parts_without_a_cell(self):
+        """Пока поиск пуст, предлагаются детали без ячейки — их сюда
+        и кладут чаще всего (data-default-no-cell читает part-picker.js)."""
         content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
-        self.assertIn('data-is-free="false"', content)
-        self.assertIn('data-is-free="true"', content)
+        self.assertIn('data-default-no-cell="1"', content)
 
-    def test_the_free_cells_filter_is_on_the_page(self):
+    def test_the_add_part_picker_opens_when_the_cell_window_shows(self):
+        """После клика по ячейке фокус должен быть в строке поиска —
+        открытие ячейки почти всегда затем, чтобы что-то в неё положить."""
         content = self.client_http.get('/storage-cells/?cabinet=1').content.decode()
-        self.assertIn('onlyFreeFilter', content)
-        self.assertIn('toggleFreeFilter', content)
+        self.assertIn("shown.bs.modal", content)
+        self.assertIn("addPartPicker .part-picker-open", content)
 
     def test_package_reaches_the_script_for_the_cell_info_window(self):
         """Тип и корпус — чтобы отличить похожие артикулы, не открывая карточку."""
@@ -10152,6 +10168,14 @@ class PartSearchEndpointTests(TestCase):
         self.assertIn(self.resistor.pk, found)
         self.assertIn(self.transistor.pk, found)
         self.assertNotIn(self.capacitor.pk, found)
+
+    def test_no_cell_filter_hides_what_already_has_one(self):
+        """Резистор лежит в ячейке — конденсатор и транзистор ещё нет."""
+        data = self._search(no_cell='1')
+        found = {row['id'] for row in data['results']}
+        self.assertNotIn(self.resistor.pk, found)
+        self.assertIn(self.capacitor.pk, found)
+        self.assertIn(self.transistor.pk, found)
 
     def test_row_carries_stock_and_cell(self):
         """Остаток и адрес ячейки — то, по чему решают, идти к полке
@@ -20052,7 +20076,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.106.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.106.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

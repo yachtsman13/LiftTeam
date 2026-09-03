@@ -16,7 +16,11 @@
     value_label — как её подписать; если не передать, подпись запросится
                   у сервера по номеру;
     placeholder — что писать, пока ничего не выбрано;
-    exclude     — номера деталей через запятую, которые здесь выбирать нельзя.
+    exclude     — номера деталей через запятую, которые здесь выбирать нельзя;
+    default_no_cell — пока поле поиска пустое, показывать только детали
+                  без назначенной ячейки (для выбора «куда положить» —
+                  добавление детали в ячейку кассетницы). Начали печатать —
+                  ограничение снимается, ищем по всему каталогу.
 
 Разметка намеренно обходится без Bootstrap JS: ни `data-bs-toggle`,
 ни `modal`. Bootstrap приезжает из интернета, и если он не приехал —
@@ -24,7 +28,7 @@
 работать всё равно. Прячется панель атрибутом `hidden`, за которым в
 base.html закреплено `display: none !important`.
 {% endcomment %}
-<div class="part-picker" data-part-picker data-search-url="{% url 'part_search' %}"{% if exclude %} data-exclude="{{ exclude }}"{% endif %}>
+<div class="part-picker" data-part-picker data-search-url="{% url 'part_search' %}"{% if exclude %} data-exclude="{{ exclude }}"{% endif %}{% if default_no_cell %} data-default-no-cell="1"{% endif %}>
     <input type="hidden" name="{{ name }}" value="{{ value|default_if_none:'' }}" class="part-picker-value">
     <div class="input-group part-picker-control">
         <input type="text" class="form-control part-picker-display" readonly

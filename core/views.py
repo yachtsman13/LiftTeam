@@ -2179,6 +2179,10 @@ def _filter_parts(params):
     # выбирающему деталь важно, лежит она на полке или нет, а не насколько
     # запас близок к минимальному
     in_stock = params.get('in_stock', '')
+    # Деталь без ячейки — та, что ещё некуда положить (или сняли с прежней
+    # и не переложили). storage_cells — M2M, isnull=True не двоит строки:
+    # непопавшую в join запись выбрать пусто, а не отсутствие.
+    no_cell = params.get('no_cell', '')
 
     parts = SparePart.objects.all()
     if search:
@@ -2195,6 +2199,8 @@ def _filter_parts(params):
         parts = parts.filter(package=package)
     if in_stock:
         parts = parts.filter(current_stock__gt=0)
+    if no_cell:
+        parts = parts.filter(storage_cells__isnull=True)
 
     context = {
         'search': search,
@@ -2204,6 +2210,7 @@ def _filter_parts(params):
         'stock_to': stock_to,
         'stock_state': stock_state,
         'in_stock': in_stock,
+        'no_cell': no_cell,
     }
 
     for field, prefix in ranges.items():
