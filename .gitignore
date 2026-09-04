@@ -21,6 +21,8 @@ rclone.conf
 .update-status
 .restart-request
 .tbank-last-run
+.tochka-last-run
+.tochka-pending-statement
 
 # Django
 staticfiles/

@@ -1,0 +1,40 @@
+# Разовая загрузка выписки Точки. Расписание задаёт lifteam-tochka.timer.
+#
+# Установка:
+#   sudo cp deploy/lifteam-tochka.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lifteam-tochka.timer
+#
+# Проверить вручную:  sudo systemctl start lifteam-tochka
+# Посмотреть логи:    journalctl -u lifteam-tochka
+# Что загрузилось бы, ничего не сохраняя:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       tochka_statement --dry-run
+# Узнать TOCHKA_CUSTOMER_CODE и TOCHKA_ACCOUNT_ID:
+#   sudo -u lifteam /opt/lifteam/venv/bin/python /opt/lifteam/manage.py \
+#       tochka_check
+#
+# Команда только читает выписку и складывает поступления в таблицу.
+# Деньги по заказам разносит человек на странице «Поступления».
+
+[Unit]
+Description=Загрузка выписки Точки для LiftTeam
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lifteam
+Group=lifteam
+WorkingDirectory=/opt/lifteam
+Environment=DJANGO_SETTINGS_MODULE=lifteam.settings_pi
+
+# --scheduled: спросить у программы, прошёл ли заданный промежуток.
+# Без него команда тянула бы выписку на каждом тике таймера,
+# то есть настройка частоты не значила бы ничего
+ExecStart=/opt/lifteam/venv/bin/python manage.py tochka_statement --scheduled
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lifteam

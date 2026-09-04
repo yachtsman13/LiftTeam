@@ -2165,7 +2165,7 @@ class Payment(models.Model):
 
 
 class BankOperation(models.Model):
-    """Поступление из выписки Т-Банка.
+    """Поступление из выписки банка — с v2.108.0 любого из двух.
 
     Хранится отдельно от `Payment` и не превращается в оплату само.
     Причин две. Первая: выписку тянут по расписанию, и разнести деньги
@@ -2182,9 +2182,19 @@ class BankOperation(models.Model):
         ('skipped', 'Не по заказам'),
     ]
 
-    # Идентификатор операции в банке. Уникален — на нём держится вся защита
-    # от повторного разнесения одних и тех же денег
-    external_id = models.CharField('Идентификатор в банке', max_length=100, unique=True)
+    # Какой банк прислал операцию. Пусто у строк, загруженных до v2.108.0,
+    # когда банк был только один и различать было не с чем — миграция
+    # 0053 проставляет им 'tbank' задним числом, это не догадка: другого
+    # источника тогда не существовало.
+    source = models.CharField(
+        'Банк', max_length=20, choices=invoicing.PROVIDER_CHOICES, blank=True
+    )
+    # Идентификатор операции в банке. Уникален в пределах банка, а не
+    # глобально: два разных банка с их собственными схемами id совпасть
+    # могут только случайно, но перестраховка стоит одного поля.
+    # На паре (source, external_id) держится вся защита от повторного
+    # разнесения одних и тех же денег.
+    external_id = models.CharField('Идентификатор в банке', max_length=100)
     operation_date = models.DateField('Дата операции', null=True, blank=True)
     amount = models.DecimalField('Сумма', max_digits=12, decimal_places=2)
     purpose = models.TextField('Назначение платежа', blank=True)
@@ -2208,6 +2218,7 @@ class BankOperation(models.Model):
         verbose_name = 'Поступление из банка'
         verbose_name_plural = 'Поступления из банка'
         ordering = ['-operation_date', '-id']
+        unique_together = [['source', 'external_id']]
 
     def __str__(self):
         return f'{self.amount} ₽ от {self.counterparty or "неизвестно кого"}'

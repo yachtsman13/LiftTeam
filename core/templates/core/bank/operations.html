@@ -1,11 +1,16 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.107.0{% endblock %}
+{% block title %}Поступления — LiftTeam v2.108.0{% endblock %}
 
 {% block content %}
+{% comment %}
+    Банков с v2.108.0 два: кнопка одна на оба, каждый настроенный тянется
+    своим кодом (tbank.fetch_and_store / tochka.fetch_and_store), а исход
+    по каждому — своим сообщением, чтобы не путать, у кого что не задалось.
+{% endcomment %}
 <div class="d-flex justify-content-between align-items-center mb-2">
     <h2><i class="bi bi-bank me-2"></i>Поступления из банка</h2>
-    {% if configured %}
+    {% if any_bank_configured %}
     <form method="post" action="{% url 'bank_statement_fetch' %}">
         {% csrf_token %}
         <button type="submit" class="btn btn-outline-primary">
@@ -15,20 +20,22 @@
     {% endif %}
 </div>
 
-{% if configured %}
-<div class="text-muted small mb-4">
-    Последняя загрузка:
-    {% if last_fetch_at %}{{ last_fetch_at|date:"d.m.Y H:i" }}{% else %}ещё не было{% endif %}.
-    Дальше — по расписанию (настройка на странице «Настройки») или по этой кнопке.
+<div class="mb-4">
+    {% for bank in banks %}
+    {% if bank.configured %}
+    <div class="text-muted small">
+        {{ bank.label }}, последняя загрузка:
+        {% if bank.last_fetch_at %}{{ bank.last_fetch_at|date:"d.m.Y H:i" }}{% else %}ещё не было{% endif %}.
+        Дальше — по расписанию (настройка на странице «Настройки») или по кнопке выше.
+    </div>
+    {% else %}
+    <div class="alert alert-warning py-2 mb-2">
+        Выписка {{ bank.label }} не настроена{% if bank.missing %}: {{ bank.missing }}{% endif %}.
+        Пока это так, список отсюда пополняться не будет — см. DEPLOY.md.
+    </div>
+    {% endif %}
+    {% endfor %}
 </div>
-{% endif %}
-
-{% if not configured %}
-<div class="alert alert-warning mb-4">
-    Выписка Т-Банка не настроена: не задан <code>TBANK_TOKEN</code>.
-    Пока он пустой, список пополняться не будет — см. DEPLOY.md.
-</div>
-{% endif %}
 
 <ul class="nav nav-tabs mb-3">
     {% for tab in tabs %}
@@ -60,7 +67,12 @@
                 <tbody>
                     {% for row in rows %}
                     <tr>
-                        <td class="text-nowrap" data-label="Дата">{{ row.operation.operation_date|date:"d.m.Y"|default:"—" }}</td>
+                        <td class="text-nowrap" data-label="Дата">
+                            {{ row.operation.operation_date|date:"d.m.Y"|default:"—" }}
+                            {% if row.operation.get_source_display %}
+                            <div class="small text-muted">{{ row.operation.get_source_display }}</div>
+                            {% endif %}
+                        </td>
                         <td class="text-end fw-bold text-nowrap" data-label="Сумма">{{ row.operation.amount_text }} ₽</td>
                         <td data-label="Плательщик">
                             {{ row.operation.counterparty|default:"—" }}

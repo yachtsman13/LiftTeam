@@ -448,7 +448,7 @@ def fetch_and_store(days=None):
         # и таймер, и человек со страницы одновременно
         try:
             stored, created = BankOperation.objects.get_or_create(
-                external_id=operation['external_id'],
+                source='tbank', external_id=operation['external_id'],
                 defaults={
                     'operation_date': operation['operation_date'],
                     'amount': operation['amount'],

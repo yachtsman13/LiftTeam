@@ -5758,6 +5758,19 @@ class BankStatementFetchButtonTests(TestCase):
         self.client_http = TestClient()
         self.client_http.force_login(self.accountant)
 
+        # Отметки о загрузке — файлы рядом с приложением; без подмены путь
+        # у обоих банков указывал бы на настоящий каталог проекта
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for mod, attr, name in (
+            (tbank, 'LAST_FETCH_FILE', '.tbank-last-run'),
+            (tochka, 'LAST_FETCH_FILE', '.tochka-last-run'),
+            (tochka, 'PENDING_STATEMENT_FILE', '.tochka-pending-statement'),
+        ):
+            patcher = patch.object(mod, attr, Path(self.dir.name) / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123')
     def test_the_button_loads_the_statement_right_away(self):
         with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
@@ -5773,7 +5786,7 @@ class BankStatementFetchButtonTests(TestCase):
 
         resp = self.client_http.get('/bank/operations/')
 
-        self.assertContains(resp, 'Последняя загрузка')
+        self.assertContains(resp, 'последняя загрузка')
         self.assertNotContains(resp, 'ещё не было')
 
     @override_settings(TBANK_TOKEN='')
@@ -5789,7 +5802,7 @@ class BankStatementFetchButtonTests(TestCase):
                    side_effect=tbank.TBankError('Т-Банк недоступен')):
             resp = self.client_http.post('/bank/operations/fetch/', follow=True)
 
-        self.assertContains(resp, 'Выписка не получена')
+        self.assertContains(resp, 'выписка не получена')
         self.assertContains(resp, 'Т-Банк недоступен')
 
     @override_settings(TBANK_TOKEN='secret')
@@ -5800,6 +5813,47 @@ class BankStatementFetchButtonTests(TestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(BankOperation.objects.count(), 0)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123',
+                       TOCHKA_TOKEN='secret', TOCHKA_ACCOUNT_ID='40802810/044525104')
+    def test_the_button_pulls_both_configured_banks_at_once(self):
+        """Нажавший кнопку хочет поступления отовсюду, а не выбирать банк."""
+        tochka_ready = {'Data': {'Statement': [{'status': 'Ready', 'Transaction': [
+            {'transactionId': 'txn-btn-1', 'creditDebitIndicator': 'Credit',
+             'documentProcessDate': '2026-08-10', 'description': 'Оплата',
+             'Amount': {'amount': 7000}, 'DebtorParty': {'name': 'ООО «ТОЧКА-КНОПКА»'}},
+        ]}]}}
+        init_answer = {'Data': {'Statement': {'statementId': 'st-1', 'status': 'Created'}}}
+
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            with patch('core.tochka.init_statement', return_value=init_answer):
+                with patch('core.tochka.get_statement', return_value=tochka_ready):
+                    resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertEqual(BankOperation.objects.filter(source='tbank').count(), 1)
+        self.assertEqual(BankOperation.objects.filter(source='tochka').count(), 1)
+        self.assertContains(resp, 'Т-Банк,')
+        self.assertContains(resp, 'Точка,')
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123', TOCHKA_TOKEN='')
+    def test_an_unconfigured_bank_is_silently_skipped(self):
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertContains(resp, 'новых 1')
+        self.assertEqual(BankOperation.objects.filter(source='tbank').count(), 1)
+
+    @override_settings(TBANK_TOKEN='secret', TBANK_ACCOUNT='123',
+                       TOCHKA_TOKEN='secret', TOCHKA_ACCOUNT_ID='40802810/044525104')
+    def test_one_banks_failure_does_not_hide_the_others_success(self):
+        with patch('core.tbank.get_statement', return_value=self.PAYLOAD):
+            with patch('core.tochka.init_statement',
+                       side_effect=tochka.TochkaError('Точка недоступна')):
+                resp = self.client_http.post('/bank/operations/fetch/', follow=True)
+
+        self.assertContains(resp, 'новых 1')
+        self.assertContains(resp, 'Точка недоступна')
+        self.assertEqual(BankOperation.objects.filter(source='tbank').count(), 1)
 
 
 class TBankStatementCommandTests(TestCase):
@@ -5860,6 +5914,321 @@ class TBankStatementCommandTests(TestCase):
             call_command('tbank_statement', stdout=out, stderr=out)
 
         self.assertIn('Выписка не получена', out.getvalue())
+
+
+class TochkaStatementParsingTests(SimpleTestCase):
+    """Разбор выписки Точки. Форма конверта подтверждена по OpenAPI-описанию
+    банка (см. шапку core/tochka.py) — терпимость здесь про сам ответ
+    живого счёта, который не проверен."""
+
+    TRANSACTION = {
+        'transactionId': 'txn-1', 'creditDebitIndicator': 'Credit',
+        'documentProcessDate': '2026-08-10', 'documentNumber': '178',
+        'description': 'Оплата по счету 942',
+        'Amount': {'amount': 14000, 'currency': 'RUB'},
+        'DebtorParty': {'name': 'ООО «ЛИФТПРОЕКТ»', 'inn': '9722051089'},
+    }
+
+    def test_statement_id_is_read_from_the_init_response(self):
+        answer = {'Data': {'Statement': {'statementId': 'st-1', 'status': 'Created'}}}
+
+        self.assertEqual(tochka.statement_id(answer), 'st-1')
+        self.assertEqual(tochka.statement_status(answer), 'Created')
+
+    def test_the_get_response_wraps_statement_in_a_list(self):
+        """Схема банка отдаёт объект у создания и список у получения —
+        это не наша прихоть, а то, что предписывает OpenAPI-описание."""
+        answer = {'Data': {'Statement': [
+            {'statementId': 'st-1', 'status': 'Ready', 'Transaction': [self.TRANSACTION]}
+        ]}}
+
+        self.assertEqual(tochka.statement_status(answer), 'Ready')
+        self.assertEqual(len(tochka.transaction_list(answer)), 1)
+
+    def test_anything_else_gives_nothing_instead_of_an_error(self):
+        for payload in (None, 42, 'выписка', {}, {'Data': 'нет'}, {'Data': {'Statement': []}}):
+            with self.subTest(payload=payload):
+                self.assertEqual(tochka.statement_status(payload), '')
+                self.assertEqual(tochka.transaction_list(payload), [])
+
+    def test_amount_is_read_from_the_nested_object(self):
+        parsed = tochka.parse_transaction(self.TRANSACTION)
+
+        self.assertEqual(parsed['amount'], Decimal('14000'))
+
+    def test_the_payer_at_credit_is_the_debtor_party(self):
+        parsed = tochka.parse_transaction(self.TRANSACTION)
+
+        self.assertEqual(parsed['counterparty'], 'ООО «ЛИФТПРОЕКТ»')
+        self.assertEqual(parsed['counterparty_inn'], '9722051089')
+
+    def test_date_is_read_with_or_without_time(self):
+        for value in ('2026-08-13', '2026-08-13T10:20:30'):
+            parsed = tochka.parse_transaction({**self.TRANSACTION, 'documentProcessDate': value})
+
+            self.assertEqual(parsed['operation_date'], datetime.date(2026, 8, 13), value)
+
+    def test_only_incoming_money_is_taken(self):
+        payload = {'Data': {'Statement': [{'status': 'Ready', 'Transaction': [
+            self.TRANSACTION,
+            {**self.TRANSACTION, 'transactionId': 'txn-2', 'creditDebitIndicator': 'Debit'},
+        ]}]}}
+
+        found = tochka.incoming_transactions(payload)
+
+        self.assertEqual([item['external_id'] for item in found], ['txn-1'])
+
+    def test_a_transaction_without_an_id_is_dropped(self):
+        """Без идентификатора её не отличить от такой же в следующей выписке."""
+        payload = {'Data': {'Statement': [{'status': 'Ready', 'Transaction': [
+            {**self.TRANSACTION, 'transactionId': ''},
+        ]}]}}
+
+        self.assertEqual(tochka.incoming_transactions(payload), [])
+
+
+@override_settings(TOCHKA_TOKEN='secret', TOCHKA_ACCOUNT_ID='40802810/044525104')
+class TochkaStatementCommandTests(TestCase):
+    """Команда загрузки выписки Точки — то же поведение, что у Т-Банка,
+    поправленное на асинхронность (см. core/tochka.py)."""
+
+    READY = {'Data': {'Statement': [{'status': 'Ready', 'Transaction': [
+        {'transactionId': 'txn-1', 'creditDebitIndicator': 'Credit',
+         'documentProcessDate': '2026-08-10', 'documentNumber': '178',
+         'description': 'Оплата по счету 942',
+         'Amount': {'amount': 14000},
+         'DebtorParty': {'name': 'ООО «ЛИФТПРОЕКТ»', 'inn': '9722051089'}},
+        {'transactionId': 'txn-2', 'creditDebitIndicator': 'Debit',
+         'documentProcessDate': '2026-08-11', 'description': 'Комиссия',
+         'Amount': {'amount': 500}},
+    ]}]}}
+    INIT_ANSWER = {'Data': {'Statement': {'statementId': 'st-1', 'status': 'Created'}}}
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for attr, name in (('LAST_FETCH_FILE', '.tochka-last-run'),
+                           ('PENDING_STATEMENT_FILE', '.tochka-pending-statement')):
+            patcher = patch.object(tochka, attr, Path(self.dir.name) / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _run(self, **options):
+        out = io.StringIO()
+        with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER):
+            with patch('core.tochka.get_statement', return_value=self.READY):
+                call_command('tochka_statement', stdout=out, stderr=out, **options)
+        return out.getvalue()
+
+    def test_only_incoming_transactions_are_stored(self):
+        self._run()
+
+        self.assertEqual(BankOperation.objects.count(), 1)
+        operation = BankOperation.objects.get()
+        self.assertEqual(operation.source, 'tochka')
+        self.assertEqual(operation.external_id, 'txn-1')
+        self.assertEqual(operation.amount, Decimal('14000'))
+        self.assertEqual(operation.counterparty_inn, '9722051089')
+
+    def test_running_twice_does_not_duplicate_money(self):
+        self._run()
+        self._run()
+
+        self.assertEqual(BankOperation.objects.count(), 1)
+
+    def test_dry_run_stores_nothing(self):
+        output = self._run(dry_run=True)
+
+        self.assertEqual(BankOperation.objects.count(), 0)
+        self.assertIn('проверка', output)
+
+    @override_settings(TOCHKA_TOKEN='')
+    def test_without_settings_the_command_says_so_and_stops(self):
+        out = io.StringIO()
+        call_command('tochka_statement', stdout=out)
+
+        self.assertIn('не настроена', out.getvalue())
+        self.assertEqual(BankOperation.objects.count(), 0)
+
+    def test_a_bank_failure_is_reported_without_a_traceback(self):
+        out = io.StringIO()
+        with patch('core.tochka.init_statement',
+                   side_effect=tochka.TochkaError('Точка недоступна')):
+            call_command('tochka_statement', stdout=out, stderr=out)
+
+        self.assertIn('Выписка не получена', out.getvalue())
+
+    def test_a_tbank_operation_does_not_block_a_tochka_one_with_the_same_id(self):
+        """Идентификаторы уникальны в пределах банка, не глобально —
+        разные банки могут случайно совпасть, и это не должно мешать."""
+        BankOperation.objects.create(
+            source='tbank', external_id='txn-1', amount=Decimal('1'),
+        )
+
+        self._run()
+
+        self.assertEqual(BankOperation.objects.filter(source='tochka').count(), 1)
+
+    def test_statement_is_polled_until_ready(self):
+        """Не готова с первого раза — опрашивается ещё, а не считается
+        ошибкой: это нормальный ход дела у асинхронной выписки."""
+        processing = {'Data': {'Statement': [{'status': 'Processing'}]}}
+        with patch('core.tochka.time.sleep'):
+            with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER):
+                with patch('core.tochka.get_statement',
+                           side_effect=[processing, processing, self.READY]) as poll:
+                    result = tochka.fetch_and_store()
+
+        self.assertEqual(poll.call_count, 3)
+        self.assertEqual(result['added'], 1)
+
+    def test_not_ready_in_time_keeps_the_request_for_next_time(self):
+        """Не заказывает вторую заявку, пока не разобралась с первой —
+        банк готовил бы обе, и было бы неясно, какая из них наша."""
+        processing = {'Data': {'Statement': [{'status': 'Processing'}]}}
+        with patch('core.tochka.time.sleep'):
+            with patch('core.tochka.init_statement',
+                       return_value=self.INIT_ANSWER) as init:
+                with patch('core.tochka.get_statement', return_value=processing):
+                    with self.assertRaises(tochka.TochkaError):
+                        tochka.fetch_and_store()
+
+                init.assert_called_once()
+                # Второй вызов не должен снова звать init_statement —
+                # заявка уже записана
+                with patch('core.tochka.get_statement', return_value=self.READY):
+                    tochka.fetch_and_store()
+
+                init.assert_called_once()
+
+    def test_an_error_status_drops_the_pending_request(self):
+        error_status = {'Data': {'Statement': [{'status': 'Error'}]}}
+        with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER):
+            with patch('core.tochka.get_statement', return_value=error_status):
+                with self.assertRaises(tochka.TochkaError) as caught:
+                    tochka.fetch_and_store()
+
+        self.assertIn('Error', str(caught.exception))
+        self.assertIsNone(tochka._pending_statement())
+
+
+class TochkaStatementIntervalTests(SimpleTestCase):
+    """Частоту загрузки выписки Точки решает программа — тот же приём,
+    что у Т-Банка (StatementIntervalTests)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.marker = Path(self.dir.name) / '.tochka-last-run'
+        patcher = patch.object(tochka, 'LAST_FETCH_FILE', self.marker)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_first_run_is_always_due(self):
+        due, why = tochka.fetch_due()
+
+        self.assertTrue(due)
+        self.assertIn('ни разу', why)
+
+    def test_too_soon_is_skipped_and_says_why(self):
+        tochka.mark_fetched(timezone.now() - datetime.timedelta(minutes=10))
+
+        with override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60):
+            due, why = tochka.fetch_due()
+
+        self.assertFalse(due)
+        self.assertIn('Пропускаю', why)
+
+    def test_a_broken_value_falls_back_to_an_hour(self):
+        with override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES='часто'):
+            self.assertEqual(tochka.statement_interval(), 60)
+
+    def test_the_marker_is_a_file_and_not_a_row_in_the_database(self):
+        self.assertTrue(str(tochka.LAST_FETCH_FILE).endswith('.tochka-last-run'))
+
+
+@override_settings(TOCHKA_TOKEN='secret', TOCHKA_ACCOUNT_ID='40802810/044525104')
+class TochkaStatementScheduleCommandTests(TestCase):
+    """Команда: по расписанию промежуток спрашивается, руками — нет."""
+
+    READY = {'Data': {'Statement': [{'status': 'Ready', 'Transaction': []}]}}
+    INIT_ANSWER = {'Data': {'Statement': {'statementId': 'st-1', 'status': 'Created'}}}
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for attr, name in (('LAST_FETCH_FILE', '.tochka-last-run'),
+                           ('PENDING_STATEMENT_FILE', '.tochka-pending-statement')):
+            patcher = patch.object(tochka, attr, Path(self.dir.name) / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_scheduled_run_too_soon_does_not_touch_the_bank(self):
+        tochka.mark_fetched(timezone.now() - datetime.timedelta(minutes=5))
+        out = io.StringIO()
+
+        with patch('core.tochka.init_statement') as init:
+            call_command('tochka_statement', '--scheduled', stdout=out)
+
+        init.assert_not_called()
+        self.assertIn('Пропускаю', out.getvalue())
+
+    @override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_hand_run_does_not_ask_about_the_interval(self):
+        tochka.mark_fetched(timezone.now() - datetime.timedelta(minutes=5))
+        out = io.StringIO()
+
+        with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER) as init:
+            with patch('core.tochka.get_statement', return_value=self.READY):
+                call_command('tochka_statement', stdout=out)
+
+        init.assert_called_once()
+
+    @override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_successful_run_moves_the_marker(self):
+        with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER):
+            with patch('core.tochka.get_statement', return_value=self.READY):
+                call_command('tochka_statement', '--scheduled', stdout=io.StringIO())
+
+        self.assertIsNotNone(tochka.last_fetch_at())
+
+    @override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_failed_run_leaves_the_marker_alone(self):
+        with patch('core.tochka.init_statement',
+                   side_effect=tochka.TochkaError('банк не ответил')):
+            call_command('tochka_statement', '--scheduled',
+                         stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.assertIsNone(tochka.last_fetch_at())
+
+    @override_settings(TOCHKA_STATEMENT_INTERVAL_MINUTES=60)
+    def test_a_dry_run_leaves_the_marker_alone(self):
+        with patch('core.tochka.init_statement', return_value=self.INIT_ANSWER):
+            with patch('core.tochka.get_statement', return_value=self.READY):
+                call_command('tochka_statement', '--dry-run', stdout=io.StringIO())
+
+        self.assertIsNone(tochka.last_fetch_at())
+
+
+class TochkaStatementScheduleUnitsTests(SimpleTestCase):
+    """Юниты systemd и настройка обязаны сходиться — тот же приём,
+    что у StatementScheduleUnitsTests."""
+
+    def _read(self, name):
+        return (Path(__file__).resolve().parent.parent / 'deploy'
+                / name).read_text(encoding='utf-8')
+
+    def test_the_service_asks_the_program_whether_it_is_time(self):
+        self.assertIn('tochka_statement --scheduled',
+                      self._read('lifteam-tochka.service'))
+
+    def test_the_timer_ticks_more_often_than_the_default_interval(self):
+        self.assertIn('/15', self._read('lifteam-tochka.timer'))
+
+    def test_the_interval_is_editable_from_the_page(self):
+        self.assertIn('TOCHKA_STATEMENT_INTERVAL_MINUTES', envfile.EDITABLE_BY_NAME)
+        self.assertNotIn('TOCHKA_STATEMENT_INTERVAL_MINUTES', envfile.SECRET_NAMES)
 
 
 class TBankInvoiceBuildingTests(TestCase):
@@ -20199,7 +20568,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.107.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.108.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

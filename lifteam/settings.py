@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.107.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.108.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -385,6 +385,13 @@ TOCHKA_API_VERSION = os.getenv('TOCHKA_API_VERSION', 'v1.0')
 # Свой выключатель выставления счетов, как и у Т-Банка: счёт уходит
 # заказчику от лица фирмы, и включаться сам собой он не должен
 TOCHKA_INVOICE_ENABLED = os.getenv('TOCHKA_INVOICE_ENABLED', 'False').lower() == 'true'
+
+# Выписка. Своего выключателя, в отличие от выставления счетов, не нужно:
+# чтение выписки заказчику ничего не отправляет, и включаться ему нечего —
+# работает, как только заданы TOCHKA_TOKEN и TOCHKA_ACCOUNT_ID.
+TOCHKA_STATEMENT_DAYS = int(os.getenv('TOCHKA_STATEMENT_DAYS', '30'))
+TOCHKA_STATEMENT_INTERVAL_MINUTES = int(
+    os.getenv('TOCHKA_STATEMENT_INTERVAL_MINUTES', '60'))
 
 # ==================== ЯНДЕКС.ДИСК ====================
 # Папка под снимки ремонта у каждой единицы в заказе. Программа заводит

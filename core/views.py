@@ -64,7 +64,7 @@ from .utils import (
 from .decorators import permission_required
 from . import (
     envfile, invoicing, messengers, notifications, restarter, scanning,
-    selfcheck, tbank, updater, yadisk,
+    selfcheck, tbank, tochka, updater, yadisk,
 )
 
 
@@ -4748,6 +4748,18 @@ def _settings_notes():
             'Выписку ещё не тянули ни разу. Если расписание установлено, '
             'первая загрузка случится на ближайшем тике.'
         )
+
+    tochka_fetched = tochka.last_fetch_at()
+    if tochka_fetched:
+        notes['TOCHKA_STATEMENT_INTERVAL_MINUTES'] = (
+            'Выписка последний раз загружалась %s.'
+            % timezone.localtime(tochka_fetched).strftime('%d.%m.%Y в %H:%M')
+        )
+    elif tochka.statement_configured():
+        notes['TOCHKA_STATEMENT_INTERVAL_MINUTES'] = (
+            'Выписку ещё не тянули ни разу. Если расписание установлено, '
+            'первая загрузка случится на ближайшем тике.'
+        )
     return notes
 
 
@@ -5454,9 +5466,29 @@ def repair_order_invoice_pdf(request, pk):
 # здесь ограничена подсказкой: ошибочно разнесённое поступление ищут потом
 # неделю, а нажать кнопку — секунда.
 
+def _statement_banks():
+    """Банки, умеющие читать выписку, и их состояние — для страницы
+    «Поступления» и кнопки «Загрузить сейчас». Список явный: третий банк
+    добавляется сюда, а не угадывается по атрибутам модуля."""
+    return [
+        {
+            'code': 'tbank', 'label': 'Т-Банк',
+            'configured': tbank.is_configured(),
+            'last_fetch_at': tbank.last_fetch_at(),
+            'missing': 'не задан TBANK_TOKEN',
+        },
+        {
+            'code': 'tochka', 'label': 'Точка',
+            'configured': tochka.statement_configured(),
+            'last_fetch_at': tochka.last_fetch_at(),
+            'missing': 'не заданы TOCHKA_TOKEN и/или TOCHKA_ACCOUNT_ID',
+        },
+    ]
+
+
 @permission_required('bank_statement')
 def bank_operations(request):
-    """Поступления из выписки Т-Банка и подсказки, к каким они заказам."""
+    """Поступления из выписок банков и подсказки, к каким они заказам."""
     status = request.GET.get('status', 'new')
     if status not in dict(BankOperation.STATUS_CHOICES):
         status = 'new'
@@ -5478,6 +5510,7 @@ def bank_operations(request):
         .annotate(total=Count('id')).values_list('status', 'total')
     )
 
+    banks = _statement_banks()
     return render(request, 'core/bank/operations.html', {
         'rows': rows,
         'status': status,
@@ -5485,36 +5518,56 @@ def bank_operations(request):
             {'value': value, 'label': label, 'count': counts.get(value, 0)}
             for value, label in BankOperation.STATUS_CHOICES
         ],
-        'configured': tbank.is_configured(),
-        'last_fetch_at': tbank.last_fetch_at(),
+        'banks': banks,
+        'any_bank_configured': any(bank['configured'] for bank in banks),
     })
 
 
 @permission_required('bank_statement')
 @require_POST
 def bank_statement_fetch(request):
-    """«Загрузить сейчас» — тот же путь, что у таймера, но по нажатию.
+    """«Загрузить сейчас» — тот же путь, что у таймера, но по нажатию,
+    сразу по всем настроенным банкам: нажавший кнопку хочет поступления
+    отовсюду, а не выбирать банк отдельно.
 
     Промежуток из настроек здесь не спрашивается (как и у ручного запуска
     команды): нажавший кнопку хочет выписку сейчас, а не ждать оставшуюся
-    часть промежутка.
+    часть промежутка. Отказ одного банка не должен скрывать успех другого —
+    у каждого своё сообщение.
     """
-    if not tbank.is_configured():
-        messages.error(request, 'Т-Банк не настроен: пустой TBANK_TOKEN')
-        return redirect('bank_operations')
+    tried = False
 
-    try:
-        result = tbank.fetch_and_store()
-    except tbank.TBankError as exc:
-        messages.error(request, f'Выписка не получена: {exc}')
-        return redirect('bank_operations')
+    if tbank.is_configured():
+        tried = True
+        try:
+            result = tbank.fetch_and_store()
+        except tbank.TBankError as exc:
+            messages.error(request, f'Т-Банк: выписка не получена — {exc}')
+        else:
+            messages.success(
+                request,
+                f'Т-Банк, {result["date_from"]:%d.%m.%Y}–{result["date_to"]:%d.%m.%Y}: '
+                f'операций {result["total"]}, поступлений {result["incoming"]}, '
+                f'новых {result["added"]}.'
+            )
 
-    messages.success(
-        request,
-        f'Выписка с {result["date_from"]:%d.%m.%Y} по {result["date_to"]:%d.%m.%Y}: '
-        f'операций {result["total"]}, поступлений {result["incoming"]}, '
-        f'новых {result["added"]}.'
-    )
+    if tochka.statement_configured():
+        tried = True
+        try:
+            result = tochka.fetch_and_store()
+        except tochka.TochkaError as exc:
+            messages.error(request, f'Точка: выписка не получена — {exc}')
+        else:
+            messages.success(
+                request,
+                f'Точка, {result["date_from"]:%d.%m.%Y}–{result["date_to"]:%d.%m.%Y}: '
+                f'операций {result["total"]}, поступлений {result["incoming"]}, '
+                f'новых {result["added"]}.'
+            )
+
+    if not tried:
+        messages.error(request, 'Ни один банк не настроен для чтения выписки')
+
     return redirect('bank_operations')
 
 
