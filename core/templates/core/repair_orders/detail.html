@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.108.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.109.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -92,6 +92,14 @@ document.addEventListener('DOMContentLoaded', function () {
         {% if user.can.invoices_send %}
         <a href="{% url 'repair_order_invoice' order.pk %}" class="btn btn-outline-success me-2">
             <i class="bi bi-receipt me-2"></i>{% if order.invoice_sent_at %}Счёт выставлен{% else %}Счёт{% endif %}
+        </a>
+        {% comment %}
+            Файл, а не переход на форму: подписывает и отправляет его
+            бухгалтер сам в веб-интерфейсе Диадока, программа только
+            генерирует правильно оформленный УПД (core/diadoc.py).
+        {% endcomment %}
+        <a href="{% url 'repair_order_utd' order.pk %}" class="btn btn-outline-success me-2">
+            <i class="bi bi-file-earmark-arrow-down me-2"></i>УПД
         </a>
         {% endif %}
         <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>

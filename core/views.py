@@ -63,7 +63,7 @@ from .utils import (
 )
 from .decorators import permission_required
 from . import (
-    envfile, invoicing, messengers, notifications, restarter, scanning,
+    diadoc, envfile, invoicing, messengers, notifications, restarter, scanning,
     selfcheck, tbank, tochka, updater, yadisk,
 )
 
@@ -5458,6 +5458,84 @@ def repair_order_invoice_pdf(request, pk):
         return redirect('repair_order_detail', pk=order.pk)
 
     return HttpResponse(pdf, content_type='application/pdf')
+
+
+@login_required
+@permission_required('invoices_send')
+def repair_order_utd(request, pk):
+    """Файл УПД по заказу (функция ДОП) — для скачивания и дальнейшей
+    подписи и отправки бухгалтером вручную в веб-интерфейсе Диадока.
+
+    Программа не подписывает и не отправляет документ сама — почему,
+    подробно в шапке core/diadoc.py. Здесь только генерация: сформировать
+    из данных заказа правильно оформленный по схеме ФНС файл через API
+    Диадока и отдать его как есть.
+    """
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+
+    if not diadoc.is_configured():
+        messages.error(
+            request,
+            'Диадок не настроен: ' + ', '.join(diadoc.missing_settings())
+        )
+        return redirect('repair_order_detail', pk=order.pk)
+
+    try:
+        user_data_xml = diadoc.build_utd_dop_user_data_xml(order)
+        types = diadoc.get_document_types()
+    except diadoc.DiadocError as exc:
+        messages.error(request, f'УПД не сформирован: {exc}')
+        return redirect('repair_order_detail', pk=order.pk)
+
+    version = _diadoc_utd_version(types)
+    if not version:
+        messages.error(
+            request,
+            'В ящике Диадока не найден доступный формат УПД '
+            '(UniversalTransferDocument). Обратитесь к интегратору Диадока.'
+        )
+        return redirect('repair_order_detail', pk=order.pk)
+
+    try:
+        answer = diadoc.generate_title_xml(
+            'UniversalTransferDocument', diadoc.FUNCTION, version,
+            title_index=0, user_data_xml=user_data_xml,
+        )
+        content = diadoc.generated_file_bytes(answer)
+    except diadoc.DiadocError as exc:
+        messages.error(request, f'УПД не сформирован: {exc}')
+        return redirect('repair_order_detail', pk=order.pk)
+
+    response = HttpResponse(content, content_type='application/xml')
+    response['Content-Disposition'] = (
+        f'attachment; filename="UTD_{order.order_number}.xml"'
+    )
+    return response
+
+
+def _diadoc_utd_version(document_types):
+    """Версия формата УПД, включённая в ящике, — из ответа GetDocumentTypes.
+
+    Не хранится постоянной в коде: ФНС меняет версии формата время
+    от времени, и то, что доступно ящику сейчас, надёжнее спросить
+    у Диадока при каждом формировании, чем зашивать однажды и забыть.
+    Форма ответа терпима к разным именам ключей — тем же приёмом,
+    что у выписок банков, потому что сверить её на живом ответе
+    не на чем (см. шапку core/diadoc.py).
+    """
+    types = document_types.get('DocumentTypes') if isinstance(document_types, dict) else None
+    for doc_type in types or []:
+        type_id = doc_type.get('Name') or doc_type.get('NamedId') or doc_type.get('TypeNamedId')
+        if type_id != 'UniversalTransferDocument':
+            continue
+        for function in doc_type.get('Functions') or []:
+            if function.get('Name') not in ('ДОП', 'default', None):
+                continue
+            for version in function.get('Versions') or []:
+                name = version.get('Name') or version.get('Version') or version.get('NamedId')
+                if name:
+                    return name
+    return None
 
 
 # ==================== ПОСТУПЛЕНИЯ ИЗ БАНКА ====================

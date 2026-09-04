@@ -38,7 +38,7 @@ from django.utils import timezone
 from django import forms
 
 from . import (
-    envfile, invoicing, messengers, net, notifications, restarter, scanning,
+    diadoc, envfile, invoicing, messengers, net, notifications, restarter, scanning,
     selfcheck, tbank, tochka, views, webhooks, yadisk,
 )
 from .forms import OrganizationForm, RepairOrderEquipmentForm, StatusChangeForm
@@ -9681,6 +9681,261 @@ class TochkaInvoiceTests(TestCase):
                 tochka.get_invoice_pdf('a1b2c3')
 
         self.assertEqual(opened.call_count, tochka.READ_RETRIES + 1)
+
+
+@override_settings(DIADOC_CLIENT_ID='client', DIADOC_BOX_ID='box-1')
+class DiadocSettingsTests(SimpleTestCase):
+    """Настроен ли Диадок — refresh_token сюда не входит намеренно,
+    см. docstring diadoc.is_configured."""
+
+    def test_configured_needs_client_id_secret_and_box(self):
+        with override_settings(DIADOC_CLIENT_SECRET='secret'):
+            self.assertTrue(diadoc.is_configured())
+
+    @override_settings(DIADOC_CLIENT_ID='')
+    def test_missing_client_id_is_not_configured(self):
+        self.assertFalse(diadoc.is_configured())
+
+    def test_missing_settings_names_the_refresh_token_separately(self):
+        absent = diadoc.missing_settings()
+        self.assertIn('DIADOC_CLIENT_SECRET', absent)
+        self.assertTrue(any('DIADOC_REFRESH_TOKEN' in item for item in absent))
+
+
+class DiadocUtdXmlTests(TestCase):
+    """Сборка UserDataXml для титула УПД (функция ДОП).
+
+    Структура и точное значение «без НДС» — из рабочего примера
+    в документации Диадока («Работа с актами», документооборот УПД
+    с функцией ДОП устроен так же), не придуманы. См. шапку core/diadoc.py.
+    """
+
+    def setUp(self):
+        self.seller = Organization.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089', kpp='772201001',
+            address='г. Москва, ул. Ленина, 1', is_default=True,
+            diadoc_fns_participant_id='2BM-SELLER',
+            signatory_position='Директор', signatory_name='Иванов Иван Иванович',
+        )
+        self.customer = ClientModel.objects.create(
+            name='ООО «Заказчик»', inn='1234567894', kpp='667301001',
+            address='г. Тюмень, ул. Мира, 5',
+            diadoc_fns_participant_id='2BM-BUYER',
+        )
+        self.order = RepairOrder.objects.create(
+            client=self.customer, order_number='2026-0099')
+        model = EquipmentModel.objects.create(name='Emotron-упд')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-UTD'),
+            repair_cost=Decimal('54000'),
+        )
+
+    def _root(self):
+        import xml.etree.ElementTree as ET
+        xml = diadoc.build_utd_dop_user_data_xml(self.order)
+        return ET.fromstring(xml)
+
+    def test_function_is_dop_without_vat(self):
+        root = self._root()
+        self.assertEqual(root.get('Function'), 'ДОП')
+        table = root.find('Table')
+        self.assertEqual(table.get('WithoutVat'), 'true')
+        item = table.find('Item')
+        self.assertEqual(item.get('TaxRate'), 'NoVat')
+        self.assertEqual(item.get('WithoutVat'), 'true')
+
+    def test_document_number_and_totals(self):
+        root = self._root()
+        self.assertEqual(root.get('DocumentNumber'), '2026-0099')
+        table = root.find('Table')
+        self.assertEqual(table.get('Total'), '54000.00')
+        self.assertEqual(table.find('Item').get('Subtotal'), '54000.00')
+
+    def test_seller_and_buyer_carry_their_fns_participant_id(self):
+        root = self._root()
+        self.assertEqual(root.get('SenderFnsParticipantId'), '2BM-SELLER')
+        self.assertEqual(root.get('RecipientFnsParticipantId'), '2BM-BUYER')
+        seller_org = root.find('.//Sellers/Seller/OrganizationDetails')
+        buyer_org = root.find('.//Buyers/Buyer/OrganizationDetails')
+        self.assertEqual(seller_org.get('Inn'), '9722051089')
+        self.assertEqual(seller_org.get('Kpp'), '772201001')
+        self.assertEqual(buyer_org.get('Inn'), '1234567894')
+        self.assertEqual(buyer_org.get('FnsParticipantId'), '2BM-BUYER')
+
+    def test_item_name_is_the_same_as_on_the_invoice(self):
+        """Одна и та же формулировка позиции, что и в счёте — заказчик
+        сверяет документы между собой, а не с ремонтом."""
+        root = self._root()
+        item = root.find('Table/Item')
+        self.assertEqual(item.get('Product'), self.order.invoice_items()[0]['name'])
+
+    def test_missing_seller_fns_participant_id_is_refused_before_the_network(self):
+        self.seller.diadoc_fns_participant_id = ''
+        self.seller.save()
+        with self.assertRaises(diadoc.DiadocError) as caught:
+            diadoc.build_utd_dop_user_data_xml(self.order)
+        self.assertIn('ЛИФТПРОЕКТ', str(caught.exception))
+
+    def test_missing_buyer_inn_is_refused(self):
+        self.customer.inn = ''
+        self.customer.save()
+        with self.assertRaises(diadoc.DiadocError) as caught:
+            diadoc.build_utd_dop_user_data_xml(self.order)
+        self.assertIn('ИНН', str(caught.exception))
+
+    def test_missing_buyer_fns_participant_id_is_refused(self):
+        self.customer.diadoc_fns_participant_id = ''
+        self.customer.save()
+        with self.assertRaises(diadoc.DiadocError) as caught:
+            diadoc.build_utd_dop_user_data_xml(self.order)
+        self.assertIn('приглашение', str(caught.exception))
+
+    def test_an_order_without_priced_units_has_nothing_to_print(self):
+        empty_order = RepairOrder.objects.create(
+            client=self.customer, order_number='2026-0100')
+        with self.assertRaises(diadoc.DiadocError) as caught:
+            diadoc.build_utd_dop_user_data_xml(empty_order)
+        self.assertIn('нет', str(caught.exception))
+
+
+@override_settings(DIADOC_CLIENT_ID='client', DIADOC_CLIENT_SECRET='secret')
+class DiadocTokenRefreshTests(SimpleTestCase):
+    """Обновление access_token — и перезапись refresh_token, если Диадок
+    выдал новый (см. docstring refresh_access_token)."""
+
+    @override_settings(DIADOC_REFRESH_TOKEN='')
+    def test_without_a_refresh_token_the_error_points_to_the_login_command(self):
+        with self.assertRaises(diadoc.DiadocError) as caught:
+            diadoc.refresh_access_token()
+        self.assertIn('diadoc_login', str(caught.exception))
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_a_fresh_access_token_is_returned(self):
+        with patch('core.diadoc._oidc_post',
+                   return_value={'access_token': 'new-access', 'refresh_token': 'old-token'}):
+            access = diadoc.refresh_access_token()
+        self.assertEqual(access, 'new-access')
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_a_rotated_refresh_token_is_saved(self):
+        with patch('core.diadoc._oidc_post',
+                   return_value={'access_token': 'new-access', 'refresh_token': 'rotated-token'}):
+            with patch('core.diadoc.envfile.set_value') as set_value:
+                diadoc.refresh_access_token()
+        set_value.assert_called_once_with('DIADOC_REFRESH_TOKEN', 'rotated-token', allow_secrets=True)
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_the_same_refresh_token_is_not_rewritten(self):
+        with patch('core.diadoc._oidc_post',
+                   return_value={'access_token': 'new-access', 'refresh_token': 'old-token'}):
+            with patch('core.diadoc.envfile.set_value') as set_value:
+                diadoc.refresh_access_token()
+        set_value.assert_not_called()
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_no_access_token_in_the_answer_is_an_error(self):
+        with patch('core.diadoc._oidc_post', return_value={}):
+            with self.assertRaises(diadoc.DiadocError):
+                diadoc.refresh_access_token()
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_a_timeout_is_named_in_words(self):
+        with patch('core.diadoc.request.urlopen', side_effect=TimeoutError()):
+            with self.assertRaises(diadoc.DiadocError) as caught:
+                diadoc.refresh_access_token()
+        self.assertIn('не ответил вовремя', str(caught.exception))
+
+    @override_settings(DIADOC_REFRESH_TOKEN='old-token')
+    def test_an_unreachable_service_is_named_in_words(self):
+        with patch('core.diadoc.request.urlopen',
+                   side_effect=urllib_error.URLError('Connection refused')):
+            with self.assertRaises(diadoc.DiadocError) as caught:
+                diadoc.refresh_access_token()
+        self.assertIn('недоступен', str(caught.exception))
+
+
+class RepairOrderUtdViewTests(TestCase):
+    """Кнопка «УПД» на карточке заказа — только генерация файла,
+    ни подписи, ни отправки (см. шапку core/diadoc.py)."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_utd', full_name='Бухгалтер', password='pass',
+            position=position('Бухгалтер'))
+        self.warehouse = Employee.objects.create_user(
+            username='sklad_utd', full_name='Кладовщик', password='pass',
+            position=position('Кладовщик'))
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.seller = Organization.objects.create(
+            name='ООО «ЛИФТПРОЕКТ»', inn='9722051089', kpp='772201001',
+            is_default=True, diadoc_fns_participant_id='2BM-SELLER',
+        )
+        self.customer = ClientModel.objects.create(
+            name='ООО «Заказчик»', inn='1234567894',
+            diadoc_fns_participant_id='2BM-BUYER',
+        )
+        self.order = RepairOrder.objects.create(
+            client=self.customer, order_number='2026-0099')
+        model = EquipmentModel.objects.create(name='Emotron-упд-вид')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-UTD-V'),
+            repair_cost=Decimal('54000'),
+        )
+
+    def _url(self):
+        return f'/repair-orders/{self.order.pk}/utd/'
+
+    def test_the_warehouse_cannot_generate_utd(self):
+        self.client_http.force_login(self.warehouse)
+        resp = self.client_http.get(self._url())
+        self.assertRedirects(resp, '/')
+
+    def test_an_unconfigured_diadoc_shows_what_is_missing(self):
+        resp = self.client_http.get(self._url(), follow=True)
+        messages = list(resp.context['messages'])
+        self.assertTrue(any('DIADOC_CLIENT_ID' in str(m) for m in messages))
+
+    @override_settings(DIADOC_CLIENT_ID='client', DIADOC_CLIENT_SECRET='secret',
+                       DIADOC_BOX_ID='box-1', DIADOC_REFRESH_TOKEN='token')
+    def test_a_successful_generation_returns_the_file(self):
+        types = {'DocumentTypes': [{
+            'Name': 'UniversalTransferDocument',
+            'Functions': [{'Name': 'ДОП', 'Versions': [{'Name': 'utd970_05_03_01'}]}],
+        }]}
+        with patch('core.diadoc.get_document_types', return_value=types), \
+             patch('core.diadoc.generate_title_xml', return_value={'Content': 'aGVsbG8='}) as generate:
+            resp = self.client_http.get(self._url())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'hello')
+        self.assertEqual(resp['Content-Type'], 'application/xml')
+        self.assertIn('2026-0099', resp['Content-Disposition'])
+        called_version = generate.call_args[0][2]
+        self.assertEqual(called_version, 'utd970_05_03_01')
+
+    @override_settings(DIADOC_CLIENT_ID='client', DIADOC_CLIENT_SECRET='secret',
+                       DIADOC_BOX_ID='box-1', DIADOC_REFRESH_TOKEN='token')
+    def test_no_available_utd_version_is_refused_before_generating(self):
+        with patch('core.diadoc.get_document_types', return_value={'DocumentTypes': []}), \
+             patch('core.diadoc.generate_title_xml') as generate:
+            resp = self.client_http.get(self._url(), follow=True)
+
+        generate.assert_not_called()
+        messages = list(resp.context['messages'])
+        self.assertTrue(any('формат УПД' in str(m) for m in messages))
+
+    @override_settings(DIADOC_CLIENT_ID='client', DIADOC_CLIENT_SECRET='secret',
+                       DIADOC_BOX_ID='box-1', DIADOC_REFRESH_TOKEN='token')
+    def test_a_missing_fns_participant_id_is_shown_as_a_message(self):
+        self.seller.diadoc_fns_participant_id = ''
+        self.seller.save()
+        resp = self.client_http.get(self._url(), follow=True)
+        messages = list(resp.context['messages'])
+        self.assertTrue(any('УПД не сформирован' in str(m) for m in messages))
 
 
 class TochkaCustomerListTests(SimpleTestCase):
@@ -20568,7 +20823,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.108.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.109.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

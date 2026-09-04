@@ -21,7 +21,7 @@
 from django.core.mail import get_connection
 from django.utils import timezone
 
-from . import envfile, invoicing, messengers, tbank, tochka, webhooks, yadisk
+from . import diadoc, envfile, invoicing, messengers, tbank, tochka, webhooks, yadisk
 
 
 class CheckResult:
@@ -103,6 +103,35 @@ def _check_tochka():
         'отвечал бы «связи нет» на исправном токене. Первый настоящий счёт '
         'выставьте под присмотром.'
     )
+
+
+def _check_diadoc_client_secret():
+    """`client_secret` сам по себе не проверить: OIDC подтверждает его
+    только вместе с обменом токена, а для первого обмена нужен живой
+    человек (Device Flow) — не то, что можно сделать кнопкой «Проверить».
+    Настоящая проверка — у `DIADOC_REFRESH_TOKEN` ниже: её успех и есть
+    подтверждение, что оба секрета верны."""
+    if not diadoc.client_id() or not diadoc.client_secret():
+        return _skipped('Не заданы DIADOC_CLIENT_ID/DIADOC_CLIENT_SECRET.')
+    return _skipped(
+        'Заданы, но сам по себе секрет не проверить — только вместе '
+        'с DIADOC_REFRESH_TOKEN (см. проверку ниже).'
+    )
+
+
+def _check_diadoc_refresh_token():
+    if not diadoc.refresh_token():
+        return _skipped('Вход не пройден: выполните manage.py diadoc_login.')
+    if not diadoc.box_id():
+        return _skipped('Не задан DIADOC_BOX_ID — узнаётся при входе.')
+    try:
+        answer = diadoc.get_document_types()
+    except diadoc.DiadocError as error:
+        return _fail('Диадок не ответил: %s' % _explain(error))
+    types = answer.get('DocumentTypes') if isinstance(answer, dict) else None
+    if types:
+        return _ok('Диадок принял токен. Типов документов в ящике: %d.' % len(types))
+    return _ok('Диадок принял токен, но не назвал ни одного типа документа.')
 
 
 def _check_yadisk():
@@ -252,6 +281,8 @@ CHECKS = {
     'EMAIL_HOST_PASSWORD': _check_email,
     'WEBHOOKS_TBANK_SECRET': _check_webhook_tbank,
     'WEBHOOKS_TOCHKA_SECRET': _check_webhook_tochka,
+    'DIADOC_CLIENT_SECRET': _check_diadoc_client_secret,
+    'DIADOC_REFRESH_TOKEN': _check_diadoc_refresh_token,
 }
 
 

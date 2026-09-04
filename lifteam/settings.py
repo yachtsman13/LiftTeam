@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.108.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.109.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -429,6 +429,22 @@ TOCHKA_INVOICE_NDS = os.getenv('TOCHKA_INVOICE_NDS', 'without_nds')
 # откажет по сумме — поставьте True, это единственное, что тут меняется.
 TOCHKA_INVOICE_AMOUNTS_AS_STRING = os.getenv(
     'TOCHKA_INVOICE_AMOUNTS_AS_STRING', 'False').lower() == 'true'
+
+# ==================== ДИАДОК ====================
+# УПД по заказу — с v2.109.0, core/diadoc.py. Программа только генерирует
+# документ, подпись и отправку клиенту делает бухгалтер вручную
+# в веб-интерфейсе Диадока — почему так, в шапке модуля.
+#
+# client_id/client_secret выдаются в личном кабинете интегратора Диадока
+# при регистрации приложения. boxId — идентификатор ящика организации,
+# узнаётся методом GetMyOrganizations после первого входа.
+DIADOC_CLIENT_ID = os.getenv('DIADOC_CLIENT_ID', '')
+DIADOC_BOX_ID = os.getenv('DIADOC_BOX_ID', '')
+
+# Адреса — в настройках по той же причине, что у банков и Диска: переезд
+# или переключение на тестовую площадку должны чиниться правкой .env
+DIADOC_API_URL = os.getenv('DIADOC_API_URL', 'https://diadoc-api.kontur.ru')
+DIADOC_OIDC_URL = os.getenv('DIADOC_OIDC_URL', 'https://identity.kontur.ru')
 
 # --- Приём уведомлений от банков (вебхуки) -------------------------------
 #

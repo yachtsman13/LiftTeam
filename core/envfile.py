@@ -83,6 +83,15 @@ from dotenv import dotenv_values, set_key
 # Имена, которые считаются секретами: их не показывают, не пишут в журнал
 # и не принимают из веб-интерфейса. `SECRET_KEY` сюда не входит — почему,
 # сказано в шапке модуля.
+#
+# `DIADOC_REFRESH_TOKEN` — единственное исключение из «пишет только
+# setsecret»: Диадок вправе выдавать новый токен обновления при каждом
+# обмене (см. `diadoc.refresh_access_token`), и его приходится
+# перезаписывать программно, в том числе из запроса, вызванного кнопкой
+# «Сформировать УПД». Это не то же самое, что ввод секрета с браузера:
+# значение никогда не идёт через форму и не покидает пару Pi—Диадок,
+# опасность которой описана выше (сертификат на локальном адресе),
+# здесь ни при чём.
 SECRET_NAMES = (
     'TBANK_TOKEN',
     'TOCHKA_TOKEN',
@@ -92,6 +101,8 @@ SECRET_NAMES = (
     'WEBHOOKS_TBANK_SECRET',
     'WEBHOOKS_TOCHKA_SECRET',
     'EMAIL_HOST_PASSWORD',
+    'DIADOC_CLIENT_SECRET',
+    'DIADOC_REFRESH_TOKEN',
 )
 
 # Что это за секрет и подхватывается ли он без перезапуска. Не подхватывается
@@ -106,6 +117,8 @@ SECRET_TITLES = {
     'WEBHOOKS_TBANK_SECRET': 'Секрет уведомлений Т-Банка',
     'WEBHOOKS_TOCHKA_SECRET': 'Секрет уведомлений Точки',
     'EMAIL_HOST_PASSWORD': 'Пароль почтового ящика',
+    'DIADOC_CLIENT_SECRET': 'Ключ приложения Диадока',
+    'DIADOC_REFRESH_TOKEN': 'Токен обновления Диадока',
 }
 
 SECRETS_NEEDING_RESTART = frozenset({'EMAIL_HOST_PASSWORD'})
@@ -213,6 +226,16 @@ EDITABLE = (
          'Внутри неё программа заводит «Заказы/<номер>/<серийный номер>».',
          None),
         ('YANDEX_DISK_API_URL', 'Адрес API', 'text', '', None),
+    )),
+    ('Диадок', (
+        ('DIADOC_CLIENT_ID', 'Идентификатор приложения (client_id)', 'text',
+         'Выдаётся в личном кабинете интегратора Диадока при регистрации.',
+         None),
+        ('DIADOC_BOX_ID', 'Идентификатор ящика (boxId)', 'text',
+         'Узнаётся методом GetMyOrganizations после первого входа '
+         '(manage.py diadoc_login).', None),
+        ('DIADOC_API_URL', 'Адрес API', 'text', '', None),
+        ('DIADOC_OIDC_URL', 'Адрес входа (OpenID Connect)', 'text', '', None),
     )),
     ('Доступ к программе', (
         ('ALLOWED_HOSTS', 'Адреса, по которым открывают программу', 'text',

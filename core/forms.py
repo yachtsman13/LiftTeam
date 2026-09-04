@@ -59,7 +59,8 @@ class LoginForm(forms.Form):
 class ClientForm(forms.ModelForm):
     class Meta:
         model = Client
-        fields = ['name', 'inn', 'kpp', 'address', 'contact_person', 'phone', 'email']
+        fields = ['name', 'inn', 'kpp', 'address', 'contact_person', 'phone', 'email',
+                  'diadoc_fns_participant_id']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'inn': forms.TextInput(attrs={'class': 'form-control'}),
@@ -70,6 +71,7 @@ class ClientForm(forms.ModelForm):
             'contact_person': forms.TextInput(attrs={'class': 'form-control'}),
             'phone': forms.TextInput(attrs={'class': 'form-control'}),
             'email': forms.EmailInput(attrs={'class': 'form-control'}),
+            'diadoc_fns_participant_id': forms.TextInput(attrs={'class': 'form-control'}),
         }
         labels = {
             'name': 'Название',
@@ -830,7 +832,7 @@ class OrganizationForm(forms.ModelForm):
         fields = ['name', 'inn', 'kpp', 'ogrn', 'address', 'city', 'phone', 'email',
                   'signatory_position', 'signatory_name',
                   'bank_name', 'bank_bik', 'bank_account', 'corr_account',
-                  'tax_note', 'provider', 'is_default']
+                  'tax_note', 'provider', 'is_default', 'diadoc_fns_participant_id']
         widgets = {
             'name': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'ООО «Название»'}),
@@ -853,6 +855,7 @@ class OrganizationForm(forms.ModelForm):
             'is_default': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'tax_note': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': 'Без НДС, применяется УСН'}),
+            'diadoc_fns_participant_id': forms.TextInput(attrs={'class': 'form-control'}),
         }
 
 
