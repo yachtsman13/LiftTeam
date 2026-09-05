@@ -3035,9 +3035,18 @@ class RepairOrderEquipment(models.Model):
     def invoice_line(self):
         """Наименование позиции в счёте.
 
-        «Ремонт Преобразователь частоты Emotron … SN:001272 (Замена IGBT
-        модуля)» — так эта строка написана в счетах, выставленных руками,
-        и заказчик сверяет её с актом слово в слово.
+        «Ремонт Преобразователь частоты Emotron … -1.1, 30 кВт SN:001272
+        (Замена IGBT модуля)» — так эта строка написана в счетах,
+        выставленных руками, и заказчик сверяет её с актом слово в слово.
+
+        Изделие называется через `full_designation` — с версией
+        исполнения, а не просто `model.full_name`: обозначение версии
+        печатается везде (акты, этикетка, списки выбора), и счёт не должен
+        оказаться единственным исключением. Мощность (с v2.112.0,
+        `Equipment.power_kw`) добавляется следом, только если у версии
+        она заполнена, — это то же значение, что участвует в подборе
+        цены из прайса, и заказчику полезно видеть, за какое исполнение
+        он платит.
 
         Сложный ремонт помечается словом впереди — «Сложный ремонт …»:
         с v2.93.0, по образцу простого «Ремонт …». Слово берётся из той же
@@ -3051,7 +3060,11 @@ class RepairOrderEquipment(models.Model):
         стоят всегда.
         """
         prefix = 'Сложный ремонт' if self.effective_complexity == 'complex' else 'Ремонт'
-        name = f'{prefix} {self.equipment.model.full_name} SN:{self.equipment.serial_number}'
+        designation = self.equipment.full_designation
+        power = self.equipment.power_kw
+        if power is not None:
+            designation += f', {power} кВт'
+        name = f'{prefix} {designation} SN:{self.equipment.serial_number}'
         show_work = self.repair_order.client.invoice_show_work_performed
         work = self.work_performed.strip() if show_work else ''
         if work:

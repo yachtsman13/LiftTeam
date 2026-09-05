@@ -6257,6 +6257,47 @@ class TBankInvoiceBuildingTests(TestCase):
         """Перенос строки разорвал бы ячейку таблицы в PDF банка."""
         self.assertNotIn('\n', self.roe.invoice_line)
 
+    def test_the_version_designation_is_included(self):
+        """Обозначение версии печатается везде (акты, этикетка, списки
+        выбора) — счёт не должен оказаться единственным исключением."""
+        model = EquipmentModel.objects.create(
+            name='Emotron DSV', kind='Преобразователь частоты')
+        version = EquipmentVersion.objects.create(equipment_model=model, name='-1.1')
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, version=version, serial_number='SN-INV-1'),
+        )
+
+        self.assertEqual(
+            roe.invoice_line,
+            'Ремонт Преобразователь частоты Emotron DSV-1.1 SN:SN-INV-1'
+        )
+
+    def test_the_power_is_included_when_the_version_has_it(self):
+        """То же значение, что участвует в подборе цены из прайса —
+        заказчику полезно видеть, за какое исполнение он платит."""
+        model = EquipmentModel.objects.create(
+            name='Emotron DSV', kind='Преобразователь частоты')
+        version = EquipmentVersion.objects.create(
+            equipment_model=model, name='-30', power_kw=Decimal('30'))
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, version=version, serial_number='SN-INV-2'),
+        )
+
+        self.assertEqual(
+            roe.invoice_line,
+            'Ремонт Преобразователь частоты Emotron DSV-30, 30 кВт SN:SN-INV-2'
+        )
+
+    def test_no_power_means_no_extra_text(self):
+        """Мощность есть не у каждой версии — печатать нечего, значит
+        не печатается ничего."""
+        self.assertIsNone(self.roe.equipment.power_kw)
+        self.assertNotIn('кВт', self.roe.invoice_line)
+
     def test_a_complex_repair_is_named_so_in_the_invoice(self):
         """С v2.93.0 сложный ремонт помечается словом впереди — так же,
         как владелец писал в счетах руками."""
@@ -21142,7 +21183,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.112.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.113.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
