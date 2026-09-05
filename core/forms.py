@@ -1004,9 +1004,9 @@ class UnitDiagnosisForm(forms.ModelForm):
     """Приём и диагностика — один раздел страницы единицы.
 
     Что привезли (со слов заказчика, начальное состояние) и что нашли
-    внутри (диагноз, коды ошибок, типовые неисправности, сложность,
-    гарантийный случай, оценка) — это одна работа за одним столом,
-    и разносить её по двум экранам было незачем.
+    внутри (диагноз, типовые неисправности, сложность, гарантийный
+    случай, оценка) — это одна работа за одним столом, и разносить её
+    по двум экранам было незачем.
 
     Сюда же переехали поля бывшего акта дефектации: акт печатает то,
     что записано здесь, а не то, что заполняют где-то отдельно.
@@ -1019,7 +1019,7 @@ class UnitDiagnosisForm(forms.ModelForm):
         # форме. Ручной ввод — своей маленькой формой там же (UnitDiskFolderForm)
         fields = [
             'fault_description', 'initial_condition',
-            'defect_act_date', 'error_codes', 'faults',
+            'defect_act_date', 'diagnosis', 'faults',
             'repair_complexity', 'warranty_case', 'non_warranty_reason',
             'estimated_cost', 'repair_impossible',
         ]
@@ -1029,9 +1029,10 @@ class UnitDiagnosisForm(forms.ModelForm):
             'defect_act_date': forms.DateInput(
                 attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
             ),
-            'error_codes': forms.Textarea(attrs={
-                'class': 'form-control', 'rows': 4,
-                'placeholder': '«F2340» — короткое замыкание в IGBT модуле',
+            'diagnosis': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 3,
+                'placeholder': 'В результате диагностики устройства выявлен '
+                               'выход из строя IGBT модуля и его обвязки.',
             }),
             'faults': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 6}),
             'repair_complexity': forms.Select(attrs={'class': 'form-select'}),

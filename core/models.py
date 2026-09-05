@@ -2472,10 +2472,9 @@ class RepairOrderEquipment(models.Model):
         help_text='Проставляется сама в день первой записи. Правится руками: '
                   'диагностировать могли вчера, а записать сегодня.'
     )
-    error_codes = models.TextField(
-        'Коды ошибок', blank=True,
-        help_text='По одному в строке, вместе с расшифровкой: '
-                  '«F2340» — короткое замыкание в IGBT модуле.'
+    diagnosis = models.TextField(
+        'Результаты диагностики', blank=True,
+        help_text='Что вышло из строя. Печатается в акте дефектации.'
     )
     warranty_case = models.CharField(
         'Гарантийный случай', max_length=20, blank=True,
@@ -2549,7 +2548,7 @@ class RepairOrderEquipment(models.Model):
     @property
     def has_defect_act(self):
         """Есть ли что печатать в акте дефектации."""
-        return bool(self.diagnosis_document_text or self.error_codes or self.warranty_case)
+        return bool(self.diagnosis_document_text or self.warranty_case)
 
     # --- Неисправности в документах ---
     # Короткое название неисправности (`FaultType.name`) не попадает
@@ -2586,12 +2585,10 @@ class RepairOrderEquipment(models.Model):
     def diagnosis_document_text(self):
         """Результаты диагностики для акта дефектации.
 
-        С v2.111.0 — только описания выбранных типовых неисправностей:
-        свободного поля «Результаты диагностики» больше нет, его роль
-        взяли на себя коды ошибок с расшифровкой (`error_codes`,
-        `error_code_lines`) — они печатаются в акте отдельным блоком.
+        Описания выбранных неисправностей, затем то, что мастер дописал
+        руками в поле диагностики.
         """
-        return self.document_fault_text()
+        return self.document_fault_text(self.diagnosis)
 
     @property
     def typical_work_lines(self):
@@ -2758,13 +2755,9 @@ class RepairOrderEquipment(models.Model):
                        args=[self.repair_order_id, self.pk])
         # С v2.95.0 дефектацию заполняют на самой странице единицы:
         # отдельной страницы у неё больше нет, и вести пункт готовности
-        # туда значило бы вести на переадресацию. Свободного поля
-        # «Результаты диагностики» с v2.111.0 нет — ведём на «Коды
-        # ошибок», ближайшее оставшееся поле для ввода текстом
-        # (типовые неисправности выбираются в своём выпадающем списке,
-        # не в поле, куда имеет смысл ставить курсор)
+        # туда значило бы вести на переадресацию
         if code == 'defect_act':
-            return unit + '#id_error_codes'
+            return unit + '#id_diagnosis'
         if code == 'work':
             return unit + '#id_work_performed'
         if code == 'repairer':
@@ -2926,11 +2919,6 @@ class RepairOrderEquipment(models.Model):
         if self.warranty_case == 'warranty':
             return Decimal('0')
         return self.repair_cost
-
-    @property
-    def error_code_lines(self):
-        """Коды ошибок построчно — в акте это маркированный список."""
-        return [line.strip() for line in self.error_codes.splitlines() if line.strip()]
 
     @property
     def estimated_cost_text(self):

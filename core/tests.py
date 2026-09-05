@@ -3719,8 +3719,7 @@ class DefectActTests(TestCase):
             'initial_condition': '',
             'repair_complexity': '',
             'defect_act_date': '2026-05-06',
-            'error_codes': '«Десат» — короткое замыкание между фазами\n'
-                           '«EOL» — переезд зоны полного открытия',
+            'diagnosis': 'Выявлен выход из строя IGBT модуля и его обвязки.',
             'warranty_case': 'non_warranty',
             'non_warranty_reason': 'перепадами напряжения в питающей сети',
             'estimated_cost': '14000',
@@ -3779,8 +3778,7 @@ class DefectActTests(TestCase):
 
         resp = self.client_http.get(self._act_url())
 
-        self.assertContains(resp, '«Десат»')
-        self.assertContains(resp, '«EOL»')
+        self.assertContains(resp, 'IGBT модуля')
         self.assertContains(resp, 'Случай не является гарантийным')
         self.assertContains(resp, 'перепадами напряжения')
         # Разряды разделены неразрывным пробелом: иначе печать перенесёт
@@ -3796,13 +3794,6 @@ class DefectActTests(TestCase):
 
     def test_no_estimate_means_no_text(self):
         self.assertIsNone(self.roe.estimated_cost_text)
-
-    def test_error_codes_are_split_by_lines(self):
-        self.roe.error_codes = ' «F2340» — КЗ в модуле \n\n «EOC» — КЗ на выходе '
-        self.roe.save(update_fields=['error_codes'])
-
-        self.assertEqual(self.roe.error_code_lines,
-                         ['«F2340» — КЗ в модуле', '«EOC» — КЗ на выходе'])
 
     def test_a_warranty_case_does_not_demand_money(self):
         """Гарантийному случаю оценка ремонта в акте не место."""
@@ -12738,8 +12729,8 @@ class PriceInDefectActTests(TestCase):
             {'section': 'diagnosis',
              'fault_description': '', 'initial_condition': '',
              'repair_complexity': '', 'warranty_case': '',
-             'defect_act_date': '',
-             'error_codes': '', 'non_warranty_reason': '', 'estimated_cost': cost},
+             'defect_act_date': '', 'diagnosis': 'вздулись конденсаторы',
+             'non_warranty_reason': '', 'estimated_cost': cost},
         )
 
     def test_the_price_is_offered_not_filled_in(self):
@@ -13278,6 +13269,7 @@ class FaultTextInDocumentsTests(TestCase):
         )
         self.roe = RepairOrderEquipment.objects.create(
             repair_order=self.order, equipment=self.equipment,
+            diagnosis='вздулись конденсаторы в цепи питания',
             proposed_work='Замена силовой платы',
             estimated_cost=Decimal('12000.00'),
         )
@@ -13298,15 +13290,14 @@ class FaultTextInDocumentsTests(TestCase):
     def _quote(self):
         return self.client_http.get(f'/repair-orders/{self.order.pk}/quote/')
 
-    def test_without_typical_faults_the_quote_uses_the_free_text(self):
-        """Неисправностей не выбрано — предложение печатается по тому, что
-        мастер написал сам. У акта своего свободного поля диагностики
-        с v2.111.0 нет — «Результаты диагностики» пусты, пока не выбрана
-        хотя бы одна типовая неисправность."""
-        self.assertEqual(self.roe.diagnosis_document_text, '')
+    def test_without_typical_faults_the_documents_are_unchanged(self):
+        """Заказ без выбранных неисправностей печатается ровно как раньше:
+        в акте — записанная диагностика, в предложении — предлагаемые работы."""
+        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
         self.assertEqual(self.roe.quote_line, 'Замена силовой платы')
         self.assertEqual(self.roe.fault_document_lines, [])
 
+        self.assertContains(self._act(), 'вздулись конденсаторы в цепи питания')
         self.assertContains(self._quote(), 'Замена силовой платы')
 
     def test_the_full_descriptions_reach_both_documents(self):
@@ -13326,16 +13317,13 @@ class FaultTextInDocumentsTests(TestCase):
         self.assertNotContains(self._quote(), 'высохли конденсаторы')
         self.assertNotContains(self._quote(), 'сгорел IGBT')
 
-    def test_the_quote_free_text_follows_the_descriptions(self):
-        """Предложение по-прежнему складывает описание неисправности
-        со свободным текстом мастера. У акта дефектации своего свободного
-        текста с v2.111.0 нет — «Результаты диагностики» несут только
-        описания выбранных неисправностей."""
+    def test_the_free_text_follows_the_descriptions(self):
         self.roe.faults.set([self.dry])
 
         self.assertEqual(
             self.roe.diagnosis_document_text,
-            'Высыхание электролитических конденсаторов звена постоянного тока',
+            'Высыхание электролитических конденсаторов звена постоянного тока\n'
+            'вздулись конденсаторы в цепи питания',
         )
         self.assertEqual(
             self.roe.quote_line,
@@ -13352,11 +13340,14 @@ class FaultTextInDocumentsTests(TestCase):
         self.roe.faults.set([nameless])
 
         self.assertEqual(self.roe.fault_document_lines, [])
-        self.assertEqual(self.roe.diagnosis_document_text, '')
+        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
         self.assertNotContains(self._act(), 'глючит по-непонятному')
 
     def test_an_empty_unit_still_prints_a_dash(self):
-        """Ни описаний, ни кодов ошибок — в акте прочерк, как и раньше."""
+        """Ни описаний, ни диагностики — в акте прочерк, как и раньше."""
+        self.roe.diagnosis = ''
+        self.roe.save(update_fields=['diagnosis'])
+
         self.assertEqual(self.roe.diagnosis_document_text, '')
         self.assertFalse(self.roe.has_defect_act)
 
@@ -13874,7 +13865,7 @@ class OptionalTypeAndVersionTests(TestCase):
             client=ClientModel.objects.create(name='ООО Без версий', inn='7700000904')
         )
         roe = RepairOrderEquipment.objects.create(
-            repair_order=order, equipment=unit, error_codes='не включается'
+            repair_order=order, equipment=unit, diagnosis='не включается'
         )
 
         act = self.client_http.get(
@@ -15551,7 +15542,7 @@ class UnitReadinessTests(TestCase):
     def _finish(self, roe=None):
         """Заполнить всё, что чек-лист спрашивает."""
         roe = roe or self.roe
-        roe.error_codes = 'Высохли конденсаторы в цепи питания.'
+        roe.diagnosis = 'Высохли конденсаторы в цепи питания.'
         roe.work_performed = 'Заменены конденсаторы C12, C13.'
         roe.repairer = self.employee
         # Стоимость по факту, а не оценка из дефектации: по ней считается
@@ -15581,7 +15572,7 @@ class UnitReadinessTests(TestCase):
         """«Назначьте стоимость» на гарантийном ремонте — ложная тревога,
         а к ложным тревогам привыкают и перестают читать все остальные."""
         self.roe.warranty_case = 'warranty'
-        self.roe.error_codes = 'Отказал драйвер.'
+        self.roe.diagnosis = 'Отказал драйвер.'
         self.roe.work_performed = 'Заменён драйвер.'
         self.roe.repairer = self.employee
         self.roe.save()
@@ -15608,7 +15599,7 @@ class UnitReadinessTests(TestCase):
         """Работам, исполнителю, деталям и стоимости уже неоткуда взяться —
         требовать их означало бы учить не читать чек-лист вовсе."""
         self.roe.repair_impossible = True
-        self.roe.error_codes = 'Плата залита, восстановлению не подлежит'
+        self.roe.diagnosis = 'Плата залита, восстановлению не подлежит'
         self.roe.save()
 
         self.assertEqual(self._codes(), [])
@@ -15630,7 +15621,7 @@ class UnitReadinessTests(TestCase):
             equipment=Equipment.objects.create(
                 model=self.model, serial_number='SN-READY-3'
             ),
-            repair_impossible=True, error_codes='Восстановлению не подлежит',
+            repair_impossible=True, diagnosis='Восстановлению не подлежит',
         )
 
         readiness = self.order.readiness()
@@ -15737,7 +15728,7 @@ class ReadinessScreensTests(TestCase):
         self.assertIn('Осталось 4', html)
 
     def test_a_finished_order_says_so_instead_of_an_empty_card(self):
-        self.roe.error_codes = 'Высохли конденсаторы.'
+        self.roe.diagnosis = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
         self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('4500.00')
@@ -15768,7 +15759,7 @@ class ReadinessScreensTests(TestCase):
         self.assertTrue(any('SN-SCREEN-1' in text for text in texts), texts)
 
     def test_no_warning_when_everything_is_filled(self):
-        self.roe.error_codes = 'Высохли конденсаторы.'
+        self.roe.diagnosis = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
         self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('4500.00')
@@ -16405,6 +16396,7 @@ class UnitPageTests(TestCase):
             initial_condition='Корпус цел, пломбы на месте',
             work_performed='Заменены конденсаторы C12, C13',
             seal_numbers='7788, 7789',
+            diagnosis='Вздулись конденсаторы в цепи питания',
             estimated_cost=Decimal('4500.00'),
         )
         self.roe.faults.add(self.fault)
@@ -16421,7 +16413,8 @@ class UnitPageTests(TestCase):
             'SN-UNIT-1',
             'Не открывает двери на первом этаже',  # приём
             'Корпус цел, пломбы на месте',
-            'Электролитические конденсаторы потеряли ёмкость.',  # диагностика
+            'Вздулись конденсаторы в цепи питания',  # диагностика
+            'Электролитические конденсаторы потеряли ёмкость.',
             'Заменены конденсаторы C12, C13',      # ремонт
             '7788, 7789',                          # пломбы
         ):
@@ -16627,7 +16620,7 @@ class ReadinessEverywhereTests(TestCase):
             ),
         )
         if ready:
-            roe.error_codes = 'Высохли конденсаторы.'
+            roe.diagnosis = 'Высохли конденсаторы.'
             roe.work_performed = 'Заменены конденсаторы.'
             roe.repairer = self.employee
             roe.repair_cost = Decimal('4500.00')
@@ -16909,7 +16902,7 @@ class DiagnosisOnUnitPageTests(TestCase):
         section = html.split('id="diagnosis"')[1].split('id="repair"')[0]
 
         for field in ('id_fault_description', 'id_initial_condition',
-                      'id_error_codes', 'id_defect_act_date',
+                      'id_diagnosis', 'id_defect_act_date',
                       'id_warranty_case', 'id_non_warranty_reason',
                       'id_estimated_cost', 'id_repair_complexity'):
             with self.subTest(field=field):
@@ -16963,8 +16956,8 @@ class DiagnosisOnUnitPageTests(TestCase):
             reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
             {'section': 'diagnosis', 'fault_description': '',
              'initial_condition': '', 'repair_complexity': '',
-             'defect_act_date': '',
-             'error_codes': 'Высохли конденсаторы', 'warranty_case': '',
+             'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
+             'warranty_case': '',
              'non_warranty_reason': '', 'estimated_cost': '9000'},
         )
 
@@ -17064,7 +17057,7 @@ class UnitEditTests(TestCase):
             'section': 'diagnosis',
             'fault_description': 'Не открывает двери',
             'initial_condition': 'Корпус цел',
-            'defect_act_date': '', 'error_codes': '',
+            'defect_act_date': '', 'diagnosis': '',
             'warranty_case': '', 'non_warranty_reason': '',
             'estimated_cost': '', 'repair_complexity': '',
         }
@@ -17315,7 +17308,7 @@ class UnitQuickActionsTests(TestCase):
 
     def test_a_repair_impossible_unit_gets_a_distinct_badge(self):
         self.roe.repair_impossible = True
-        self.roe.error_codes = 'Плата залита'
+        self.roe.diagnosis = 'Плата залита'
         self.roe.save()
 
         html = self.html
@@ -17689,7 +17682,7 @@ class DefectActDateTests(TestCase):
             'section': 'diagnosis',
             'fault_description': '', 'initial_condition': '',
             'repair_complexity': '',
-            'defect_act_date': '', 'error_codes': 'Высохли конденсаторы',
+            'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
             'warranty_case': '',
             'non_warranty_reason': '', 'estimated_cost': '',
         }
@@ -17710,12 +17703,12 @@ class DefectActDateTests(TestCase):
         """Заполнили в понедельник, вернулись в среду — в акте должен
         остаться понедельник."""
         monday = timezone.localdate() - datetime.timedelta(days=2)
-        self.roe.error_codes = 'Высохли конденсаторы'
+        self.roe.diagnosis = 'Высохли конденсаторы'
         self.roe.defect_act_date = monday
         self.roe.save()
 
         self._fill(defect_act_date=monday.strftime('%Y-%m-%d'),
-                   error_codes='Высохли конденсаторы и резистор')
+                   diagnosis='Высохли конденсаторы и резистор')
 
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.defect_act_date, monday)
@@ -17731,7 +17724,7 @@ class DefectActDateTests(TestCase):
 
     def test_an_empty_act_is_not_stamped(self):
         """Дата на пустом акте означала бы, что диагностика была."""
-        self._fill(error_codes='')
+        self._fill(diagnosis='')
 
         self.roe.refresh_from_db()
         self.assertIsNone(self.roe.defect_act_date)
@@ -17799,7 +17792,7 @@ class ReadinessButtonsTests(TestCase):
             # на переадресацию
             'defect_act': reverse(
                 'repair_order_unit_detail',
-                args=[self.order.pk, self.roe.pk]) + '#id_error_codes',
+                args=[self.order.pk, self.roe.pk]) + '#id_diagnosis',
             'work': reverse(
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_work_performed',
@@ -17838,7 +17831,7 @@ class ReadinessButtonsTests(TestCase):
         self.assertEqual(self.roe.readiness_badge_css, 'bg-secondary')
 
         self.roe.repair_impossible = False
-        self.roe.error_codes = 'Высохли конденсаторы'
+        self.roe.diagnosis = 'Высохли конденсаторы'
         self.roe.work_performed = 'Заменены конденсаторы'
         self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('1000.00')
@@ -18142,7 +18135,7 @@ class FaultPickerTests(TestCase):
             reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
             {'section': 'diagnosis',
              'fault_description': '', 'initial_condition': '',
-             'defect_act_date': '', 'error_codes': '',
+             'defect_act_date': '', 'diagnosis': '',
              'warranty_case': '', 'non_warranty_reason': '',
              'estimated_cost': '', 'repair_complexity': '',
              'faults': [str(self.hard.pk)]},
@@ -18724,7 +18717,7 @@ class UnitReadinessLabelTests(TestCase):
             equipment=Equipment.objects.create(
                 model=model, serial_number='SN-LABEL-1'
             ),
-            error_codes='Пробит модуль', work_performed='Заменён модуль',
+            diagnosis='Пробит модуль', work_performed='Заменён модуль',
             repairer=mechanic,
             repair_cost=Decimal('5000.00'),
         )
@@ -20864,8 +20857,8 @@ class FaultTypeVersionScopeTests(TestCase):
         response = self.http.post(
             reverse('repair_order_unit_edit', args=[order.pk, roe.pk]),
             {'section': 'diagnosis', 'fault_description': '', 'initial_condition': '',
-             'repair_complexity': '', 'defect_act_date': '',
-             'error_codes': '', 'warranty_case': '', 'non_warranty_reason': '',
+             'repair_complexity': '', 'defect_act_date': '', 'diagnosis': '',
+             'warranty_case': '', 'non_warranty_reason': '',
              'estimated_cost': '', 'faults': [str(self.specific.pk)]},
         )
 
@@ -21319,7 +21312,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.114.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.114.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
