@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("core", "0057_drop_error_codes_field"),
+        ("core", "0057_drop_diagnosis_field"),
     ]
 
     operations = [
