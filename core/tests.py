@@ -6292,6 +6292,21 @@ class TBankInvoiceBuildingTests(TestCase):
             'Ремонт Преобразователь частоты Emotron DSV-30, 30 кВт SN:SN-INV-2'
         )
 
+    def test_a_fractional_power_uses_a_comma_in_the_invoice(self):
+        """По-русски дробь пишут через запятую — «7,5 кВт», а не «7.5 кВт»."""
+        model = EquipmentModel.objects.create(
+            name='Emotron DSV', kind='Преобразователь частоты')
+        version = EquipmentVersion.objects.create(
+            equipment_model=model, name='-7.5', power_kw=Decimal('7.5'))
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, version=version, serial_number='SN-INV-3'),
+        )
+
+        self.assertIn('7,5 кВт', roe.invoice_line)
+        self.assertNotIn('7.5 кВт', roe.invoice_line)
+
     def test_no_power_means_no_extra_text(self):
         """Мощность есть не у каждой версии — печатать нечего, значит
         не печатается ничего."""
@@ -12460,6 +12475,16 @@ class PriceListTests(TestCase):
         line = PriceList.line_for(None, self.vfd, power=Decimal('15'))
 
         self.assertEqual(line.price, Decimal('11000'))
+
+    def test_power_range_display_uses_a_comma(self):
+        """По-русски дробь пишут через запятую, а не точку — f-строка
+        Python сама этого не делает, в отличие от шаблонов Django."""
+        line = PriceListLine(
+            price_list=self.base, equipment_type=self.vfd,
+            power_from=Decimal('5.5'), power_to=Decimal('15.5'), price=Decimal('11000'),
+        )
+
+        self.assertEqual(line.power_range_display, '5,5–15,5 кВт')
 
     def test_a_type_without_a_price_gives_nothing(self):
         """Пусто — значит пусто: выдумывать цену нельзя, по ней
@@ -21183,7 +21208,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.113.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.113.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

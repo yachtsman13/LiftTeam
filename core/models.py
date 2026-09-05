@@ -75,6 +75,18 @@ def format_amount(value):
     return f'{value:,.0f}'.replace(',', ' ')
 
 
+def format_power(value):
+    """Мощность в кВт текстом: «30,5», а не «30.5» — по-русски дробь
+    пишут через запятую. Не для полей ввода: у них HTML5-виджет
+    `<input type="number">`, и там разделитель обязан остаться точкой —
+    это касается только текста, который собирают f-строкой (счёт,
+    диапазон мощности в прайсе), а не значения `power_from`/`power_to`
+    в самой форме. В шаблонах то же самое делает Django сам, по локали
+    `ru-ru`, — своя функция нужна только там, где число собирают в Python.
+    """
+    return f'{value}'.replace('.', ',')
+
+
 def format_spec(value):
     """Значение характеристики без хвостовых нулей: «0.15», а не «0.150000».
 
@@ -1047,10 +1059,10 @@ class PriceListLine(models.Model):
         if self.power_from is None and self.power_to is None:
             return ''
         if self.power_from is None:
-            return f'до {self.power_to} кВт'
+            return f'до {format_power(self.power_to)} кВт'
         if self.power_to is None:
-            return f'от {self.power_from} кВт'
-        return f'{self.power_from}–{self.power_to} кВт'
+            return f'от {format_power(self.power_from)} кВт'
+        return f'{format_power(self.power_from)}–{format_power(self.power_to)} кВт'
 
     def __str__(self):
         bits = [str(self.equipment_type)]
@@ -3063,7 +3075,7 @@ class RepairOrderEquipment(models.Model):
         designation = self.equipment.full_designation
         power = self.equipment.power_kw
         if power is not None:
-            designation += f', {power} кВт'
+            designation += f', {format_power(power)} кВт'
         name = f'{prefix} {designation} SN:{self.equipment.serial_number}'
         show_work = self.repair_order.client.invoice_show_work_performed
         work = self.work_performed.strip() if show_work else ''
