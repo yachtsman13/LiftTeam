@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.111.0{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.112.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -304,7 +304,21 @@ document.addEventListener('DOMContentLoaded', function () {
                                     на странице единицы.
                                 {% endcomment %}
                                 <td data-label="Неисправность">{{ oe.fault_description|default:"—"|truncatechars:60 }}</td>
-                                <td data-label="Выполнено">{{ oe.work_performed|default:"—"|truncatechars:60 }}</td>
+                                {% comment %}
+                                    Исполнитель — той же ячейкой, что и
+                                    выполненные работы, а не отдельным
+                                    столбцом: строка и так широкая. Он же —
+                                    новый пункт готовности «repairer»,
+                                    и цвет строки читателю уже подсказывает
+                                    её через «Готовность/Действия» правее;
+                                    здесь — кто именно, текстом.
+                                {% endcomment %}
+                                <td data-label="Выполнено">
+                                    {{ oe.work_performed|default:"—"|truncatechars:60 }}
+                                    {% if oe.repairer %}
+                                    <div class="small text-muted">{{ oe.repairer.full_name }}</div>
+                                    {% endif %}
+                                </td>
                                 {% comment %}
                                     Стоимость и сложность — один столбец:
                                     цифра, ради которой в него смотрят,
@@ -350,9 +364,9 @@ document.addEventListener('DOMContentLoaded', function () {
                                 {% endcomment %}
                                 <td class="text-end col-actions">
                                     {% if oe.is_ready %}
-                                    <span class="badge bg-success">{{ oe.readiness_label }}</span>
+                                    <span class="badge {{ oe.readiness_badge_css }}">{{ oe.readiness_label }}</span>
                                     {% else %}
-                                    <a href="#readiness" class="badge bg-warning text-dark text-decoration-none"
+                                    <a href="#readiness" class="badge {{ oe.readiness_badge_css }} text-decoration-none"
                                        title="Что осталось — в чек-листе ниже">{{ oe.readiness_label }}</a>
                                     {% endif %}
                                     {% comment %}

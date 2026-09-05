@@ -1402,10 +1402,11 @@ def repair_order_detail(request, pk):
     history = order.status_history.select_related('changed_by').order_by('-changed_at')
     # faults и details — ради готовности единицы: она спрашивает и то,
     # и другое по каждой строке, и без предзагрузки карточка заказа
-    # с пятью приборами делала бы десяток лишних запросов
+    # с пятью приборами делала бы десяток лишних запросов. repairer —
+    # ради строки таблицы, показывающей исполнителя рядом с работами
     order_equipments = list(
         order.order_equipments
-        .select_related('equipment__model')
+        .select_related('equipment__model', 'repairer')
         .prefetch_related('faults', 'details')
         .order_by('id')
     )

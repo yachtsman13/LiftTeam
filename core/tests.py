@@ -15376,6 +15376,7 @@ class UnitReadinessTests(TestCase):
         roe = roe or self.roe
         roe.error_codes = 'Высохли конденсаторы в цепи питания.'
         roe.work_performed = 'Заменены конденсаторы C12, C13.'
+        roe.repairer = self.employee
         # Стоимость по факту, а не оценка из дефектации: по ней считается
         # сумма заказа и выставляется счёт
         roe.repair_cost = Decimal('4500.00')
@@ -15386,9 +15387,12 @@ class UnitReadinessTests(TestCase):
         self.assertFalse(self.roe.is_ready)
         # Запланированных деталей нет — и требовать по ним нечего:
         # пункт есть в списке проверок, но выполнен. Порядок — по ходу
-        # работы: вскрыли, починили, взяли детали, посчитали
-        self.assertEqual(self._codes(), ['defect_act', 'work', 'repair_cost'])
-        self.assertEqual(len(self.roe.readiness()), 4)
+        # работы: вскрыли, починили, назначили исполнителя, взяли детали,
+        # посчитали
+        self.assertEqual(
+            self._codes(), ['defect_act', 'work', 'repairer', 'repair_cost']
+        )
+        self.assertEqual(len(self.roe.readiness()), 5)
 
     def test_a_filled_unit_is_ready(self):
         self._finish()
@@ -15402,6 +15406,7 @@ class UnitReadinessTests(TestCase):
         self.roe.warranty_case = 'warranty'
         self.roe.error_codes = 'Отказал драйвер.'
         self.roe.work_performed = 'Заменён драйвер.'
+        self.roe.repairer = self.employee
         self.roe.save()
 
         self.assertNotIn('repair_cost', [c['code'] for c in self.roe.readiness()])
@@ -15412,6 +15417,50 @@ class UnitReadinessTests(TestCase):
         self.roe.save()
 
         self.assertIn('repair_cost', self._codes())
+
+    def test_without_a_repairer_the_unit_is_not_ready(self):
+        """Кто чинил — тоже часть готовности, а не только сама починка."""
+        self._finish()
+        self.roe.repairer = None
+        self.roe.save()
+
+        self.assertIn('repairer', self._codes())
+        self.assertFalse(self.roe.is_ready)
+
+    def test_a_repair_impossible_unit_skips_the_rest_of_the_checklist(self):
+        """Работам, исполнителю, деталям и стоимости уже неоткуда взяться —
+        требовать их означало бы учить не читать чек-лист вовсе."""
+        self.roe.repair_impossible = True
+        self.roe.error_codes = 'Плата залита, восстановлению не подлежит'
+        self.roe.save()
+
+        self.assertEqual(self._codes(), [])
+        self.assertTrue(self.roe.is_ready)
+        self.assertEqual(self.roe.readiness_label, 'Неремонтопригоден')
+
+    def test_a_repair_impossible_unit_still_needs_the_defect_act(self):
+        """Дефектация — то, откуда и известно, что ремонт невозможен;
+        её одной этот флаг не заменяет."""
+        self.roe.repair_impossible = True
+        self.roe.save()
+
+        self.assertEqual(self._codes(), ['defect_act'])
+
+    def test_a_repair_impossible_unit_does_not_block_the_order(self):
+        self._finish()
+        second = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=self.model, serial_number='SN-READY-3'
+            ),
+            repair_impossible=True, error_codes='Восстановлению не подлежит',
+        )
+
+        readiness = self.order.readiness()
+
+        self.assertEqual(readiness['ready'], 2)
+        self.assertTrue(readiness['all_ready'])
+        self.assertNotIn(second, readiness['pending'])
 
     def test_a_planned_part_keeps_the_unit_unfinished(self):
         """Деталь числится нужной по ремонту, но со склада не взята —
@@ -15508,11 +15557,12 @@ class ReadinessScreensTests(TestCase):
 
         self.assertIn('Готовность к отгрузке', html)
         self.assertIn('Заполнена дефектация', html)
-        self.assertIn('Осталось 3', html)
+        self.assertIn('Осталось 4', html)
 
     def test_a_finished_order_says_so_instead_of_an_empty_card(self):
         self.roe.error_codes = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
 
@@ -15543,6 +15593,7 @@ class ReadinessScreensTests(TestCase):
     def test_no_warning_when_everything_is_filled(self):
         self.roe.error_codes = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
+        self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
 
@@ -16234,6 +16285,7 @@ class UnitPageTests(TestCase):
 
     def test_a_finished_section_changes_colour(self):
         self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.repairer = self.employee
         self.roe.repair_cost = Decimal('4200.00')
         self.roe.save()
 
@@ -16400,6 +16452,7 @@ class ReadinessEverywhereTests(TestCase):
         if ready:
             roe.error_codes = 'Высохли конденсаторы.'
             roe.work_performed = 'Заменены конденсаторы.'
+            roe.repairer = self.employee
             roe.repair_cost = Decimal('4500.00')
             roe.save()
         return order
@@ -16753,7 +16806,7 @@ class DiagnosisOnUnitPageTests(TestCase):
         )
         self.assertEqual(
             [check['code'] for check in sections['repair']['checks']],
-            ['work', 'repair_cost'],
+            ['work', 'repairer', 'repair_cost'],
         )
         self.assertEqual(
             [check['code'] for check in sections['parts']['checks']],
@@ -16765,6 +16818,7 @@ class DiagnosisOnUnitPageTests(TestCase):
         гореть разделу не от чего."""
         self.roe.warranty_case = 'warranty'
         self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.repairer = self.employee
         self.roe.save()
 
         self.assertTrue(self.roe.readiness_sections['repair']['done'])
@@ -16853,6 +16907,14 @@ class UnitEditTests(TestCase):
         self.assertEqual(self.roe.seal_numbers, '7788')
         self.assertEqual(self.roe.repair_cost, Decimal('5200.00'))
         self.assertEqual(self.roe.fault_description, 'Не открывает двери')
+
+    def test_repair_impossible_is_saved_from_the_diagnosis_section(self):
+        """Решение того же рода, что и гарантийный случай рядом —
+        поэтому и правится в том же разделе, а не в «Ремонте»."""
+        self._post_diagnosis(repair_impossible='on')
+
+        self.roe.refresh_from_db()
+        self.assertTrue(self.roe.repair_impossible)
 
     def test_one_section_does_not_wipe_the_other(self):
         """Прибор в работе бывает у двоих: сохранение раздела пишет
@@ -17059,6 +17121,30 @@ class UnitQuickActionsTests(TestCase):
         self.assertIn('bi-pencil-square', html)   # записать работы
         self.assertIn('bi-cpu', html)             # списать деталь
         self.assertNotIn('bi-box-arrow-in-right', html)
+
+    def test_the_repairer_shows_up_in_the_row(self):
+        """Готовность единицы зависит от исполнителя — значит и в таблице
+        оборудования заказа должно быть видно, кто он, а не только цвет
+        отметки готовности."""
+        mechanic = Employee.objects.create_user(
+            username='row_mechanic', full_name='Сидоров Сидор', password='pass',
+        )
+        self.assertNotIn(mechanic.full_name, self.html)
+
+        self.roe.repairer = mechanic
+        self.roe.save()
+
+        self.assertIn(mechanic.full_name, self.html)
+
+    def test_a_repair_impossible_unit_gets_a_distinct_badge(self):
+        self.roe.repair_impossible = True
+        self.roe.error_codes = 'Плата залита'
+        self.roe.save()
+
+        html = self.html
+
+        self.assertIn('Неремонтопригоден', html)
+        self.assertIn('bg-secondary', html)
 
 
 # ============ РАЗБОР СТРАНИЦЫ ПРАВКИ ЗАКАЗА (v2.79.0) ============
@@ -17511,7 +17597,7 @@ class ReadinessButtonsTests(TestCase):
         взяли со склада намеченное; проставили, во что обошлось."""
         self.assertEqual(
             [check['code'] for check in self.roe.readiness()],
-            ['defect_act', 'work', 'planned_parts', 'repair_cost'],
+            ['defect_act', 'work', 'repairer', 'planned_parts', 'repair_cost'],
         )
 
     def test_the_cost_asked_for_is_the_one_the_invoice_uses(self):
@@ -17540,6 +17626,9 @@ class ReadinessButtonsTests(TestCase):
             'work': reverse(
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_work_performed',
+            'repairer': reverse(
+                'repair_order_unit_detail',
+                args=[self.order.pk, self.roe.pk]) + '#id_repairer',
             'planned_parts': reverse(
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#parts',
@@ -17561,6 +17650,23 @@ class ReadinessButtonsTests(TestCase):
 
         self.assertTrue(done['done'])
         self.assertTrue(done['url'])
+
+    def test_badge_colour_by_state(self):
+        """Готово — зелёный, осталась работа — жёлтый, ремонт невозможен —
+        серый: одно место на список единиц и карточку заказа."""
+        self.assertEqual(self.roe.readiness_badge_css, 'bg-warning text-dark')
+
+        self.roe.repair_impossible = True
+        self.roe.save()
+        self.assertEqual(self.roe.readiness_badge_css, 'bg-secondary')
+
+        self.roe.repair_impossible = False
+        self.roe.error_codes = 'Высохли конденсаторы'
+        self.roe.work_performed = 'Заменены конденсаторы'
+        self.roe.repairer = self.employee
+        self.roe.repair_cost = Decimal('1000.00')
+        self.roe.save()
+        self.assertEqual(self.roe.readiness_badge_css, 'bg-success')
 
     def test_the_unit_page_draws_them_as_buttons(self):
         html = self.http.get(
@@ -18430,6 +18536,9 @@ class UnitReadinessLabelTests(TestCase):
 
     def test_the_label_agrees_with_the_device(self):
         model = EquipmentModel.objects.create(name='БУАД-7-31')
+        mechanic = Employee.objects.create_user(
+            username='label_mechanic', full_name='Мастер', password='pass',
+        )
         order = RepairOrder.objects.create(
             client=ClientModel.objects.create(name='МУП «Лифты»')
         )
@@ -18439,6 +18548,7 @@ class UnitReadinessLabelTests(TestCase):
                 model=model, serial_number='SN-LABEL-1'
             ),
             error_codes='Пробит модуль', work_performed='Заменён модуль',
+            repairer=mechanic,
             repair_cost=Decimal('5000.00'),
         )
 
@@ -21032,7 +21142,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.111.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.112.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

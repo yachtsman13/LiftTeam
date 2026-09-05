@@ -1823,9 +1823,10 @@ class RepairOrder(models.Model):
         ('shipped', 'Отгружен'),
         ('unrepairable', 'Ремонт невозможен'),
         # Смешанный исход: часть единиц заказа отремонтирована, часть —
-        # нет (у них самих стоит «ремонт невозможен» по READINESS —
-        # такого поля нет, это решает мастер по факту). Решение владельца,
-        # 2026-08-31 — с v2.97.0. Терминальный статус, как «Отгружен»
+        # нет (у них самих стоит RepairOrderEquipment.repair_impossible,
+        # с v2.112.0 — до этого поля не было, и итог был виден мастеру
+        # только по факту, не в базе). Решение владельца, 2026-08-31 —
+        # с v2.97.0. Терминальный статус, как «Отгружен»
         # и «Ремонт невозможен»: заказ им закрывают, а не проезжают мимо
         ('partially_repaired', 'Частично отремонтирован'),
     ]
@@ -2460,6 +2461,17 @@ class RepairOrderEquipment(models.Model):
         'Причина, по которой случай не гарантийный', blank=True,
         help_text='Продолжение фразы «неисправность вызвана …».'
     )
+    # Статус «Ремонт невозможен» у заказа целиком не отвечает на вопрос
+    # «а что именно с этим прибором», если приборов в заказе несколько —
+    # решение об этом принимают по каждому отдельно, по факту дефектации.
+    # Отдельного поля состояния у единицы нет намеренно (см. readiness()
+    # выше), но это не производное «что сделано», а решение мастера,
+    # такое же по природе, как и warranty_case рядом, — поэтому поле есть.
+    repair_impossible = models.BooleanField(
+        'Ремонт невозможен', default=False,
+        help_text='Больше по этой единице ничего не потребуется — работы, '
+                  'детали и стоимость выпадают из чек-листа готовности.'
+    )
     estimated_cost = models.DecimalField(
         'Ориентировочная стоимость ремонта', max_digits=12, decimal_places=2,
         null=True, blank=True,
@@ -2615,6 +2627,11 @@ class RepairOrderEquipment(models.Model):
         ('work', 'Записаны выполненные работы',
          'Без них акт выполненных работ по этой единице пуст.',
          'repair'),
+        # Кто именно чинил — с v2.112.0. Рядом с «work», а не отдельно:
+        # обе записи делают за одним столом, когда ремонт закончен.
+        ('repairer', 'Назначен исполнитель ремонта',
+         'Правится в разделе «Ремонт» на странице единицы.',
+         'repair'),
         ('planned_parts', 'Запланированные детали списаны',
          'Деталь числится нужной по ремонту, но со склада не взята.',
          'parts'),
@@ -2648,19 +2665,27 @@ class RepairOrderEquipment(models.Model):
         Пункт, который к этой единице не относится, в список не попадает
         вовсе: «проставьте стоимость» на гарантийном ремонте — это ложная
         тревога, а к ложным тревогам привыкают и перестают читать все
-        остальные.
+        остальные. На единице с «Ремонт невозможен» (с v2.112.0) по той
+        же причине выпадает всё, кроме дефектации: ей уже ничего
+        не потребуется, а ложная тревога о ненайденном исполнителе учит
+        не читать и остальные пункты.
         """
         done = {
             'defect_act': self.has_defect_act,
             'work': bool(self.work_performed.strip()),
+            'repairer': self.repairer_id is not None,
             'planned_parts': not any(
                 detail.is_planned for detail in self.details.all()
             ),
             'repair_cost': self.repair_cost is not None,
         }
+        skip = set()
         # Гарантийный ремонт заказчику не выставляют — спрашивать
         # стоимость незачем
-        skip = {'repair_cost'} if self.warranty_case == 'warranty' else set()
+        if self.warranty_case == 'warranty':
+            skip.add('repair_cost')
+        if self.repair_impossible:
+            skip |= {'work', 'repairer', 'planned_parts', 'repair_cost'}
         return [
             {'code': code, 'label': label, 'hint': hint, 'section': section,
              'done': done[code], 'url': self._readiness_url(code)}
@@ -2718,6 +2743,8 @@ class RepairOrderEquipment(models.Model):
             return unit + '#id_error_codes'
         if code == 'work':
             return unit + '#id_work_performed'
+        if code == 'repairer':
+            return unit + '#id_repairer'
         if code == 'repair_cost':
             return unit + '#id_repair_cost'
         # Запланированные детали этой единицы лежат на её странице —
@@ -2735,11 +2762,28 @@ class RepairOrderEquipment(models.Model):
 
     @property
     def readiness_label(self):
-        """Короткая отметка для списка единиц."""
+        """Короткая отметка для списка единиц.
+
+        «Неремонтопригоден» — не «Готов»: is_ready у такой единицы истинен
+        (по ней действительно больше ничего не осталось), но слово «Готов»
+        рядом со сломанным прибором читалось бы как «отремонтирован».
+        """
+        if self.repair_impossible:
+            return 'Неремонтопригоден'
         pending = self.readiness_pending
         if not pending:
             return 'Готов'
         return 'Осталось %d' % len(pending)
+
+    @property
+    def readiness_badge_css(self):
+        """Цвет отметки готовности — одно место на список единиц и карточку
+        заказа, тот же приём, что у `complexity_css`/`order_status_css`."""
+        if self.repair_impossible:
+            return 'bg-secondary'
+        if self.is_ready:
+            return 'bg-success'
+        return 'bg-warning text-dark'
 
     @property
     def has_pending_planned_parts(self):

@@ -1021,7 +1021,7 @@ class UnitDiagnosisForm(forms.ModelForm):
             'fault_description', 'initial_condition',
             'defect_act_date', 'error_codes', 'faults',
             'repair_complexity', 'warranty_case', 'non_warranty_reason',
-            'estimated_cost',
+            'estimated_cost', 'repair_impossible',
         ]
         widgets = {
             'fault_description': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
@@ -1040,6 +1040,7 @@ class UnitDiagnosisForm(forms.ModelForm):
             'estimated_cost': forms.NumberInput(
                 attrs={'class': 'form-control', 'step': '0.01', 'placeholder': '0.00'}
             ),
+            'repair_impossible': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
         labels = {
             'fault_description': 'Со слов заказчика',
