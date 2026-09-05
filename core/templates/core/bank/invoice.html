@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.113.1{% endblock %}
+{% block title %}Счёт по заказу {{ order.order_number }} — LiftTeam v2.114.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -82,6 +82,29 @@
                     У заказчика не заполнен ИНН. Банк может не принять такой счёт.
                 </div>
                 {% endif %}
+
+                {% comment %}
+                    Та же галочка, что и на карточке заказчика
+                    (`Client.invoice_show_work_performed`) — продублирована
+                    сюда не вместо, а в дополнение: здесь сразу видно, что
+                    она включает и выключает, — строки наименований ниже.
+                {% endcomment %}
+                <form method="post"
+                      action="{% url 'repair_order_invoice_show_work' order.pk %}"
+                      class="d-flex align-items-center gap-2 mb-3">
+                    {% csrf_token %}
+                    <div class="form-check mb-0">
+                        <input type="checkbox" name="invoice_show_work_performed"
+                               id="invoiceShowWork" class="form-check-input"
+                               {% if order.client.invoice_show_work_performed %}checked{% endif %}>
+                        <label class="form-check-label" for="invoiceShowWork">
+                            Показывать выполненные работы в счёте
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-outline-primary btn-sm" title="Сохранить">
+                        <i class="bi bi-check-lg"></i>
+                    </button>
+                </form>
 
                 <div class="table-responsive table-scroll">
                     <table class="table table-sm list-table">

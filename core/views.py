@@ -5344,6 +5344,28 @@ def _invoice_payload(provider, order, form_data):
 
 
 @permission_required('invoices_send')
+@require_POST
+def repair_order_invoice_show_work(request, pk):
+    """Быстрая правка `Client.invoice_show_work_performed` прямо со
+    страницы выставления счёта.
+
+    Поле остаётся правимым и на карточке заказчика — это не второе
+    место вместо первого, а дубль ради удобства: здесь, в отличие
+    от карточки, сразу видно, на что оно влияет — строки в «Что уйдёт
+    в банк» ниже. Форма несёт только одно это поле, поэтому отсутствие
+    галочки в запросе однозначно значит «выключено», без отдельного
+    скрытого поля `flag`, как на странице настроек.
+    """
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+    order.client.invoice_show_work_performed = bool(
+        request.POST.get('invoice_show_work_performed')
+    )
+    order.client.save(update_fields=['invoice_show_work_performed'])
+    messages.success(request, 'Настройка сохранена')
+    return redirect('repair_order_invoice', pk=pk)
+
+
+@permission_required('invoices_send')
 def repair_order_invoice(request, pk):
     """Выставление счёта заказчику через API банка.
 

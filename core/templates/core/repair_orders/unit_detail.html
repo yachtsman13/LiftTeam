@@ -1,6 +1,7 @@
 {% extends 'core/base.html' %}
+{% load lifteam %}
 
-{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.113.1{% endblock %}
+{% block title %}{{ equipment.designation }} {{ equipment.serial_number }} — LiftTeam v2.114.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -805,7 +806,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <div class="mb-1"><strong>Исполнение:</strong>
                     {{ equipment.version.name|default:"не указано" }}
                     {% if equipment.power_kw is not None %}
-                    <span class="text-muted">— {{ equipment.power_kw }} кВт</span>
+                    <span class="text-muted">— {{ equipment.power_kw|power }} кВт</span>
                     {% endif %}
                     {% if equipment.version.note %}
                     <div class="small text-muted">{{ equipment.version.note }}</div>

@@ -57,7 +57,7 @@ from .models import (
     SettingChange, StorageCell, TechCard, TechCardStep, WebhookDelivery,
     Position, PositionPermission, PERMISSIONS,
     complexity_css, order_status_css,
-    parse_layout, plural_genitive, format_spec,
+    parse_layout, plural_genitive, format_spec, format_power,
 )
 
 
@@ -6307,6 +6307,24 @@ class TBankInvoiceBuildingTests(TestCase):
         self.assertIn('7,5 кВт', roe.invoice_line)
         self.assertNotIn('7.5 кВт', roe.invoice_line)
 
+    def test_a_whole_power_drops_the_trailing_zero_in_the_invoice(self):
+        """«11 кВт», не «11,00 кВт» — DecimalField хранит ровно то, что
+        задал шаг формы, а лишний ноль читается как точность, которой
+        не было."""
+        model = EquipmentModel.objects.create(
+            name='Emotron DSV', kind='Преобразователь частоты')
+        version = EquipmentVersion.objects.create(
+            equipment_model=model, name='-11', power_kw=Decimal('11.00'))
+        roe = RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(
+                model=model, version=version, serial_number='SN-INV-4'),
+        )
+
+        self.assertIn('11 кВт', roe.invoice_line)
+        self.assertNotIn('11,00 кВт', roe.invoice_line)
+        self.assertNotIn(',0', roe.invoice_line)
+
     def test_no_power_means_no_extra_text(self):
         """Мощность есть не у каждой версии — печатать нечего, значит
         не печатается ничего."""
@@ -6677,6 +6695,66 @@ class TBankInvoiceSendingTests(TestCase):
         resp = self.client_http.get(self._url())
 
         self.assertEqual(resp.status_code, 302)
+
+
+class InvoiceShowWorkToggleTests(TestCase):
+    """Галочка «Показывать выполненные работы в счёте» продублирована
+    на странице выставления счёта — тут сразу видно, на что она влияет."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_toggle', full_name='Бухгалтер', password='pass',
+            position=position('Бухгалтер'))
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+        self.customer = ClientModel.objects.create(name='ООО «ЛИФТПРОЕКТ»')
+        self.order = RepairOrder.objects.create(client=self.customer)
+
+    def _url(self):
+        return f'/repair-orders/{self.order.pk}/invoice/show-work/'
+
+    def test_the_checkbox_is_shown_on_the_invoice_page(self):
+        html = self.client_http.get(
+            f'/repair-orders/{self.order.pk}/invoice/'
+        ).content.decode()
+
+        self.assertIn('invoice_show_work_performed', html)
+        self.assertIn('Показывать выполненные работы в счёте', html)
+
+    def test_unchecking_it_saves_false(self):
+        self.assertTrue(self.customer.invoice_show_work_performed)
+
+        resp = self.client_http.post(self._url(), {})
+
+        self.customer.refresh_from_db()
+        self.assertFalse(self.customer.invoice_show_work_performed)
+        self.assertRedirects(resp, f'/repair-orders/{self.order.pk}/invoice/')
+
+    def test_checking_it_saves_true(self):
+        self.customer.invoice_show_work_performed = False
+        self.customer.save()
+
+        self.client_http.post(self._url(), {'invoice_show_work_performed': 'on'})
+
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.invoice_show_work_performed)
+
+    def test_only_post_edits(self):
+        response = self.client_http.get(self._url())
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_the_repair_manager_cannot_toggle_it(self):
+        manager = Employee.objects.create_user(
+            username='mgr_toggle', full_name='Менеджер', password='pass',
+            position=position('Менеджер по ремонту'))
+        self.client_http.force_login(manager)
+
+        self.client_http.post(self._url(), {})
+
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.invoice_show_work_performed)
 
 
 class QuoteTests(TestCase):
@@ -7686,6 +7764,29 @@ class SpecFormattingTests(TestCase):
 
     def test_format_spec_of_nothing_is_an_empty_string(self):
         self.assertEqual(format_spec(None), '')
+
+    def test_format_power_drops_trailing_zeros_and_uses_a_comma(self):
+        cases = {
+            Decimal('7.50'): '7,5',
+            Decimal('11.00'): '11',
+            Decimal('30'): '30',
+            Decimal('0.50'): '0,5',
+            Decimal('5.5'): '5,5',
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(format_power(value), expected)
+
+    def test_the_power_template_filter_matches_format_power(self):
+        """`power_kw` в шаблоне и так меняет точку на запятую по локали
+        `ru-ru`, но хвостовые нули не убирает — фильтр закрывает это."""
+        from django.template import Context, Template
+
+        html = Template('{% load lifteam %}{{ value|power }}').render(
+            Context({'value': Decimal('11.00')})
+        )
+
+        self.assertEqual(html, '11')
 
     def test_the_part_card_shows_the_short_form(self):
         response = self.client_http.get(f'/parts/{self.part.pk}/')
@@ -12485,6 +12586,16 @@ class PriceListTests(TestCase):
         )
 
         self.assertEqual(line.power_range_display, '5,5–15,5 кВт')
+
+    def test_power_range_display_drops_trailing_zeros(self):
+        """DecimalField хранит ровно то, что задал шаг формы — «11,00»
+        читается как точность, которой не было."""
+        line = PriceListLine(
+            price_list=self.base, equipment_type=self.vfd,
+            power_from=Decimal('7.50'), power_to=Decimal('11.00'), price=Decimal('11000'),
+        )
+
+        self.assertEqual(line.power_range_display, '7,5–11 кВт')
 
     def test_a_type_without_a_price_gives_nothing(self):
         """Пусто — значит пусто: выдумывать цену нельзя, по ней
@@ -21208,7 +21319,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.113.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.114.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
