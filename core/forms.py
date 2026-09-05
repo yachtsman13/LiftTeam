@@ -142,18 +142,20 @@ class EquipmentVersionForm(forms.ModelForm):
 
     class Meta:
         model = EquipmentVersion
-        fields = ['equipment_model', 'name', 'note']
+        fields = ['equipment_model', 'name', 'note', 'power_kw']
         widgets = {
             'equipment_model': forms.Select(attrs={'class': 'form-select'}),
             'name': forms.TextInput(attrs={
                 'class': 'form-control', 'placeholder': '.4, -1.1 или « 21.01»',
             }),
             'note': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+            'power_kw': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
         }
         labels = {
             'equipment_model': 'Модель оборудования',
             'name': 'Версия',
             'note': 'Комментарий',
+            'power_kw': 'Мощность, кВт',
         }
 
     def __init__(self, *args, **kwargs):
@@ -573,14 +575,20 @@ class PriceListForm(forms.ModelForm):
 class PriceListLineForm(forms.ModelForm):
     class Meta:
         model = PriceListLine
-        fields = ['equipment_type', 'complexity', 'price']
+        fields = ['equipment_type', 'power_from', 'power_to', 'complexity', 'price']
         widgets = {
             'equipment_type': forms.Select(attrs={'class': 'form-select'}),
+            'power_from': forms.NumberInput(attrs={
+                'class': 'form-control', 'step': '0.01', 'placeholder': 'от'}),
+            'power_to': forms.NumberInput(attrs={
+                'class': 'form-control', 'step': '0.01', 'placeholder': 'до'}),
             'complexity': forms.Select(attrs={'class': 'form-select'}),
             'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
         }
         labels = {
             'equipment_type': 'Тип оборудования',
+            'power_from': 'Мощность от, кВт',
+            'power_to': 'Мощность до, кВт',
             'complexity': 'Сложность',
             'price': 'Цена, ₽',
         }
@@ -1011,7 +1019,7 @@ class UnitDiagnosisForm(forms.ModelForm):
         # форме. Ручной ввод — своей маленькой формой там же (UnitDiskFolderForm)
         fields = [
             'fault_description', 'initial_condition',
-            'defect_act_date', 'diagnosis', 'error_codes', 'faults',
+            'defect_act_date', 'error_codes', 'faults',
             'repair_complexity', 'warranty_case', 'non_warranty_reason',
             'estimated_cost',
         ]
@@ -1021,11 +1029,6 @@ class UnitDiagnosisForm(forms.ModelForm):
             'defect_act_date': forms.DateInput(
                 attrs={'class': 'form-control', 'type': 'date'}, format='%Y-%m-%d'
             ),
-            'diagnosis': forms.Textarea(attrs={
-                'class': 'form-control', 'rows': 3,
-                'placeholder': 'В результате диагностики устройства выявлен '
-                               'выход из строя IGBT модуля и его обвязки.',
-            }),
             'error_codes': forms.Textarea(attrs={
                 'class': 'form-control', 'rows': 4,
                 'placeholder': '«F2340» — короткое замыкание в IGBT модуле',

@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Версии моделей — LiftTeam v2.110.0{% endblock %}
+{% block title %}Версии моделей — LiftTeam v2.111.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -25,6 +25,7 @@
                     <tr>
                         <th>Модель</th>
                         <th>Версия</th>
+                        <th>Мощность, кВт</th>
                         <th>Комментарий</th>
                         <th class="text-end">Единиц</th>
                         <th class="text-end">Действия</th>
@@ -35,6 +36,7 @@
                     <tr class="clickable-row" data-href="{% url 'equipment_version_edit' version.pk %}">
                         <td data-label="Модель">{{ version.equipment_model.name }}</td>
                         <td data-label="Версия">{{ version.name }}</td>
+                        <td data-label="Мощность, кВт">{% if version.power_kw is not None %}{{ version.power_kw }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td data-label="Комментарий">{% if version.note %}{{ version.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td class="text-end" data-label="Единиц">{{ version.equipment_count }}</td>
                         <td class="col-actions text-end">
@@ -43,7 +45,7 @@
                         </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="5" class="text-center text-muted py-4">Версии не заведены</td></tr>
+                    <tr><td colspan="6" class="text-center text-muted py-4">Версии не заведены</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

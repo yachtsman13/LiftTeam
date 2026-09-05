@@ -1532,10 +1532,17 @@ def _use_repair_order_part(order, part, quantity, employee, history_note,
     return shortage
 
 
-def apply_fault_templates(order, fault_types, employee, version=None,
-                          order_equipment=None):
-    """Строит объединённый рецепт деталей по выбранным неисправностям и
-    списывает его одной атомарной транзакцией на все позиции сразу.
+def apply_fault_templates(order, fault_types, version=None, order_equipment=None):
+    """Строит объединённый рецепт деталей по выбранным неисправностям
+    и добавляет его в список деталей единицы **запланированным** — склад
+    не трогается (с v2.111.0). Тот же приём, что у ручного добавления
+    с флагом «Запланировать» (`repair_order_add_detail`): мастер только
+    набирает, что нужно, у стола с прибором, а списывает уже отдельная
+    кнопка «Списать со склада весь список» на странице единицы, тем же
+    путём, что и обычное добавление (`_write_off_planned` →
+    `_use_repair_order_part`). До v2.111.0 рецепт списывал сразу — деталь
+    уходила со склада, пока мастер ещё решал, что менять, и наполовину
+    применённый рецепт было не отличить от применённого целиком.
 
     Одна и та же деталь в рецептах нескольких выбранных неисправностей даёт
     одну позицию с суммарным количеством — а не несколько строк с частями
@@ -1548,11 +1555,13 @@ def apply_fault_templates(order, fault_types, employee, version=None,
     `FaultType.recipe_lines`), неизвестна — только общие строки.
 
     `order_equipment` — та же единица, но чтобы записать, в какую железку
-    ушли детали: рецепт применяют из её строки, значит и детали её.
+    запланированы детали: рецепт применяют из её строки, значит и детали
+    её. Не передана и прибор в заказе один — привязывается к нему (см.
+    `RepairOrder.sole_equipment`); приборов несколько — программа
+    не угадывает, и строка остаётся общей по заказу.
 
-    Возвращает (added, shortages): added — список (SparePart, количество)
-    добавленных позиций в порядке первого появления детали среди рецептов;
-    shortages — те из них, на которые не хватило остатка на складе.
+    Возвращает added — список (SparePart, количество) добавленных позиций
+    в порядке первого появления детали среди рецептов.
     """
     merged_qty = {}
     merged_part = {}
@@ -1565,21 +1574,20 @@ def apply_fault_templates(order, fault_types, employee, version=None,
                 order_of_appearance.append(line.part_id)
             merged_qty[line.part_id] += line.quantity
 
+    if order_equipment is None:
+        order_equipment = order.sole_equipment
+
     added = []
-    shortages = []
     with transaction.atomic():
         for part_id in order_of_appearance:
             part = merged_part[part_id]
             quantity = merged_qty[part_id]
-            shortage = _use_repair_order_part(
-                order, part, quantity, employee,
-                f'Деталь {part.name} x{quantity} добавлена по шаблону неисправности',
-                order_equipment=order_equipment
+            RepairOrderDetail.objects.create(
+                repair_order=order, order_equipment=order_equipment,
+                part=part, quantity_used=quantity, is_planned=True
             )
             added.append((part, quantity))
-            if shortage:
-                shortages.append(part)
-    return added, shortages
+    return added
 
 
 def _back_after_detail(request, order_pk):
@@ -1813,11 +1821,10 @@ def repair_order_return_detail(request, pk, detail_pk):
 def repair_order_apply_fault_template(request, pk):
     """Применение рецептов деталей выбранных типовых неисправностей.
 
-    Дополняет список использованных в заказе деталей, ничего в нём не
-    заменяя — та же логика списания, что и у ручного добавления детали
-    (см. `_use_repair_order_part`), но одним вызовом на каждую позицию уже
-    слитого по всем выбранным неисправностям словаря и одной транзакцией
-    на всю пачку сразу.
+    Дополняет список деталей единицы, ничего в нём не заменяя — с v2.111.0
+    запланированными (`is_planned=True`), тот же приём, что у ручного
+    добавления с флагом «Запланировать»: склад не трогается, пока мастер
+    не спишет весь список отдельной кнопкой на странице единицы.
     """
     order = get_object_or_404(RepairOrder, pk=pk)
     fault_ids = [v for v in request.POST.getlist('fault_ids') if str(v).isdigit()]
@@ -1843,8 +1850,8 @@ def repair_order_apply_fault_template(request, pk):
             'error': 'Выберите хотя бы одну неисправность из списка — «Другое» своего рецепта не имеет.'
         })
 
-    added, shortages = apply_fault_templates(
-        order, fault_types, request.user, version=version, order_equipment=target_unit
+    added = apply_fault_templates(
+        order, fault_types, version=version, order_equipment=target_unit
     )
     if not added:
         return JsonResponse({
@@ -1853,10 +1860,7 @@ def repair_order_apply_fault_template(request, pk):
         })
 
     lines = ', '.join(f'{part.name} ×{quantity}' for part, quantity in added)
-    message = f'Шаблон применён, в заказ добавлено: {lines}.'
-    if shortages:
-        names = ', '.join(sorted({part.name for part in shortages}))
-        message += f' Внимание: не хватило на складе — {names}, списано с отрицательным остатком.'
+    message = f'Запланировано: {lines}. Склад не тронут — спишите весь список кнопкой ниже.'
 
     return JsonResponse({'success': True, 'message': message, 'count': len(added)})
 
@@ -5920,6 +5924,7 @@ def price_list_create(request):
                                       'note': source.note if source else ''})
         lines = [
             {'equipment_type': line.equipment_type_id,
+             'power_from': line.power_from, 'power_to': line.power_to,
              'complexity': line.complexity,
              'price': line.price}
             for line in source.lines.all()

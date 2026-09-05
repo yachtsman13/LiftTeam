@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.110.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.111.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -39,7 +39,10 @@
         Строка без сложности — цена на любой ремонт этого типа; со
         сложностью — уточнение, которое её вытесняет. Заводить обе
         не обязательно: у типа может быть цена только на сложный ремонт,
-        а на простой возьмётся из базового прайса.
+        а на простой возьмётся из базового прайса. Мощность — тот же
+        приём, но раньше сложности: обе границы пустые — цена на любую
+        мощность этого типа, заполнена одна или обе — уточнение диапазона
+        (обычно у преобразователей частоты).
     {% endcomment %}
     <div class="card">
         <div class="card-header"><i class="bi bi-list-ul me-2"></i>Строки прайса</div>
@@ -48,7 +51,7 @@
             <div class="table-responsive table-scroll">
                 <table class="table list-table align-middle">
                     <thead class="table-light">
-                        <tr><th>Тип оборудования</th><th>Сложность</th><th>Цена, ₽</th><th style="width:1%"></th></tr>
+                        <tr><th>Тип оборудования</th><th>Мощность от, кВт</th><th>Мощность до, кВт</th><th>Сложность</th><th>Цена, ₽</th><th style="width:1%"></th></tr>
                     </thead>
                     <tbody>
                         {% for line in formset %}
@@ -56,6 +59,14 @@
                             <td data-label="Тип оборудования">
                                 {{ line.equipment_type }}
                                 {% if line.equipment_type.errors %}<div class="text-danger small">{{ line.equipment_type.errors.0 }}</div>{% endif %}
+                            </td>
+                            <td data-label="Мощность от, кВт">
+                                {{ line.power_from }}
+                                {% if line.power_from.errors %}<div class="text-danger small">{{ line.power_from.errors.0 }}</div>{% endif %}
+                            </td>
+                            <td data-label="Мощность до, кВт">
+                                {{ line.power_to }}
+                                {% if line.power_to.errors %}<div class="text-danger small">{{ line.power_to.errors.0 }}</div>{% endif %}
                             </td>
                             <td data-label="Сложность">{{ line.complexity }}</td>
                             <td data-label="Цена, ₽">
@@ -72,6 +83,9 @@
                             </td>
                             {% for hidden in line.hidden_fields %}{{ hidden }}{% endfor %}
                         </tr>
+                        {% if line.non_field_errors %}
+                        <tr><td colspan="6" class="text-danger small border-0 pt-0">{{ line.non_field_errors.0 }}</td></tr>
+                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
@@ -81,6 +95,7 @@
             {% endif %}
             <div class="form-text">
                 Чтобы добавить ещё строки, сохраните — снизу появится пустая.
+                Обе границы мощности пустые — цена на любую мощность этого типа.
             </div>
         </div>
     </div>

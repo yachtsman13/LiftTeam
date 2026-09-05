@@ -933,13 +933,20 @@ class PriceList(models.Model):
         return found or cls.objects.create()
 
     @classmethod
-    def line_for(cls, client, equipment_type, complexity=''):
-        """Строка прайса под этот тип и сложность — или None.
+    def line_for(cls, client, equipment_type, complexity='', power=None):
+        """Строка прайса под этот тип, сложность и мощность — или None.
 
         Порядок: сначала прайс заказчика, потом базовый; внутри прайса —
-        строка ровно под эту сложность, а если её нет, строка без
-        сложности (общая для всех). Тот же приём, что и у рецепта
-        деталей: уточнение вытесняет общее, но только там, где заведено.
+        сначала мощность, потом сложность, и на каждом шаге уточнение
+        вытесняет общее, но только там, где заведено (тот же приём, что
+        у рецепта деталей). Мощность проверяется раньше сложности: это
+        она разводит преобразователи частоты по цене, а сложность —
+        уточнение уже внутри найденного диапазона.
+
+        `power=None` — у прибора нет версии или мощность в ней не заполнена
+        (обычное дело для всего, кроме преобразователей частоты). Такому
+        прибору подходят только строки без диапазона: строку «5–15 кВт»
+        предлагать ему не из чего, это было бы гаданием.
 
         Возвращается строка, а не число: мастеру надо видеть, откуда
         цена — из его прайса или из базового.
@@ -949,26 +956,39 @@ class PriceList(models.Model):
 
         orders = [Q(price_list__client=client)] if client is not None else []
         orders.append(Q(price_list__client__isnull=True))
+        no_range = Q(power_from__isnull=True, power_to__isnull=True)
         for scope in orders:
             lines = PriceListLine.objects.filter(
                 scope, equipment_type=equipment_type
             ).select_related('price_list__client')
-            exact = lines.filter(complexity=complexity).first() if complexity else None
-            if exact:
-                return exact
-            general = lines.filter(complexity='').first()
-            if general:
-                return general
+            if power is not None:
+                by_power = lines.filter(
+                    Q(power_from__isnull=True) | Q(power_from__lte=power)
+                ).filter(Q(power_to__isnull=True) | Q(power_to__gte=power))
+                power_scopes = (by_power.exclude(no_range), by_power.filter(no_range))
+            else:
+                power_scopes = (lines.filter(no_range),)
+
+            for power_scope in power_scopes:
+                exact = power_scope.filter(complexity=complexity).first() if complexity else None
+                if exact:
+                    return exact
+                general = power_scope.filter(complexity='').first()
+                if general:
+                    return general
         return None
 
 
 class PriceListLine(models.Model):
-    """Строка прайса: тип оборудования, сложность и цена.
+    """Строка прайса: тип оборудования, диапазон мощности, сложность и цена.
 
     Сложность пустая — цена на любой ремонт этого типа. Заполненная —
     уточнение, которое вытесняет общую строку. Пустую заводить не
     обязательно: у типа может быть цена только на сложный ремонт,
-    а на простой — из базового прайса.
+    а на простой — из базового прайса. Диапазон мощности — тот же приём,
+    только раньше: он нужен там, где на цену того же типа оборудования
+    (обычно преобразователя частоты) влияет мощность версии
+    (`EquipmentVersion.power_kw`), а не только сложность ремонта.
     """
     price_list = models.ForeignKey(
         PriceList, on_delete=models.CASCADE, related_name='lines',
@@ -977,6 +997,17 @@ class PriceListLine(models.Model):
     equipment_type = models.ForeignKey(
         EquipmentType, on_delete=models.CASCADE, related_name='price_lines',
         verbose_name='Тип оборудования'
+    )
+    # Оба пустых — цена на любую мощность этого типа. Границы включительные
+    # (5 и 15 у «5–15 кВт» попадают в диапазон), и обычно задают только одну
+    # из них: «до 15 кВт» — пустой power_from, «от 15 кВт» — пустой power_to.
+    power_from = models.DecimalField(
+        'Мощность от, кВт', max_digits=7, decimal_places=2, null=True, blank=True
+    )
+    power_to = models.DecimalField(
+        'Мощность до, кВт', max_digits=7, decimal_places=2, null=True, blank=True,
+        help_text='Обе границы пустые — цена на любую мощность этого типа. '
+                  'Сравнивается с EquipmentVersion.power_kw единицы.'
     )
     # Значений два, как и у единицы с неисправностью, с v2.93.0:
     # «среднего» ремонта не бывает — решение владельца, принятое ещё
@@ -995,18 +1026,39 @@ class PriceListLine(models.Model):
     class Meta:
         verbose_name = 'Строка прайса'
         verbose_name_plural = 'Строки прайса'
-        ordering = ['equipment_type__name', 'complexity']
+        ordering = ['equipment_type__name', 'power_from', 'complexity']
         constraints = [
             models.UniqueConstraint(
-                fields=['price_list', 'equipment_type', 'complexity'],
-                name='unique_price_per_type_and_complexity',
+                fields=['price_list', 'equipment_type', 'power_from', 'power_to', 'complexity'],
+                name='unique_price_per_type_power_and_complexity',
             )
         ]
 
+    def clean(self):
+        if self.power_from is not None and self.power_to is not None \
+                and self.power_from > self.power_to:
+            raise ValidationError(
+                '«Мощность от» не может быть больше «Мощность до».'
+            )
+
+    @property
+    def power_range_display(self):
+        """Диапазон мощности человеку — «до 15», «от 15», «5–15» или пусто."""
+        if self.power_from is None and self.power_to is None:
+            return ''
+        if self.power_from is None:
+            return f'до {self.power_to} кВт'
+        if self.power_to is None:
+            return f'от {self.power_from} кВт'
+        return f'{self.power_from}–{self.power_to} кВт'
+
     def __str__(self):
+        bits = [str(self.equipment_type)]
+        if self.power_range_display:
+            bits.append(self.power_range_display)
         if self.complexity:
-            return f'{self.equipment_type} ({self.get_complexity_display().lower()}): {self.price}'
-        return f'{self.equipment_type}: {self.price}'
+            bits.append(self.get_complexity_display().lower())
+        return f'{", ".join(bits)}: {self.price}' if len(bits) > 1 else f'{bits[0]}: {self.price}'
 
 
 class EquipmentModel(models.Model):
@@ -1093,6 +1145,20 @@ class EquipmentVersion(models.Model):
         'Комментарий', blank=True,
         help_text='Чем эта версия отличается: алюминиевый корпус, большие '
                   'кнопки. Справочно, в документы не идёт.'
+    )
+    # У преобразователей частоты исполнения отличаются мощностью, и от неё
+    # зависит цена ремонта (PriceListLine.power_from/power_to,
+    # PriceList.line_for). У привода дверей и прочего, где цена от мощности
+    # не зависит, поле остаётся пустым — так же, как остаётся пустым `note`
+    # у версий, которым нечего в нём написать. В документы, как и `note`,
+    # не печатается: это справочная величина для подбора цены, а не то,
+    # что заказчик ждёт увидеть в акте.
+    power_kw = models.DecimalField(
+        'Мощность, кВт', max_digits=7, decimal_places=2, null=True, blank=True,
+        help_text='Только там, где от неё зависит цена ремонта (обычно '
+                  'у преобразователей частоты) — розыск цены в прайсе '
+                  'учитывает её. Пусто — цена этой версии от мощности '
+                  'не зависит.'
     )
 
     class Meta:
@@ -1221,6 +1287,18 @@ class Equipment(models.Model):
         if self.version_id:
             return self.version.name
         return ''
+
+    @property
+    def power_kw(self):
+        """Мощность версии этой единицы для подбора цены — или None.
+
+        Одно место, как и у `version_suffix`: розыск цены и показ мастеру
+        не должны спрашивать `equipment.version.power_kw` каждый по-своему,
+        рискуя забыть проверку `version_id`.
+        """
+        if self.version_id:
+            return self.version.power_kw
+        return None
 
     @property
     def designation(self):
@@ -2369,10 +2447,6 @@ class RepairOrderEquipment(models.Model):
         help_text='Проставляется сама в день первой записи. Правится руками: '
                   'диагностировать могли вчера, а записать сегодня.'
     )
-    diagnosis = models.TextField(
-        'Результаты диагностики', blank=True,
-        help_text='Что вышло из строя. Печатается в акте дефектации.'
-    )
     error_codes = models.TextField(
         'Коды ошибок', blank=True,
         help_text='По одному в строке, вместе с расшифровкой: '
@@ -2476,10 +2550,12 @@ class RepairOrderEquipment(models.Model):
     def diagnosis_document_text(self):
         """Результаты диагностики для акта дефектации.
 
-        Описания выбранных неисправностей, затем то, что мастер дописал
-        руками в поле диагностики.
+        С v2.111.0 — только описания выбранных типовых неисправностей:
+        свободного поля «Результаты диагностики» больше нет, его роль
+        взяли на себя коды ошибок с расшифровкой (`error_codes`,
+        `error_code_lines`) — они печатаются в акте отдельным блоком.
         """
-        return self.document_fault_text(self.diagnosis)
+        return self.document_fault_text()
 
     @property
     def typical_work_lines(self):
@@ -2633,9 +2709,13 @@ class RepairOrderEquipment(models.Model):
                        args=[self.repair_order_id, self.pk])
         # С v2.95.0 дефектацию заполняют на самой странице единицы:
         # отдельной страницы у неё больше нет, и вести пункт готовности
-        # туда значило бы вести на переадресацию
+        # туда значило бы вести на переадресацию. Свободного поля
+        # «Результаты диагностики» с v2.111.0 нет — ведём на «Коды
+        # ошибок», ближайшее оставшееся поле для ввода текстом
+        # (типовые неисправности выбираются в своём выпадающем списке,
+        # не в поле, куда имеет смысл ставить курсор)
         if code == 'defect_act':
-            return unit + '#id_diagnosis'
+            return unit + '#id_error_codes'
         if code == 'work':
             return unit + '#id_work_performed'
         if code == 'repair_cost':
@@ -2803,6 +2883,7 @@ class RepairOrderEquipment(models.Model):
             self.repair_order.client,
             self.equipment.model.equipment_type,
             self.effective_complexity,
+            power=self.equipment.power_kw,
         )
 
     @property

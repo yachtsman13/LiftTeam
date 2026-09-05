@@ -3719,7 +3719,6 @@ class DefectActTests(TestCase):
             'initial_condition': '',
             'repair_complexity': '',
             'defect_act_date': '2026-05-06',
-            'diagnosis': 'Выявлен выход из строя IGBT модуля и его обвязки.',
             'error_codes': '«Десат» — короткое замыкание между фазами\n'
                            '«EOL» — переезд зоны полного открытия',
             'warranty_case': 'non_warranty',
@@ -3780,7 +3779,6 @@ class DefectActTests(TestCase):
 
         resp = self.client_http.get(self._act_url())
 
-        self.assertContains(resp, 'IGBT модуля')
         self.assertContains(resp, '«Десат»')
         self.assertContains(resp, '«EOL»')
         self.assertContains(resp, 'Случай не является гарантийным')
@@ -8254,17 +8252,24 @@ class FaultTemplateApplyTests(TestCase):
         )
 
     def test_applying_one_fault_creates_its_recipe(self):
+        """С v2.111.0 рецепт только намечает — склад не трогается, пока
+        мастер не спишет весь список отдельной кнопкой (как и у ручного
+        добавления с флагом «Запланировать»)."""
         response = self._apply([self.fault1.pk])
         data = response.json()
 
         self.assertTrue(data['success'])
-        details = {d.part_id: d.quantity_used for d in self.order.details.all()}
-        self.assertEqual(details, {self.part1.pk: 2, self.part2.pk: 1})
+        details = list(self.order.details.all())
+        self.assertEqual(
+            {d.part_id: d.quantity_used for d in details},
+            {self.part1.pk: 2, self.part2.pk: 1}
+        )
+        self.assertTrue(all(d.is_planned for d in details))
 
         self.part1.refresh_from_db()
         self.part2.refresh_from_db()
-        self.assertEqual(self.part1.current_stock, 8)
-        self.assertEqual(self.part2.current_stock, 4)
+        self.assertEqual(self.part1.current_stock, 10)
+        self.assertEqual(self.part2.current_stock, 5)
 
     def test_applying_adds_to_an_existing_manual_line_without_replacing_it(self):
         """Ручная строка по part1 уже есть — применение шаблона добавляет
@@ -8294,7 +8299,10 @@ class FaultTemplateApplyTests(TestCase):
             {self.part1.pk: 2, self.part2.pk: 4, self.part3.pk: 1}
         )
 
-    def test_a_shortage_is_reported_but_the_detail_is_still_added(self):
+    def test_a_recipe_beyond_stock_is_still_only_planned(self):
+        """Планирование не смотрит на остаток — ради этого оно и нужно:
+        запланировать можно больше, чем лежит на полке, а нехватку
+        мастер увидит при списании всего списка."""
         fault3 = FaultType.objects.create(equipment_model=self.model_a, name='Сильный дефицит')
         FaultTypePart.objects.create(fault_type=fault3, part=self.part3, quantity=10)  # остаток всего 2
 
@@ -8302,10 +8310,11 @@ class FaultTemplateApplyTests(TestCase):
         data = response.json()
 
         self.assertTrue(data['success'])
-        self.assertIn('не хватило', data['message'])
         self.part3.refresh_from_db()
-        self.assertEqual(self.part3.current_stock, -8)
-        self.assertEqual(self.order.details.get(part=self.part3).quantity_used, 10)
+        self.assertEqual(self.part3.current_stock, 2)
+        detail = self.order.details.get(part=self.part3)
+        self.assertEqual(detail.quantity_used, 10)
+        self.assertTrue(detail.is_planned)
 
     def test_applying_nothing_fails_without_touching_the_order(self):
         response = self._apply([])
@@ -12355,6 +12364,62 @@ class PriceListTests(TestCase):
         self.assertEqual(line.price, Decimal('8000'))
         self.assertTrue(line.price_list.is_base)
 
+    def test_a_power_range_beats_the_general_row(self):
+        """Диапазон мощности — тот же приём, что и у сложности: уточнение
+        вытесняет общую строку, но только там, где заведено."""
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd, price=Decimal('9000'),
+        )
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd,
+            power_from=Decimal('15'), price=Decimal('20000'),
+        )
+
+        cheap = PriceList.line_for(None, self.vfd, power=Decimal('7.5'))
+        strong = PriceList.line_for(None, self.vfd, power=Decimal('18.5'))
+
+        self.assertEqual(cheap.price, Decimal('9000'))
+        self.assertEqual(strong.price, Decimal('20000'))
+
+    def test_a_unit_without_power_only_matches_general_rows(self):
+        """Мощности нет — строку с диапазоном предложить не из чего,
+        это было бы гаданием."""
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd,
+            power_from=Decimal('15'), price=Decimal('20000'),
+        )
+
+        self.assertIsNone(PriceList.line_for(None, self.vfd, power=None))
+
+    def test_power_is_checked_before_complexity(self):
+        """Внутри найденного диапазона мощности сложность по-прежнему
+        уточняет цену — оба уровня работают вместе, а не заменяют друг
+        друга."""
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd,
+            power_to=Decimal('15'), price=Decimal('9000'),
+        )
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd,
+            power_to=Decimal('15'), complexity='complex', price=Decimal('13000'),
+        )
+
+        simple = PriceList.line_for(None, self.vfd, 'simple', power=Decimal('7.5'))
+        complex_ = PriceList.line_for(None, self.vfd, 'complex', power=Decimal('7.5'))
+
+        self.assertEqual(simple.price, Decimal('9000'))
+        self.assertEqual(complex_.price, Decimal('13000'))
+
+    def test_bounds_are_inclusive(self):
+        PriceListLine.objects.create(
+            price_list=self.base, equipment_type=self.vfd,
+            power_from=Decimal('5'), power_to=Decimal('15'), price=Decimal('11000'),
+        )
+
+        line = PriceList.line_for(None, self.vfd, power=Decimal('15'))
+
+        self.assertEqual(line.price, Decimal('11000'))
+
     def test_a_type_without_a_price_gives_nothing(self):
         """Пусто — значит пусто: выдумывать цену нельзя, по ней
         разговаривают с заказчиком."""
@@ -12377,6 +12442,84 @@ class PriceListTests(TestCase):
         self.assertTrue(created.is_base)
         self.assertEqual(PriceList.objects.count(), 1)
         self.assertEqual(PriceList.base(), created)
+
+
+class EquipmentPowerTests(TestCase):
+    """Мощность версии — с v2.111.0, для преобразователей частоты: она же
+    влияет на подбор цены из прайса (см. PriceListTests выше)."""
+
+    def test_a_version_without_power_reports_none(self):
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        version = EquipmentVersion.objects.create(equipment_model=model, name='.4')
+        unit = Equipment.objects.create(model=model, version=version, serial_number='SN-PWR-0')
+
+        self.assertIsNone(unit.power_kw)
+
+    def test_a_unit_without_a_version_reports_none_too(self):
+        model = EquipmentModel.objects.create(name='БУАД-7-31')
+        unit = Equipment.objects.create(model=model, serial_number='SN-PWR-1')
+
+        self.assertIsNone(unit.power_kw)
+
+    def test_the_units_power_comes_from_its_version(self):
+        model = EquipmentModel.objects.create(name='Emotron DSV')
+        version = EquipmentVersion.objects.create(
+            equipment_model=model, name='-30', power_kw=Decimal('30.00')
+        )
+        unit = Equipment.objects.create(model=model, version=version, serial_number='SN-PWR-2')
+
+        self.assertEqual(unit.power_kw, Decimal('30.00'))
+
+    def test_price_list_line_reflects_the_units_power(self):
+        """price_list_line — сквозная проверка: единица с мощностью
+        находит строку прайса именно по своему диапазону."""
+        equipment_type = EquipmentType.objects.create(name='Преобразователь частоты')
+        model = EquipmentModel.objects.create(
+            name='Emotron DSV', equipment_type=equipment_type
+        )
+        version = EquipmentVersion.objects.create(
+            equipment_model=model, name='-30', power_kw=Decimal('30.00')
+        )
+        unit = Equipment.objects.create(model=model, version=version, serial_number='SN-PWR-3')
+        order = RepairOrder.objects.create(
+            client=ClientModel.objects.create(name='ООО Лифт')
+        )
+        roe = RepairOrderEquipment.objects.create(repair_order=order, equipment=unit)
+
+        base = PriceList.base()
+        PriceListLine.objects.create(
+            price_list=base, equipment_type=equipment_type, price=Decimal('9000')
+        )
+        PriceListLine.objects.create(
+            price_list=base, equipment_type=equipment_type,
+            power_from=Decimal('15'), price=Decimal('22000')
+        )
+
+        self.assertEqual(roe.price_list_line.price, Decimal('22000'))
+
+
+class PriceListLinePowerValidationTests(TestCase):
+    """«Мощность от» не может быть больше «Мощность до» — заведомо
+    ничему не подходящая строка молчала бы до первого недоумения мастера."""
+
+    def test_an_inverted_range_is_rejected(self):
+        equipment_type = EquipmentType.objects.create(name='Преобразователь частоты')
+        line = PriceListLine(
+            price_list=PriceList.base(), equipment_type=equipment_type,
+            power_from=Decimal('15'), power_to=Decimal('5'), price=Decimal('1000'),
+        )
+
+        with self.assertRaises(ValidationError):
+            line.full_clean()
+
+    def test_an_open_ended_range_is_fine(self):
+        equipment_type = EquipmentType.objects.create(name='Преобразователь частоты')
+        line = PriceListLine(
+            price_list=PriceList.base(), equipment_type=equipment_type,
+            power_from=Decimal('15'), price=Decimal('1000'),
+        )
+
+        line.full_clean()
 
 
 class PriceInDefectActTests(TestCase):
@@ -12418,7 +12561,7 @@ class PriceInDefectActTests(TestCase):
             {'section': 'diagnosis',
              'fault_description': '', 'initial_condition': '',
              'repair_complexity': '', 'warranty_case': '',
-             'defect_act_date': '', 'diagnosis': 'вздулись конденсаторы',
+             'defect_act_date': '',
              'error_codes': '', 'non_warranty_reason': '', 'estimated_cost': cost},
         )
 
@@ -12831,7 +12974,6 @@ class EquipmentVersionInDocumentsTests(TestCase):
         )
         self.roe = RepairOrderEquipment.objects.create(
             repair_order=self.order, equipment=self.equipment,
-            diagnosis='вздулись конденсаторы',
         )
 
     def _pages(self):
@@ -12959,7 +13101,6 @@ class FaultTextInDocumentsTests(TestCase):
         )
         self.roe = RepairOrderEquipment.objects.create(
             repair_order=self.order, equipment=self.equipment,
-            diagnosis='вздулись конденсаторы в цепи питания',
             proposed_work='Замена силовой платы',
             estimated_cost=Decimal('12000.00'),
         )
@@ -12980,14 +13121,15 @@ class FaultTextInDocumentsTests(TestCase):
     def _quote(self):
         return self.client_http.get(f'/repair-orders/{self.order.pk}/quote/')
 
-    def test_without_typical_faults_the_documents_are_unchanged(self):
-        """Заказ без выбранных неисправностей печатается ровно как раньше:
-        в акте — записанная диагностика, в предложении — предлагаемые работы."""
-        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
+    def test_without_typical_faults_the_quote_uses_the_free_text(self):
+        """Неисправностей не выбрано — предложение печатается по тому, что
+        мастер написал сам. У акта своего свободного поля диагностики
+        с v2.111.0 нет — «Результаты диагностики» пусты, пока не выбрана
+        хотя бы одна типовая неисправность."""
+        self.assertEqual(self.roe.diagnosis_document_text, '')
         self.assertEqual(self.roe.quote_line, 'Замена силовой платы')
         self.assertEqual(self.roe.fault_document_lines, [])
 
-        self.assertContains(self._act(), 'вздулись конденсаторы в цепи питания')
         self.assertContains(self._quote(), 'Замена силовой платы')
 
     def test_the_full_descriptions_reach_both_documents(self):
@@ -13007,13 +13149,16 @@ class FaultTextInDocumentsTests(TestCase):
         self.assertNotContains(self._quote(), 'высохли конденсаторы')
         self.assertNotContains(self._quote(), 'сгорел IGBT')
 
-    def test_the_free_text_follows_the_descriptions(self):
+    def test_the_quote_free_text_follows_the_descriptions(self):
+        """Предложение по-прежнему складывает описание неисправности
+        со свободным текстом мастера. У акта дефектации своего свободного
+        текста с v2.111.0 нет — «Результаты диагностики» несут только
+        описания выбранных неисправностей."""
         self.roe.faults.set([self.dry])
 
         self.assertEqual(
             self.roe.diagnosis_document_text,
-            'Высыхание электролитических конденсаторов звена постоянного тока\n'
-            'вздулись конденсаторы в цепи питания',
+            'Высыхание электролитических конденсаторов звена постоянного тока',
         )
         self.assertEqual(
             self.roe.quote_line,
@@ -13030,14 +13175,11 @@ class FaultTextInDocumentsTests(TestCase):
         self.roe.faults.set([nameless])
 
         self.assertEqual(self.roe.fault_document_lines, [])
-        self.assertEqual(self.roe.diagnosis_document_text, self.roe.diagnosis)
+        self.assertEqual(self.roe.diagnosis_document_text, '')
         self.assertNotContains(self._act(), 'глючит по-непонятному')
 
     def test_an_empty_unit_still_prints_a_dash(self):
-        """Ни описаний, ни диагностики — в акте прочерк, как и раньше."""
-        self.roe.diagnosis = ''
-        self.roe.save(update_fields=['diagnosis'])
-
+        """Ни описаний, ни кодов ошибок — в акте прочерк, как и раньше."""
         self.assertEqual(self.roe.diagnosis_document_text, '')
         self.assertFalse(self.roe.has_defect_act)
 
@@ -13555,7 +13697,7 @@ class OptionalTypeAndVersionTests(TestCase):
             client=ClientModel.objects.create(name='ООО Без версий', inn='7700000904')
         )
         roe = RepairOrderEquipment.objects.create(
-            repair_order=order, equipment=unit, diagnosis='не включается'
+            repair_order=order, equipment=unit, error_codes='не включается'
         )
 
         act = self.client_http.get(
@@ -15232,7 +15374,7 @@ class UnitReadinessTests(TestCase):
     def _finish(self, roe=None):
         """Заполнить всё, что чек-лист спрашивает."""
         roe = roe or self.roe
-        roe.diagnosis = 'Высохли конденсаторы в цепи питания.'
+        roe.error_codes = 'Высохли конденсаторы в цепи питания.'
         roe.work_performed = 'Заменены конденсаторы C12, C13.'
         # Стоимость по факту, а не оценка из дефектации: по ней считается
         # сумма заказа и выставляется счёт
@@ -15258,7 +15400,7 @@ class UnitReadinessTests(TestCase):
         """«Назначьте стоимость» на гарантийном ремонте — ложная тревога,
         а к ложным тревогам привыкают и перестают читать все остальные."""
         self.roe.warranty_case = 'warranty'
-        self.roe.diagnosis = 'Отказал драйвер.'
+        self.roe.error_codes = 'Отказал драйвер.'
         self.roe.work_performed = 'Заменён драйвер.'
         self.roe.save()
 
@@ -15369,7 +15511,7 @@ class ReadinessScreensTests(TestCase):
         self.assertIn('Осталось 3', html)
 
     def test_a_finished_order_says_so_instead_of_an_empty_card(self):
-        self.roe.diagnosis = 'Высохли конденсаторы.'
+        self.roe.error_codes = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
         self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
@@ -15399,7 +15541,7 @@ class ReadinessScreensTests(TestCase):
         self.assertTrue(any('SN-SCREEN-1' in text for text in texts), texts)
 
     def test_no_warning_when_everything_is_filled(self):
-        self.roe.diagnosis = 'Высохли конденсаторы.'
+        self.roe.error_codes = 'Высохли конденсаторы.'
         self.roe.work_performed = 'Заменены конденсаторы.'
         self.roe.repair_cost = Decimal('4500.00')
         self.roe.save()
@@ -16035,7 +16177,6 @@ class UnitPageTests(TestCase):
             initial_condition='Корпус цел, пломбы на месте',
             work_performed='Заменены конденсаторы C12, C13',
             seal_numbers='7788, 7789',
-            diagnosis='Вздулись конденсаторы в цепи питания',
             estimated_cost=Decimal('4500.00'),
         )
         self.roe.faults.add(self.fault)
@@ -16052,8 +16193,7 @@ class UnitPageTests(TestCase):
             'SN-UNIT-1',
             'Не открывает двери на первом этаже',  # приём
             'Корпус цел, пломбы на месте',
-            'Вздулись конденсаторы в цепи питания',  # диагностика
-            'Электролитические конденсаторы потеряли ёмкость.',
+            'Электролитические конденсаторы потеряли ёмкость.',  # диагностика
             'Заменены конденсаторы C12, C13',      # ремонт
             '7788, 7789',                          # пломбы
         ):
@@ -16258,7 +16398,7 @@ class ReadinessEverywhereTests(TestCase):
             ),
         )
         if ready:
-            roe.diagnosis = 'Высохли конденсаторы.'
+            roe.error_codes = 'Высохли конденсаторы.'
             roe.work_performed = 'Заменены конденсаторы.'
             roe.repair_cost = Decimal('4500.00')
             roe.save()
@@ -16539,7 +16679,7 @@ class DiagnosisOnUnitPageTests(TestCase):
         section = html.split('id="diagnosis"')[1].split('id="repair"')[0]
 
         for field in ('id_fault_description', 'id_initial_condition',
-                      'id_diagnosis', 'id_error_codes', 'id_defect_act_date',
+                      'id_error_codes', 'id_defect_act_date',
                       'id_warranty_case', 'id_non_warranty_reason',
                       'id_estimated_cost', 'id_repair_complexity'):
             with self.subTest(field=field):
@@ -16593,9 +16733,9 @@ class DiagnosisOnUnitPageTests(TestCase):
             reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
             {'section': 'diagnosis', 'fault_description': '',
              'initial_condition': '', 'repair_complexity': '',
-             'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
-             'error_codes': '', 'warranty_case': '', 'non_warranty_reason': '',
-             'estimated_cost': '9000'},
+             'defect_act_date': '',
+             'error_codes': 'Высохли конденсаторы', 'warranty_case': '',
+             'non_warranty_reason': '', 'estimated_cost': '9000'},
         )
 
         self.roe.refresh_from_db()
@@ -16693,7 +16833,7 @@ class UnitEditTests(TestCase):
             'section': 'diagnosis',
             'fault_description': 'Не открывает двери',
             'initial_condition': 'Корпус цел',
-            'defect_act_date': '', 'diagnosis': '', 'error_codes': '',
+            'defect_act_date': '', 'error_codes': '',
             'warranty_case': '', 'non_warranty_reason': '',
             'estimated_cost': '', 'repair_complexity': '',
         }
@@ -16848,6 +16988,19 @@ class UnitEditTests(TestCase):
             html,
         )
         self.assertIn('LiftTeamWS.fetch', html)
+
+    def test_the_recipe_button_lives_in_the_parts_section(self):
+        """С v2.111.0 кнопка стоит рядом с ручным добавлением детали —
+        обе делают одно и то же, пополняют список деталей единицы,
+        а не в дефектации, где она стояла до этой версии."""
+        html = self.http.get(
+            reverse('repair_order_unit_detail', args=[self.order.pk, self.roe.pk])
+        ).content.decode()
+        diagnosis_section = html.split('id="diagnosis"')[1].split('id="repair"')[0]
+        parts_section = html.split('id="parts"')[1]
+
+        self.assertNotIn('applyRecipe', diagnosis_section)
+        self.assertIn('applyRecipe', parts_section)
 
 
 class UnitQuickActionsTests(TestCase):
@@ -17273,8 +17426,8 @@ class DefectActDateTests(TestCase):
             'section': 'diagnosis',
             'fault_description': '', 'initial_condition': '',
             'repair_complexity': '',
-            'defect_act_date': '', 'diagnosis': 'Высохли конденсаторы',
-            'error_codes': '', 'warranty_case': '',
+            'defect_act_date': '', 'error_codes': 'Высохли конденсаторы',
+            'warranty_case': '',
             'non_warranty_reason': '', 'estimated_cost': '',
         }
         data.update(extra)
@@ -17294,12 +17447,12 @@ class DefectActDateTests(TestCase):
         """Заполнили в понедельник, вернулись в среду — в акте должен
         остаться понедельник."""
         monday = timezone.localdate() - datetime.timedelta(days=2)
-        self.roe.diagnosis = 'Высохли конденсаторы'
+        self.roe.error_codes = 'Высохли конденсаторы'
         self.roe.defect_act_date = monday
         self.roe.save()
 
         self._fill(defect_act_date=monday.strftime('%Y-%m-%d'),
-                   diagnosis='Высохли конденсаторы и резистор')
+                   error_codes='Высохли конденсаторы и резистор')
 
         self.roe.refresh_from_db()
         self.assertEqual(self.roe.defect_act_date, monday)
@@ -17315,7 +17468,7 @@ class DefectActDateTests(TestCase):
 
     def test_an_empty_act_is_not_stamped(self):
         """Дата на пустом акте означала бы, что диагностика была."""
-        self._fill(diagnosis='')
+        self._fill(error_codes='')
 
         self.roe.refresh_from_db()
         self.assertIsNone(self.roe.defect_act_date)
@@ -17383,7 +17536,7 @@ class ReadinessButtonsTests(TestCase):
             # на переадресацию
             'defect_act': reverse(
                 'repair_order_unit_detail',
-                args=[self.order.pk, self.roe.pk]) + '#id_diagnosis',
+                args=[self.order.pk, self.roe.pk]) + '#id_error_codes',
             'work': reverse(
                 'repair_order_unit_detail',
                 args=[self.order.pk, self.roe.pk]) + '#id_work_performed',
@@ -17706,7 +17859,7 @@ class FaultPickerTests(TestCase):
             reverse('repair_order_unit_edit', args=[self.order.pk, self.roe.pk]),
             {'section': 'diagnosis',
              'fault_description': '', 'initial_condition': '',
-             'defect_act_date': '', 'diagnosis': '', 'error_codes': '',
+             'defect_act_date': '', 'error_codes': '',
              'warranty_case': '', 'non_warranty_reason': '',
              'estimated_cost': '', 'repair_complexity': '',
              'faults': [str(self.hard.pk)]},
@@ -18285,7 +18438,7 @@ class UnitReadinessLabelTests(TestCase):
             equipment=Equipment.objects.create(
                 model=model, serial_number='SN-LABEL-1'
             ),
-            diagnosis='Пробит модуль', work_performed='Заменён модуль',
+            error_codes='Пробит модуль', work_performed='Заменён модуль',
             repair_cost=Decimal('5000.00'),
         )
 
@@ -18340,6 +18493,19 @@ class PriceListLineMigrationTests(TransactionTestCase):
         )
         return names[-1]
 
+    @staticmethod
+    def _full_name(prefix):
+        """Числовой префикс ('0048') в полное имя узла графа миграций —
+        `call_command('migrate', ...)` принимает префикс, а
+        `MigrationLoader.project_state` требует точное имя."""
+        from django.db.migrations.loader import MigrationLoader
+        names = [
+            name for app, name in
+            MigrationLoader(None, ignore_no_migrations=True).disk_migrations
+            if app == 'core' and name.startswith(prefix)
+        ]
+        return names[0]
+
     def test_medium_price_lines_become_complex(self):
         latest = self._latest_migration()
         try:
@@ -18348,10 +18514,17 @@ class PriceListLineMigrationTests(TransactionTestCase):
             # RunPython просто не на чем сработать: миграция уже накатана
             call_command('migrate', 'core', '0048', verbosity=0)
 
-            from django.apps import apps as django_apps
-            PriceListModel = django_apps.get_model('core', 'PriceList')
-            EquipmentTypeModel = django_apps.get_model('core', 'EquipmentType')
-            PriceListLineModel = django_apps.get_model('core', 'PriceListLine')
+            # Модели берём из исторического состояния на 0048, а не текущие
+            # из models.py: с v2.111.0 у PriceListLine появились новые поля
+            # (power_from/power_to), которых в таблице на этом шаге ещё нет
+            # — текущая модель собрала бы INSERT с несуществующим столбцом
+            from django.db.migrations.executor import MigrationExecutor
+            state = MigrationExecutor(connection).loader.project_state(
+                ('core', self._full_name('0048'))
+            )
+            PriceListModel = state.apps.get_model('core', 'PriceList')
+            EquipmentTypeModel = state.apps.get_model('core', 'EquipmentType')
+            PriceListLineModel = state.apps.get_model('core', 'PriceListLine')
 
             price_list = PriceListModel.objects.create()
             equipment_type = EquipmentTypeModel.objects.create(name='Привод дверей')
@@ -20404,7 +20577,7 @@ class FaultTypeVersionScopeTests(TestCase):
         response = self.http.post(
             reverse('repair_order_unit_edit', args=[order.pk, roe.pk]),
             {'section': 'diagnosis', 'fault_description': '', 'initial_condition': '',
-             'repair_complexity': '', 'defect_act_date': '', 'diagnosis': '',
+             'repair_complexity': '', 'defect_act_date': '',
              'error_codes': '', 'warranty_case': '', 'non_warranty_reason': '',
              'estimated_cost': '', 'faults': [str(self.specific.pk)]},
         )
@@ -20859,7 +21032,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.110.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.111.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
