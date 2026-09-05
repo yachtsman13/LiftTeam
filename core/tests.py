@@ -6274,6 +6274,32 @@ class TBankInvoiceBuildingTests(TestCase):
         self.assertTrue(self.roe.invoice_line.startswith('Ремонт '))
         self.assertFalse(self.roe.invoice_line.startswith('Сложный'))
 
+    def test_work_performed_is_shown_by_default(self):
+        """Старые заказчики не должны молча лишиться строки, которую
+        видели всегда — поле включено по умолчанию."""
+        self.assertTrue(self.customer.invoice_show_work_performed)
+        self.assertIn('(Ремонт импульсного блока питания', self.roe.invoice_line)
+
+    def test_work_performed_can_be_hidden_per_client(self):
+        self.customer.invoice_show_work_performed = False
+        self.customer.save()
+
+        self.assertEqual(
+            self.roe.invoice_line,
+            'Ремонт Устройство управления дверьми лифта EkoDrive-2.2-1.0 SN:13593'
+        )
+
+    def test_hiding_it_does_not_affect_the_completion_act(self):
+        """Акт выполненных работ подписывается заказчиком — там работы
+        стоят всегда, независимо от настройки счёта."""
+        self.customer.invoice_show_work_performed = False
+        self.customer.save()
+
+        self.assertEqual(
+            self.roe.work_performed,
+            'Ремонт импульсного блока питания,\nзамена транзисторов'
+        )
+
     def test_complexity_derived_from_faults_is_used_too(self):
         """Сложность не обязана быть проставлена руками — она и так
         выводится из выбранных неисправностей."""
@@ -6284,6 +6310,16 @@ class TBankInvoiceBuildingTests(TestCase):
         self.roe.faults.add(fault)
 
         self.assertTrue(self.roe.invoice_line.startswith('Сложный ремонт '))
+
+    def test_invoice_items_also_respect_the_per_client_setting(self):
+        """invoice_items() читает флаг заказчика через self, а не заново
+        из базы — заводя строку, кладём заказ в кеш FK сами."""
+        self.customer.invoice_show_work_performed = False
+        self.customer.save()
+
+        item = self.order.invoice_items()[0]
+
+        self.assertNotIn('(', item['name'])
 
     def test_equipment_without_a_price_is_not_a_line(self):
         RepairOrderEquipment.objects.create(
@@ -20823,7 +20859,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.109.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.110.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

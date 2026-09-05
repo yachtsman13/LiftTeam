@@ -60,7 +60,7 @@ class ClientForm(forms.ModelForm):
     class Meta:
         model = Client
         fields = ['name', 'inn', 'kpp', 'address', 'contact_person', 'phone', 'email',
-                  'diadoc_fns_participant_id']
+                  'diadoc_fns_participant_id', 'invoice_show_work_performed']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'inn': forms.TextInput(attrs={'class': 'form-control'}),
@@ -72,6 +72,7 @@ class ClientForm(forms.ModelForm):
             'phone': forms.TextInput(attrs={'class': 'form-control'}),
             'email': forms.EmailInput(attrs={'class': 'form-control'}),
             'diadoc_fns_participant_id': forms.TextInput(attrs={'class': 'form-control'}),
+            'invoice_show_work_performed': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
         labels = {
             'name': 'Название',

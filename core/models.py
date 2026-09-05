@@ -762,6 +762,17 @@ class Client(models.Model):
                   'после того, как заказчик примет приглашение в Диадоке.'
     )
 
+    # У кого-то в счёте должен стоять перечень того, что сделали, у кого-то
+    # нет (в счёте, а не в акте — акт выполненных работ печатает его всегда,
+    # это подписываемый документ). По умолчанию включено — так печаталось
+    # раньше, до этого поля, и старые заказчики не должны молча лишиться
+    # строки, которую видели всегда.
+    invoice_show_work_performed = models.BooleanField(
+        'Показывать выполненные работы в счёте', default=True,
+        help_text='Выключить, если этому заказчику в счёте нужно только '
+                  'название ремонта, без перечня выполненных работ.'
+    )
+
     class Meta:
         verbose_name = 'Заказчик'
         verbose_name_plural = 'Заказчики'
@@ -2132,6 +2143,11 @@ class RepairOrder(models.Model):
 
         items = []
         for order_equipment in self.order_equipments.select_related('equipment__model'):
+            # repair_order у только что прочитанной строки — это тот же
+            # заказ, что и self; кладём его в кеш FK сами, а не через
+            # select_related('repair_order__client') — тот принёс бы
+            # с собой второй экземпляр уже имеющегося заказа
+            order_equipment.repair_order = self
             price = order_equipment.repair_cost
             if price is None or price <= 0:
                 continue
@@ -2902,10 +2918,17 @@ class RepairOrderEquipment(models.Model):
         с v2.93.0, по образцу простого «Ремонт …». Слово берётся из той же
         сложности, что красит значок в списке единиц (`effective_complexity`)
         — считанной по неисправностям, если не проставлена руками.
+
+        Перечень работ в скобках печатается, только пока у заказчика
+        включено `Client.invoice_show_work_performed` — некоторым в счёте
+        нужно только название ремонта, без подробностей. На акт выполненных
+        работ это не влияет: это подписываемый документ, и там работы
+        стоят всегда.
         """
         prefix = 'Сложный ремонт' if self.effective_complexity == 'complex' else 'Ремонт'
         name = f'{prefix} {self.equipment.model.full_name} SN:{self.equipment.serial_number}'
-        work = self.work_performed.strip()
+        show_work = self.repair_order.client.invoice_show_work_performed
+        work = self.work_performed.strip() if show_work else ''
         if work:
             # Перевод строки в наименовании позиции банку ни к чему:
             # он попадёт в PDF как есть и разорвёт ячейку таблицы
