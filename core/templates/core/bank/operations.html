@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.115.0{% endblock %}
+{% block title %}Поступления — LiftTeam v2.116.0{% endblock %}
 
 {% block content %}
 {% comment %}
@@ -41,7 +41,7 @@
     {% for tab in tabs %}
     <li class="nav-item">
         <a class="nav-link {% if status == tab.value %}active{% endif %}"
-           href="{% querystring status=tab.value %}">
+           href="{% querystring status=tab.value page=None %}">
             {{ tab.label }}
             <span class="badge bg-secondary ms-1">{{ tab.count }}</span>
         </a>
@@ -51,17 +51,46 @@
 
 <div class="card">
     <div class="card-body">
+        {% comment %}
+            Банк, ИНН и дата — поверх вкладок статуса (с v2.116.0): вкладка
+            решает, разнесено поступление или нет, а эти три условия
+            действуют внутри любой вкладки, включая «Все». `status` в форму
+            не входит — его меняют кликом по вкладке, а не полем формы,
+            и сохраняется он через querystring на самой ссылке вкладки.
+        {% endcomment %}
+        <form method="get" class="row g-2 mb-3">
+            <input type="hidden" name="status" value="{{ status }}">
+            <div class="col-md-3">
+                <select name="source" class="form-select">
+                    <option value="">Все банки</option>
+                    {% for value, label in bank_choices %}
+                    <option value="{{ value }}" {% if source == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <input type="text" name="inn" class="form-control" placeholder="ИНН плательщика" value="{{ inn }}">
+            </div>
+            <div class="col-md-2">
+                <input type="date" name="date_from" class="form-control" value="{{ date_from }}" title="Дата с">
+            </div>
+            <div class="col-md-2">
+                <input type="date" name="date_to" class="form-control" value="{{ date_to }}" title="Дата по">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-outline-primary w-100">Фильтр</button>
+            </div>
+        </form>
+
         <div class="table-responsive table-scroll">
             <table class="table table-hover align-middle list-table">
                 <thead class="table-light">
                     <tr>
-                        <th>Дата</th>
-                        <th class="text-end">Сумма</th>
-                        <th>Плательщик</th>
+                        <th data-sort="operation_date">Дата</th>
+                        <th class="text-end" data-sort="amount">Сумма</th>
+                        <th data-sort="counterparty">Плательщик</th>
                         <th>Назначение платежа</th>
-                        <th style="min-width: 18rem;">
-                            {% if status == 'new' %}Разнести на заказ{% else %}Заказ{% endif %}
-                        </th>
+                        <th style="min-width: 18rem;">Заказ</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -141,13 +170,27 @@
                     {% empty %}
                     <tr>
                         <td colspan="5" class="text-center text-muted py-4">
-                            {% if status == 'new' %}Неразнесённых поступлений нет{% else %}Пусто{% endif %}
+                            {% if status == 'new' %}Неразнесённых поступлений нет{% elif filters_active %}По этому фильтру ничего не найдено{% else %}Пусто{% endif %}
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+
+        {% if page_obj.has_other_pages %}
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if page_obj.has_previous %}
+                <li class="page-item"><a class="page-link" href="{% querystring page=page_obj.previous_page_number %}">←</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                {% if page_obj.has_next %}
+                <li class="page-item"><a class="page-link" href="{% querystring page=page_obj.next_page_number %}">→</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

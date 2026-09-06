@@ -5728,6 +5728,150 @@ class BankOperationTests(TestCase):
         self.assertFalse(resp.context['unapplied_operations'])
 
 
+class BankOperationsListFilterTests(TestCase):
+    """Вкладка «Все», фильтры (банк/ИНН/дата) и сортировка — с v2.116.0."""
+
+    def setUp(self):
+        self.accountant = Employee.objects.create_user(
+            username='buh_filter', full_name='Бухгалтер', password='pass',
+            position=position('Бухгалтер'))
+        self.client_http = TestClient()
+        self.client_http.force_login(self.accountant)
+
+    def _operation(self, **overrides):
+        data = {
+            'external_id': 'op-filter-1',
+            'source': 'tbank',
+            'operation_date': datetime.date(2026, 8, 10),
+            'amount': Decimal('1000'),
+            'counterparty': 'ООО «Раз»',
+            'counterparty_inn': '1111111111',
+        }
+        data.update(overrides)
+        return BankOperation.objects.create(**data)
+
+    def test_all_tab_shows_every_status(self):
+        self._operation(external_id='op-new', status='new')
+        self._operation(external_id='op-applied', status='applied')
+        self._operation(external_id='op-skipped', status='skipped')
+
+        resp = self.client_http.get('/bank/operations/?status=all')
+
+        self.assertEqual(len(resp.context['rows']), 3)
+
+    def test_default_tab_shows_only_new(self):
+        self._operation(external_id='op-new', status='new')
+        self._operation(external_id='op-applied', status='applied')
+
+        resp = self.client_http.get('/bank/operations/')
+
+        self.assertEqual(resp.context['status'], 'new')
+        self.assertEqual(len(resp.context['rows']), 1)
+
+    def test_suggestions_are_computed_per_row_status_within_the_all_tab(self):
+        """На «Все» статусы перемешаны — подсказку не просят у неновых строк."""
+        self._operation(external_id='op-new', status='new')
+        self._operation(external_id='op-applied', status='applied')
+
+        resp = self.client_http.get('/bank/operations/?status=all')
+
+        by_status = {row['operation'].status: row['suggestions'] for row in resp.context['rows']}
+        self.assertEqual(by_status['applied'], [])
+
+    def test_filter_by_source(self):
+        self._operation(external_id='op-tbank', source='tbank')
+        self._operation(external_id='op-tochka', source='tochka')
+
+        resp = self.client_http.get('/bank/operations/?status=all&source=tochka')
+
+        operations = [row['operation'] for row in resp.context['rows']]
+        self.assertEqual([o.external_id for o in operations], ['op-tochka'])
+
+    def test_an_unknown_source_is_ignored(self):
+        self._operation(external_id='op-tbank', source='tbank')
+
+        resp = self.client_http.get('/bank/operations/?status=all&source=DROP TABLE')
+
+        self.assertEqual(resp.context['source'], '')
+        self.assertEqual(len(resp.context['rows']), 1)
+
+    def test_filter_by_inn(self):
+        self._operation(external_id='op-1111', counterparty_inn='1111111111')
+        self._operation(external_id='op-2222', counterparty_inn='2222222222')
+
+        resp = self.client_http.get('/bank/operations/?status=all&inn=2222')
+
+        operations = [row['operation'] for row in resp.context['rows']]
+        self.assertEqual([o.external_id for o in operations], ['op-2222'])
+
+    def test_filter_by_date_range(self):
+        self._operation(external_id='op-early', operation_date=datetime.date(2026, 8, 1))
+        self._operation(external_id='op-late', operation_date=datetime.date(2026, 8, 20))
+
+        resp = self.client_http.get(
+            '/bank/operations/?status=all&date_from=2026-08-15&date_to=2026-08-31')
+
+        operations = [row['operation'] for row in resp.context['rows']]
+        self.assertEqual([o.external_id for o in operations], ['op-late'])
+
+    def test_an_invalid_date_is_ignored(self):
+        self._operation(external_id='op-1')
+
+        resp = self.client_http.get('/bank/operations/?status=all&date_from=не-дата')
+
+        self.assertEqual(len(resp.context['rows']), 1)
+
+    def test_tab_counts_reflect_active_filters(self):
+        """Счёт на вкладках — по банку/ИНН/дате, но без статуса."""
+        self._operation(external_id='op-tbank-new', source='tbank', status='new')
+        self._operation(external_id='op-tbank-applied', source='tbank', status='applied')
+        self._operation(external_id='op-tochka-new', source='tochka', status='new')
+
+        resp = self.client_http.get('/bank/operations/?status=all&source=tbank')
+
+        counts = {tab['value']: tab['count'] for tab in resp.context['tabs']}
+        self.assertEqual(counts['all'], 2)
+        self.assertEqual(counts['new'], 1)
+        self.assertEqual(counts['applied'], 1)
+        self.assertEqual(counts['skipped'], 0)
+
+    def test_sorting_by_amount(self):
+        self._operation(external_id='op-small', amount=Decimal('100'))
+        self._operation(external_id='op-big', amount=Decimal('900'))
+
+        asc = self.client_http.get('/bank/operations/?status=all&sort=amount')
+        desc = self.client_http.get('/bank/operations/?status=all&sort=amount&dir=desc')
+
+        self.assertEqual(
+            [row['operation'].external_id for row in asc.context['rows']],
+            ['op-small', 'op-big'])
+        self.assertEqual(
+            [row['operation'].external_id for row in desc.context['rows']],
+            ['op-big', 'op-small'])
+
+    def test_headers_carry_data_sort(self):
+        content = self.client_http.get('/bank/operations/').content.decode()
+        self.assertIn('data-sort="operation_date"', content)
+        self.assertIn('data-sort="amount"', content)
+        self.assertIn('data-sort="counterparty"', content)
+
+    def test_pagination_kicks_in_beyond_fifty_rows(self):
+        for i in range(51):
+            self._operation(external_id=f'op-{i}', status='skipped')
+
+        resp = self.client_http.get('/bank/operations/?status=all')
+
+        self.assertEqual(len(resp.context['rows']), 50)
+        self.assertTrue(resp.context['page_obj'].has_other_pages())
+
+    def test_the_empty_state_names_the_filter_when_nothing_matches(self):
+        self._operation(external_id='op-1', counterparty_inn='1111111111')
+
+        resp = self.client_http.get('/bank/operations/?status=all&inn=9999999999')
+
+        self.assertContains(resp, 'По этому фильтру ничего не найдено')
+
+
 class BankStatementFetchButtonTests(TestCase):
     """Кнопка «Загрузить выписку сейчас» на странице поступлений."""
 
@@ -21410,7 +21554,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.115.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.116.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

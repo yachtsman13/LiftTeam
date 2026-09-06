@@ -5617,40 +5617,97 @@ def _statement_banks():
     ]
 
 
+def _filter_bank_operations(params):
+    """Отбор поступлений по банку, ИНН и дате — без статуса: счёт по вкладкам
+    считается на этом же отборе, а не на всей таблице целиком, иначе цифры
+    на вкладках не совпадали бы с тем, что показывает текущий фильтр.
+
+    Статус — отдельно, в `bank_operations`: он решает, какая вкладка
+    активна, а не сколько строк на ней после остальных условий.
+    """
+    source = params.get('source', '')
+    if source not in dict(invoicing.PROVIDER_CHOICES):
+        source = ''
+    inn = params.get('inn', '').strip()
+    date_from = params.get('date_from', '')
+    date_to = params.get('date_to', '')
+
+    operations = BankOperation.objects.select_related('payment__repair_order', 'processed_by')
+    if source:
+        operations = operations.filter(source=source)
+    if inn:
+        operations = operations.filter(counterparty_inn__icontains=inn)
+    if parse_date(date_from):
+        operations = operations.filter(operation_date__gte=date_from)
+    if parse_date(date_to):
+        operations = operations.filter(operation_date__lte=date_to)
+
+    return operations, {
+        'source': source, 'inn': inn, 'date_from': date_from, 'date_to': date_to,
+    }
+
+
+# Сортируемые столбцы поступлений — тем же приёмом, что у радиодеталей
+# (`PART_LIST_SORT_FIELDS`): без явного разрешения подставленное в адрес
+# имя не сортирует ничего, а не роняет страницу
+BANK_OPERATIONS_SORT_FIELDS = {
+    'operation_date': 'operation_date',
+    'amount': 'amount',
+    'counterparty': 'counterparty',
+}
+
+
 @permission_required('bank_statement')
 def bank_operations(request):
-    """Поступления из выписок банков и подсказки, к каким они заказам."""
-    status = request.GET.get('status', 'new')
-    if status not in dict(BankOperation.STATUS_CHOICES):
-        status = 'new'
+    """Поступления из выписок банков и подсказки, к каким они заказам.
 
-    operations = list(
-        BankOperation.objects.filter(status=status)
-        .select_related('payment__repair_order', 'processed_by')[:200]
-    )
-    # Подсказки считаем только для неразнесённых: у разнесённых заказ уже
-    # известен, и лишние запросы к базе там ни к чему
+    Вкладка «Все» (с v2.116.0) показывает все статусы разом — до нею
+    поступление было видно только в одной из трёх вкладок, и посмотреть
+    сразу всё, что пришло за день по всем банкам, было нельзя. Остальные
+    фильтры (банк, ИНН, дата) действуют внутри любой вкладки, включая эту.
+    """
+    base_operations, filter_context = _filter_bank_operations(request.GET)
+
+    status = request.GET.get('status', 'new')
+    if status != 'all' and status not in dict(BankOperation.STATUS_CHOICES):
+        status = 'new'
+    operations = base_operations if status == 'all' else base_operations.filter(status=status)
+    operations = sorted_by_request(operations, request, BANK_OPERATIONS_SORT_FIELDS)
+
+    paginator = Paginator(operations, 50)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    # Подсказки — только для ещё не разнесённых: у остальных заказ уже
+    # известен (или решено, что его нет), и лишние запросы к базе ни к чему.
+    # Проверяем статус самой строки, а не выбранную вкладку — на вкладке
+    # «Все» статусы в списке перемешаны
     rows = [
         {'operation': operation,
-         'suggestions': operation.guess_orders()[:5] if status == 'new' else []}
-        for operation in operations
+         'suggestions': operation.guess_orders()[:5] if operation.status == 'new' else []}
+        for operation in page_obj
     ]
 
+    # Считаем по тому же отбору банка/ИНН/даты, что и сам список, но без
+    # статуса — иначе цифры на вкладках не совпадали бы с активным фильтром
     counts = dict(
-        BankOperation.objects.values_list('status')
+        base_operations.values_list('status')
         .annotate(total=Count('id')).values_list('status', 'total')
     )
 
     banks = _statement_banks()
     return render(request, 'core/bank/operations.html', {
         'rows': rows,
+        'page_obj': page_obj,
         'status': status,
-        'tabs': [
+        'tabs': [{'value': 'all', 'label': 'Все', 'count': sum(counts.values())}] + [
             {'value': value, 'label': label, 'count': counts.get(value, 0)}
             for value, label in BankOperation.STATUS_CHOICES
         ],
         'banks': banks,
+        'bank_choices': invoicing.PROVIDER_CHOICES,
         'any_bank_configured': any(bank['configured'] for bank in banks),
+        'filters_active': any(filter_context.values()),
+        **filter_context,
     })
 
 
