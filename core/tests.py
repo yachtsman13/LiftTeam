@@ -5804,6 +5804,21 @@ class BankOperationsListFilterTests(TestCase):
         operations = [row['operation'] for row in resp.context['rows']]
         self.assertEqual([o.external_id for o in operations], ['op-2222'])
 
+    def test_filter_by_payer_name(self):
+        """Бухгалтер часто помнит компанию, а не её ИНН наизусть."""
+        self._operation(external_id='op-lift', counterparty='ООО «Лифтпроект»', counterparty_inn='1111111111')
+        self._operation(external_id='op-other', counterparty='ООО «Другая»', counterparty_inn='2222222222')
+
+        resp = self.client_http.get('/bank/operations/?status=all&inn=лифтпро')
+
+        operations = [row['operation'] for row in resp.context['rows']]
+        self.assertEqual([o.external_id for o in operations], ['op-lift'])
+
+    def test_the_payer_field_autosubmits(self):
+        content = self.client_http.get('/bank/operations/').content.decode()
+        self.assertIn('data-autosubmit', content)
+        self.assertIn('js/autosubmit-filter.js', content)
+
     def test_filter_by_date_range(self):
         self._operation(external_id='op-early', operation_date=datetime.date(2026, 8, 1))
         self._operation(external_id='op-late', operation_date=datetime.date(2026, 8, 20))
@@ -21554,7 +21569,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.116.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.117.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

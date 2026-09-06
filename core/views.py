@@ -5618,32 +5618,39 @@ def _statement_banks():
 
 
 def _filter_bank_operations(params):
-    """Отбор поступлений по банку, ИНН и дате — без статуса: счёт по вкладкам
-    считается на этом же отборе, а не на всей таблице целиком, иначе цифры
-    на вкладках не совпадали бы с тем, что показывает текущий фильтр.
+    """Отбор поступлений по банку, плательщику и дате — без статуса: счёт
+    по вкладкам считается на этом же отборе, а не на всей таблице целиком,
+    иначе цифры на вкладках не совпадали бы с тем, что показывает текущий
+    фильтр.
 
     Статус — отдельно, в `bank_operations`: он решает, какая вкладка
     активна, а не сколько строк на ней после остальных условий.
+
+    Поле «плательщик» (параметр `inn`, имя не менялось, чтобы не рвать уже
+    разосланные ссылки) ищет **и по ИНН, и по названию** — бухгалтер часто
+    помнит компанию, а не её ИНН наизусть, и заставлять сначала искать ИНН
+    в другом месте было бы лишним шагом.
     """
     source = params.get('source', '')
     if source not in dict(invoicing.PROVIDER_CHOICES):
         source = ''
-    inn = params.get('inn', '').strip()
+    payer = params.get('inn', '').strip()
     date_from = params.get('date_from', '')
     date_to = params.get('date_to', '')
 
     operations = BankOperation.objects.select_related('payment__repair_order', 'processed_by')
     if source:
         operations = operations.filter(source=source)
-    if inn:
-        operations = operations.filter(counterparty_inn__icontains=inn)
+    if payer:
+        operations = operations.filter(
+            Q(counterparty_inn__icontains=payer) | Q(counterparty__icontains=payer))
     if parse_date(date_from):
         operations = operations.filter(operation_date__gte=date_from)
     if parse_date(date_to):
         operations = operations.filter(operation_date__lte=date_to)
 
     return operations, {
-        'source': source, 'inn': inn, 'date_from': date_from, 'date_to': date_to,
+        'source': source, 'inn': payer, 'date_from': date_from, 'date_to': date_to,
     }
 
 

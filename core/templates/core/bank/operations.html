@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.116.0{% endblock %}
+{% block title %}Поступления — LiftTeam v2.117.0{% endblock %}
 
 {% block content %}
 {% comment %}
@@ -52,11 +52,13 @@
 <div class="card">
     <div class="card-body">
         {% comment %}
-            Банк, ИНН и дата — поверх вкладок статуса (с v2.116.0): вкладка
-            решает, разнесено поступление или нет, а эти три условия
-            действуют внутри любой вкладки, включая «Все». `status` в форму
-            не входит — его меняют кликом по вкладке, а не полем формы,
-            и сохраняется он через querystring на самой ссылке вкладки.
+            Банк, плательщик и дата — поверх вкладок статуса (с v2.116.0):
+            вкладка решает, разнесено поступление или нет, а эти три
+            условия действуют внутри любой вкладки, включая «Все». `status`
+            в форму не входит — его меняют кликом по вкладке, а не полем
+            формы, и сохраняется он через querystring на самой ссылке
+            вкладки. Поле «плательщик» ищет и по ИНН, и по названию
+            (data-autosubmit — отправляется само, без кнопки).
         {% endcomment %}
         <form method="get" class="row g-2 mb-3">
             <input type="hidden" name="status" value="{{ status }}">
@@ -69,7 +71,8 @@
                 </select>
             </div>
             <div class="col-md-3">
-                <input type="text" name="inn" class="form-control" placeholder="ИНН плательщика" value="{{ inn }}">
+                <input type="text" name="inn" class="form-control" placeholder="ИНН или название компании"
+                       value="{{ inn }}" data-autosubmit>
             </div>
             <div class="col-md-2">
                 <input type="date" name="date_from" class="form-control" value="{{ date_from }}" title="Дата с">
