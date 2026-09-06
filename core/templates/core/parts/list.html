@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.117.0{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.118.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -28,7 +28,7 @@
             <div class="col-md-3">
                 <div class="input-group">
                     <span class="input-group-text"><i class="bi bi-search"></i></span>
-                    <input type="text" name="q" class="form-control" placeholder="Поиск по артикулу/названию..." value="{{ search }}">
+                    <input type="text" name="q" class="form-control" placeholder="Поиск по артикулу/названию..." value="{{ search }}" data-autosubmit>
                 </div>
             </div>
             <div class="col-md-2">

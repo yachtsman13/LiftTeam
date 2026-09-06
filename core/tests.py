@@ -7883,6 +7883,41 @@ class SortableTableTests(TestCase):
         self.assertIn('js/sortable-table.js', content)
 
 
+class AutosubmitFilterTests(TestCase):
+    """Текстовые поля поиска отправляют форму сами, по мере набора
+    (`autosubmit-filter.js`, с v2.116.0, поля — с v2.118.0): один и тот же
+    приём у всех похожих полей поиска по всей программе, а не только
+    у поступлений, где он появился первым.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_autosubmit', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+
+    def test_the_shared_script_is_loaded(self):
+        content = self.http.get('/parts/').content.decode()
+        self.assertIn('js/autosubmit-filter.js', content)
+
+    def test_part_search_field_autosubmits(self):
+        content = self.http.get('/parts/').content.decode()
+        self.assertIn('data-autosubmit', content)
+
+    def test_client_search_field_autosubmits(self):
+        content = self.http.get('/clients/').content.decode()
+        self.assertIn('data-autosubmit', content)
+
+    def test_equipment_search_field_autosubmits(self):
+        content = self.http.get('/equipment/').content.decode()
+        self.assertIn('data-autosubmit', content)
+
+    def test_repair_order_search_field_autosubmits(self):
+        content = self.http.get('/repair-orders/').content.decode()
+        self.assertIn('data-autosubmit', content)
+
+
 class SpecFormattingTests(TestCase):
     """Характеристики хранятся с шестью знаками после точки, и Django
     дописывает нули при каждой записи. «0.150000 А» читается как точность
@@ -21569,7 +21604,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.117.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.118.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
