@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load lifteam %}
 
-{% block title %}{{ part.part_number }} — LiftTeam v2.114.1{% endblock %}
+{% block title %}{{ part.part_number }} — LiftTeam v2.115.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -92,6 +92,51 @@ document.addEventListener('DOMContentLoaded', function () {
                     <div class="col-12"><strong>Поставщик:</strong> {{ part.preferred_supplier|default:"—" }}</div>
                     <div class="col-12"><strong>Описание:</strong><br>{{ part.description|default:"—"|linebreaks }}</div>
                 </div>
+            </div>
+        </div>
+
+        {% comment %}
+            Даташит — своя карточка, не строка в «Информации» (с v2.115.0):
+            здесь и ссылка на файл, и небольшая форма загрузки/замены,
+            а не только текст. Устройство то же, что у папки на Диске
+            у единицы оборудования — кнопка/ссылка сверху, форма ниже.
+            Форма несвязанная (не bound): представление сохраняет и сразу
+            возвращает сюда же редиректом, а отказ (не PDF, слишком
+            большой) говорит через messages, а не через ошибки формы —
+            после редиректа их всё равно нет ни у одной свежей формы.
+        {% endcomment %}
+        <div class="card mt-4">
+            <div class="card-header"><h5 class="mb-0"><i class="bi bi-file-earmark-pdf me-2"></i>Даташит</h5></div>
+            <div class="card-body">
+                {% if part.datasheet %}
+                <a href="{{ part.datasheet.url }}" target="_blank" rel="noopener"
+                   class="btn btn-outline-info mb-2">
+                    <i class="bi bi-file-earmark-pdf me-2"></i>Открыть даташит
+                </a>
+                <details class="small">
+                    <summary class="text-muted" style="cursor: pointer;">Заменить</summary>
+                    <form method="post" action="{% url 'part_datasheet_set' part.pk %}"
+                          enctype="multipart/form-data" class="d-flex gap-2 mt-2">
+                        {% csrf_token %}
+                        {{ datasheet_form.datasheet }}
+                        <button type="submit" class="btn btn-outline-secondary btn-sm flex-shrink-0">Сохранить</button>
+                    </form>
+                </details>
+                {% else %}
+                <a href="https://www.google.com/search?q={{ datasheet_query|urlencode }}"
+                   target="_blank" rel="noopener" class="btn btn-outline-secondary mb-2">
+                    <i class="bi bi-search me-2"></i>Найти в интернете
+                </a>
+                <p class="text-muted small mb-2">
+                    Нашли нужный PDF — сохраните его сюда, чтобы не искать второй раз.
+                </p>
+                <form method="post" action="{% url 'part_datasheet_set' part.pk %}"
+                      enctype="multipart/form-data" class="d-flex gap-2">
+                    {% csrf_token %}
+                    {{ datasheet_form.datasheet }}
+                    <button type="submit" class="btn btn-outline-primary btn-sm flex-shrink-0">Прикрепить</button>
+                </form>
+                {% endif %}
             </div>
         </div>
 

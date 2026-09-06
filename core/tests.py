@@ -15454,6 +15454,104 @@ class TechCardImageTests(TestCase):
         self.assertIn('enctype="multipart/form-data"', html)
 
 
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix='lifteam-test-media-'))
+class PartDatasheetTests(TestCase):
+    """Даташит — второй файл, который программа хранит у себя, тем же
+    приёмом, что снимок к шагу техкарты: своя маленькая форма на карточке
+    детали, лимит размера тот же, замена/удаление ничего не стирает,
+    если не попросили явно."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create_superuser(
+            username='datasheet_user', full_name='Мастер', password='pass',
+        )
+        self.http = TestClient()
+        self.http.force_login(self.employee)
+        self.part = SparePart.objects.create(part_number='LM317', name='Стабилизатор')
+
+    def _url(self):
+        return reverse('part_datasheet_set', args=[self.part.pk])
+
+    def _detail(self):
+        return self.http.get(reverse('part_detail', args=[self.part.pk])).content.decode()
+
+    def test_without_a_datasheet_the_page_offers_a_search(self):
+        html = self._detail()
+
+        self.assertIn('Найти в интернете', html)
+        self.assertIn('LM317', html)
+        self.assertNotIn('Открыть даташит', html)
+
+    def test_uploading_a_pdf_attaches_it(self):
+        upload = SimpleUploadedFile('LM317.pdf', b'%PDF-1.4 fake datasheet', 'application/pdf')
+
+        response = self.http.post(self._url(), {'datasheet': upload})
+
+        self.assertRedirects(response, reverse('part_detail', args=[self.part.pk]))
+        self.part.refresh_from_db()
+        self.assertTrue(self.part.datasheet)
+        self.assertTrue(self.part.datasheet.name.endswith('.pdf'))
+
+    def test_the_open_link_replaces_the_search_once_attached(self):
+        self.http.post(self._url(), {
+            'datasheet': SimpleUploadedFile('LM317.pdf', b'%PDF-1.4', 'application/pdf'),
+        })
+
+        html = self._detail()
+
+        self.assertIn('Открыть даташит', html)
+        self.assertNotIn('Найти в интернете', html)
+
+    def test_a_non_pdf_file_is_refused(self):
+        """`assertRedirects` сама сходила бы на страницу и съела разовое
+        сообщение раньше времени — поэтому сначала читаем страницу сами,
+        а редирект проверяем по одному статус-коду, без второго перехода."""
+        upload = SimpleUploadedFile('LM317.docx', b'not really a pdf', 'application/msword')
+
+        response = self.http.post(self._url(), {'datasheet': upload})
+
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.datasheet)
+        self.assertEqual(response.status_code, 302)
+        html = self._detail()
+        self.assertIn('только в PDF', html)
+
+    def test_a_huge_file_is_refused_with_a_reason(self):
+        """Тот же лимит, что у снимков шага, — забота одна и та же."""
+        upload = SimpleUploadedFile('LM317.pdf', b'%PDF-1.4' + b'0' * 2000, 'application/pdf')
+
+        with patch('core.forms.MAX_UPLOAD_BYTES', 1024):
+            response = self.http.post(self._url(), {'datasheet': upload})
+
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.datasheet)
+        html = self._detail()
+        self.assertIn('больше', html)
+
+    def test_clearing_the_datasheet(self):
+        self.http.post(self._url(), {
+            'datasheet': SimpleUploadedFile('LM317.pdf', b'%PDF-1.4', 'application/pdf'),
+        })
+        self.part.refresh_from_db()
+        self.assertTrue(self.part.datasheet)
+
+        self.http.post(self._url(), {'datasheet-clear': 'on'})
+
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.datasheet)
+
+    def test_get_is_not_allowed(self):
+        response = self.http.get(self._url())
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_the_form_can_carry_files_at_all(self):
+        """Без enctype PDF не доехал бы до сервера вовсе."""
+        html = self._detail()
+
+        self.assertIn('enctype="multipart/form-data"', html)
+
+
 class MediaInBackupTests(SimpleTestCase):
     """Снимки уходят в резервную копию вместе с базой.
 
@@ -21312,7 +21410,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.114.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.115.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

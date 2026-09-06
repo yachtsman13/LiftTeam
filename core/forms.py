@@ -812,6 +812,40 @@ class SparePartForm(forms.ModelForm):
                 self.initial[name] = format_spec(value)
 
 
+class PartDatasheetForm(forms.ModelForm):
+    """Своя маленькая форма на карточке детали, а не поле в общей форме
+    редактирования (с v2.115.0): прикрепляют даташит по одному, найдя его
+    в новой вкладке, и заводить ради этого переход на другую страницу
+    незачем — тот же приём, что у ссылки на папку Диска у единицы."""
+
+    class Meta:
+        model = SparePart
+        fields = ['datasheet']
+        widgets = {
+            'datasheet': forms.ClearableFileInput(attrs={
+                'class': 'form-control form-control-sm', 'accept': 'application/pdf',
+            }),
+        }
+
+    def clean_datasheet(self):
+        """Отказ по размеру — тем же лимитом, что и у снимков шага:
+        забота та же самая (место на карте памяти, размер ночной
+        выгрузки), а не совпадение констант."""
+        datasheet = self.cleaned_data.get('datasheet')
+        # Поле не трогали — приходит уже сохранённый файл, а не загрузка
+        if not datasheet or not hasattr(datasheet, 'content_type'):
+            return datasheet
+
+        if datasheet.size > MAX_UPLOAD_BYTES:
+            raise forms.ValidationError(
+                'Файл больше %d МБ.' % (MAX_UPLOAD_BYTES // (1024 * 1024))
+            )
+        name = datasheet.name or ''
+        if not name.lower().endswith('.pdf'):
+            raise forms.ValidationError('Даташит принимается только в PDF.')
+        return datasheet
+
+
 class OrganizationForm(forms.ModelForm):
     """Реквизиты юрлица — шапка и подписи печатных актов, счета банка."""
 

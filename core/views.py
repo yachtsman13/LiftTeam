@@ -45,7 +45,7 @@ from .models import (
 from .forms import (
     LoginForm, ClientForm, ClientContactFormSet, EquipmentModelForm, EquipmentTypeForm,
     EquipmentVersionForm, EquipmentForm,
-    RepairOrderForm, RepairOrderDetailForm, SparePartForm,
+    RepairOrderForm, RepairOrderDetailForm, SparePartForm, PartDatasheetForm,
     StockMovementForm, StockOutgoingForm, EmployeeForm, StatusChangeForm,
     PriceListForm, PriceListLineFormSet, EquipmentMaterialFormSet,
     PositionForm,
@@ -2386,6 +2386,8 @@ def part_detail(request, pk):
         'movements': movements,
         'available_cells': available_cells,
         'stock_form': stock_form,
+        'datasheet_form': PartDatasheetForm(instance=part),
+        'datasheet_query': f'{part.part_number} datasheet pdf',
         'back_url': list_back_url(request, 'parts', 'part_list'),
     })
 
@@ -2627,6 +2629,30 @@ def part_assign_cell(request, pk):
                 old_cell.parts.remove(part)
             cell.parts.add(part)
         messages.success(request, f'Деталь назначена на ячейку {cell.address}')
+    return redirect('part_detail', pk=pk)
+
+
+@login_required
+@require_POST
+def part_datasheet_set(request, pk):
+    """Прикрепить или заменить даташит детали (с v2.115.0).
+
+    Своя форма и своя кнопка, не общая форма редактирования детали:
+    файл прикрепляют, найдя его в новой вкладке, и уводить со страницы
+    детали ради одного поля незачем. `ClearableFileInput` даёт заодно
+    и снятие файла — галочкой «Очистить», без отдельной кнопки «Убрать».
+    """
+    part = get_object_or_404(SparePart, pk=pk)
+    form = PartDatasheetForm(request.POST, request.FILES, instance=part)
+    if form.is_valid():
+        form.save()
+        if part.datasheet:
+            messages.success(request, 'Даташит сохранён.')
+        else:
+            messages.success(request, 'Даташит убран.')
+    else:
+        for error in form.errors.get('datasheet', []):
+            messages.error(request, error)
     return redirect('part_detail', pk=pk)
 
 
