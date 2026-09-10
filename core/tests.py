@@ -12061,6 +12061,57 @@ class EquipmentVersionOnQuickCreateTests(TestCase):
         self.assertIn('row.hidden = versions.length === 0', page)
 
 
+class ManufactureDateOnQuickCreateTests(TestCase):
+    """Дата изготовления — и в окне приёма заказа, и на полной странице
+    заведения оборудования (с v2.119.0).
+
+    Раньше окно приёма спрашивало только модель, исполнение и серийный
+    номер, а дату изготовления можно было указать только на отдельной
+    странице `equipment_create` (заведение с карточки уже сохранённого
+    заказа) — то есть у одной и той же модели `Equipment` было две формы
+    с разным набором полей без причины: дата изготовления так же известна
+    при приёме, как и всё остальное в этом окне.
+    """
+
+    def setUp(self):
+        self.admin = Employee.objects.create_superuser(
+            username='admin_qc_date', full_name='Админ', password='pass'
+        )
+        self.http = TestClient()
+        self.http.force_login(self.admin)
+        self.model = EquipmentModel.objects.create(name='БУАД-7-31')
+
+    def _create(self, **extra):
+        data = {'model_id': self.model.pk, 'serial_number': 'SN-QC-DATE-1', 'confirmed': '1'}
+        data.update(extra)
+        return self.http.post('/ajax/equipment/create/', data)
+
+    def test_the_date_is_saved_with_the_equipment(self):
+        response = self._create(manufacture_date='2024-05-01')
+
+        self.assertTrue(response.json()['success'])
+        equipment = Equipment.objects.get(serial_number='SN-QC-DATE-1')
+        self.assertEqual(equipment.manufacture_date, datetime.date(2024, 5, 1))
+
+    def test_without_a_date_nothing_is_invented(self):
+        self._create()
+
+        self.assertIsNone(Equipment.objects.get(serial_number='SN-QC-DATE-1').manufacture_date)
+
+    def test_a_malformed_date_is_ignored_rather_than_rejected(self):
+        """Подставленное в запрос не по формату не должно ронять заведение
+        оборудования — это необязательное поле, а не условие сохранения."""
+        response = self._create(manufacture_date='не дата')
+
+        self.assertTrue(response.json()['success'])
+        self.assertIsNone(Equipment.objects.get(serial_number='SN-QC-DATE-1').manufacture_date)
+
+    def test_the_modal_asks_for_it(self):
+        page = self.http.get('/repair-orders/create/').content.decode()
+
+        self.assertIn('id="ceManufactureDate"', page)
+
+
 class ListFiltersSurviveBackTests(TestCase):
     """«Назад» с карточки возвращает к списку вместе с отбором.
 
@@ -21604,7 +21655,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.118.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.119.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

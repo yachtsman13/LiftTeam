@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}{{ title }} — LiftTeam v2.118.0{% endblock %}
+{% block title %}{{ title }} — LiftTeam v2.119.0{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -648,6 +648,10 @@ function createEquipment(confirmed) {
     if (versionSel && versionSel.value) {
         body += '&version_id=' + encodeURIComponent(versionSel.value);
     }
+    const manufactureDate = document.getElementById('ceManufactureDate');
+    if (manufactureDate && manufactureDate.value) {
+        body += '&manufacture_date=' + encodeURIComponent(manufactureDate.value);
+    }
     // Заказчик из формы заказа: он и есть владелец привезённого прибора.
     // Не выбран — уйдёт пустым, и владелец проставится при сохранении.
     const clientSel = document.querySelector('select[name="client"]');
@@ -679,6 +683,7 @@ function createEquipment(confirmed) {
                 currentEquipmentSelect.dispatchEvent(new Event('change', {bubbles: true}));
             }
             document.getElementById('ceSerialNumber').value = '';
+            document.getElementById('ceManufactureDate').value = '';
             bootstrap.Modal.getInstance(document.getElementById('createEquipmentModal')).hide();
             alert(data.message);
         } else if (data.similar) {
@@ -871,6 +876,10 @@ function createClient() {
                 <div class="mb-3">
                     <label class="form-label">Серийный номер <span class="text-danger">*</span></label>
                     <input type="text" id="ceSerialNumber" class="form-control" placeholder="Введите заводской номер">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Дата изготовления</label>
+                    <input type="date" id="ceManufactureDate" class="form-control">
                 </div>
                 <div id="ceSimilarWarning" class="alert alert-warning small d-none"></div>
             </div>

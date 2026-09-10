@@ -4402,9 +4402,15 @@ def ajax_equipment_create(request):
     if version_id:
         version = model.versions.filter(pk=version_id).first()
 
+    # Необязательное поле, как и на полной странице заведения оборудования
+    # (`EquipmentForm`) — окно приёма отличалось от неё именно отсутствием
+    # этого поля, хотя обе формы заводят одну и ту же модель.
+    manufacture_date = parse_date(request.POST.get('manufacture_date', ''))
+
     equipment = Equipment.objects.create(
         model=model, serial_number=serial_number,
-        version=version, current_client=client
+        version=version, current_client=client,
+        manufacture_date=manufacture_date,
     )
 
     return JsonResponse({
