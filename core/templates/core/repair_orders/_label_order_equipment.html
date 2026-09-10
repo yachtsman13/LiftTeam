@@ -11,6 +11,17 @@
         {{ order.order_number }}<span class="label-position">/{{ position }}</span>
     </div>
 
+    {% comment %}
+        Заказчик — с v2.120.0, отдельной строкой над телом этикетки, а не
+        внутри узкой колонки label-info: во всю ширину влезает больше
+        символов, а длинное название обрезается многоточием одно, не тесня
+        модель и серийник. Не переносится — на второй строке взяться
+        уже неоткуда, а половина названия хуже целого обрезанного.
+    {% endcomment %}
+    {% if order.client.name %}
+    <div class="label-client">{{ order.client.name }}</div>
+    {% endif %}
+
     <div class="label-body">
         <div class="label-info" data-fit="0.5">
             {% comment %}

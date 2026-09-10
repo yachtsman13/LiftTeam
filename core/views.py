@@ -3561,8 +3561,10 @@ def repair_order_labels_batch(request):
     # prefetch_related(None) снимает набор из _filter_orders (он тянет
     # оборудование только для поиска по серийнику) — иначе Django ругается
     # на два разных queryset для одного и того же related-пути
+    # select_related('client') — этикетка с v2.120.0 печатает название
+    # заказчика; без него каждый заказ в пачке добавлял бы свой запрос.
     orders = list(
-        orders.prefetch_related(None).prefetch_related(
+        orders.select_related('client').prefetch_related(None).prefetch_related(
             Prefetch(
                 'order_equipments',
                 queryset=RepairOrderEquipment.objects.select_related('equipment__model').order_by('id'),

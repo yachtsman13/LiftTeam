@@ -2053,11 +2053,36 @@ class OrderLabelLinkTests(TestCase):
         self.assertContains(response, '+7 977 760 10 89')
         self.assertNotContains(response, '282-40-31')
 
-    def test_the_qr_is_the_common_size(self):
-        """Размер кода один на всех этикетках: 12,3 мм."""
+    def test_the_qr_is_smaller_than_on_storage_labels(self):
+        """Осознанное исключение из правила «один размер кода везде» —
+        с v2.120.0: строку заказчика над телом этикетки нашли за счёт
+        уменьшения кода, а не за счёт модели или серийника."""
         response = self.client_http.get(self._label_url())
 
-        self.assertContains(response, '12.3mm')
+        self.assertContains(response, '10mm')
+        self.assertNotContains(response, '12.3mm')
+
+    def test_the_client_name_is_on_the_label(self):
+        response = self.client_http.get(self._label_url())
+
+        self.assertContains(response, 'Заказчик')
+        self.assertContains(response, 'label-client')
+
+    def test_a_long_client_name_is_left_for_css_to_clip(self):
+        """Сервер не укорачивает название сам — оно уходит в разметку
+        целиком, а обрезает многоточием одной строкой стиль `.label-client`
+        (`white-space: nowrap` + `text-overflow: ellipsis`): вторая строка
+        над номером заказа взяться уже неоткуда."""
+        long_name = 'ООО «Промышленно-лифтовая монтажная компания»'
+        self.order.client.name = long_name
+        self.order.client.save()
+
+        content = self.client_http.get(self._label_url()).content.decode()
+
+        self.assertIn(long_name, content)
+        rule = content.split('.label-client')[1].split('}')[0]
+        self.assertIn('white-space: nowrap', rule)
+        self.assertIn('text-overflow: ellipsis', rule)
 
 
 class OrderExportTests(TestCase):
@@ -21655,7 +21680,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.119.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.120.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
