@@ -32,7 +32,7 @@ from django.test.utils import CaptureQueriesContext
 from django.test import RequestFactory
 from django.template.loader import render_to_string
 from django.test.utils import CaptureQueriesContext
-from django.urls import resolve, reverse
+from django.urls import resolve, reverse, Resolver404
 from django.utils import timezone
 
 from django import forms
@@ -1110,6 +1110,16 @@ class UrlRoutingTests(TestCase):
         (path('admin/', admin.site.urls) match'ился раньше core.urls)."""
         match = resolve('/management/users/')
         self.assertEqual(match.func.__name__, 'admin_users')
+
+    def test_django_admin_is_not_mounted(self):
+        """С v2.121.0 admin.site.urls в маршрутах нет вовсе: встроенная
+        админка проверяет только is_staff/is_superuser и не знает
+        о Position/PermissionCode — через неё правили бы Employee.position
+        и Payment в обход _admin_access_kept()/LastAdminError. Своя
+        административная часть — под /management/, тем же
+        permission_required, что и всё остальное."""
+        with self.assertRaises(Resolver404):
+            resolve('/admin/')
 
 
 class SqliteConfigurationTests(TestCase):
@@ -21738,7 +21748,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.121.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.121.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
