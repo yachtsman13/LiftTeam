@@ -1,6 +1,6 @@
 """
 Django settings for lifteam project.
-v2.120.1 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
+v2.121.0 — standalone (SQLite) / Docker (PostgreSQL + Redis + Nginx)
 """
 import os
 from pathlib import Path
@@ -439,7 +439,14 @@ TOCHKA_INVOICE_AMOUNTS_AS_STRING = os.getenv(
 # при регистрации приложения. boxId — идентификатор ящика организации,
 # узнаётся методом GetMyOrganizations после первого входа.
 DIADOC_CLIENT_ID = os.getenv('DIADOC_CLIENT_ID', '')
+DIADOC_CLIENT_SECRET = os.getenv('DIADOC_CLIENT_SECRET', '')
 DIADOC_BOX_ID = os.getenv('DIADOC_BOX_ID', '')
+# Секрет: без своей строки здесь `envfile.setting()` после первого же
+# перезапуска молча возвращал бы '' вместо значения из .env — см. правило
+# «значение из файла главнее только тогда, когда файл после запуска
+# менялся» выше в этом файле и в CLAUDE.md. `diadoc_login` перезаписывает
+# его тем же `set_value(allow_secrets=True)`, что и настройки страницы.
+DIADOC_REFRESH_TOKEN = os.getenv('DIADOC_REFRESH_TOKEN', '')
 
 # Адреса — в настройках по той же причине, что у банков и Диска: переезд
 # или переключение на тестовую площадку должны чиниться правкой .env

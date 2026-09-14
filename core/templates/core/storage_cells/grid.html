@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Кассетницы — LiftTeam v2.120.1{% endblock %}
+{% block title %}Кассетницы — LiftTeam v2.121.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -194,6 +194,11 @@
         .grid-toolbar-mobile .form-select,
         .grid-toolbar-mobile form { width: 100% !important; }
         .grid-toolbar-mobile input[type="text"] { width: auto !important; flex: 1; }
+        /* #gridPartPicker — свой инлайновый width: 260px, его не берут
+           правила выше (не .form-select и не form): без этого поле выбора
+           детали на сетке остаётся зауженным на телефоне, пока соседние
+           элементы уже растянуты на всю ширину. */
+        #gridPartPicker { width: 100% !important; }
 
         .col-header-row { margin-left: 22px; }
         .col-header-cell { font-size: 0.7rem; }

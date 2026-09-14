@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Радиодетали — LiftTeam v2.120.1{% endblock %}
+{% block title %}Радиодетали — LiftTeam v2.121.0{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -8,7 +8,12 @@
        из-за переноса строка таблицы вырастала вдвое. */
     .col-cell { white-space: nowrap; }
     .col-actions { white-space: nowrap; width: 1%; }
-    .col-actions .btn { padding: 0.2rem 0.45rem; }
+    /* min-height не под медиа-запросом: список на планшете в портретной
+       ориентации (810-834px CSS-пикселей — iPad Air/Pro) шире общего
+       мобильного разрыва в 768px, карточек list-table.css там ещё нет,
+       и без явного пола кнопки оставались бы зауженными до пальца
+       техника — только desktop-плотный padding ниже. */
+    .col-actions .btn { padding: 0.2rem 0.45rem; min-height: 40px; }
 </style>
 {% endblock %}
 
@@ -178,10 +183,10 @@
                         </td>
                         <td data-label="Остаток"><span class="badge bg-{% if part.stock_state == 'below' %}danger{% elif part.stock_state == 'at_minimum' %}warning text-dark{% else %}success{% endif %}" title="{% if part.stock_state == 'at_minimum' %}Ровно на минимуме{% endif %}" data-stock-part="{{ part.pk }}">{{ part.current_stock }}</span></td>
                         <td data-label="Мин.">{{ part.min_stock }}</td>
-                        <td class="col-cell" data-label="Ячейка">{{ part.current_cell.address|default:"—" }}</td>
+                        <td class="col-cell" data-label="Ячейка">{{ part.cell.address|default:"—" }}</td>
                         <td class="text-end col-actions">
                             <a href="{% url 'part_label' part.pk %}" class="btn btn-sm btn-outline-dark" title="Этикетка детали — на пакет" target="_blank" onclick="event.stopPropagation();"><i class="bi bi-tag"></i></a>
-                            <a href="{% if part.current_cell %}{% url 'storage_cell_label' part.current_cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.current_cell %} disabled{% endif %}" title="{% if part.current_cell %}Этикетка ячейки — на кассетницу{% else %}Ячейка не назначена{% endif %}" {% if part.current_cell %}target="_blank"{% endif %} onclick="{% if not part.current_cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-grid-3x3"></i></a>
+                            <a href="{% if part.cell %}{% url 'storage_cell_label' part.cell.pk %}{% else %}#{% endif %}" class="btn btn-sm btn-outline-dark{% if not part.cell %} disabled{% endif %}" title="{% if part.cell %}Этикетка ячейки — на кассетницу{% else %}Ячейка не назначена{% endif %}" {% if part.cell %}target="_blank"{% endif %} onclick="{% if not part.cell %}event.preventDefault(); event.stopPropagation();{% else %}event.stopPropagation();{% endif %}"><i class="bi bi-grid-3x3"></i></a>
                             <a href="{% url 'part_create' %}?copy_from={{ part.pk }}" class="btn btn-sm btn-outline-secondary" title="Создать копию: откроется форма новой детали, заполненная этой карточкой" onclick="event.stopPropagation();"><i class="bi bi-files"></i></a>
                             <a href="{% url 'part_edit' part.pk %}" class="btn btn-sm btn-outline-primary" title="Редактировать" onclick="event.stopPropagation();"><i class="bi bi-pencil"></i></a>
                             <a href="{% url 'part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Удалить" onclick="event.stopPropagation();"><i class="bi bi-trash"></i></a>

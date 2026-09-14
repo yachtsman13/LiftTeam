@@ -27,7 +27,7 @@ from django.core.paginator import Paginator
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
@@ -1205,7 +1205,7 @@ def repair_order_list(request):
     paginator = Paginator(
         orders.prefetch_related(
             'order_equipments__faults', 'order_equipments__details'
-        ),
+        ).annotate(_annotated_total_repair_cost=_order_cost_subquery()),
         25,
     )
     page = request.GET.get('page')
@@ -2263,12 +2263,24 @@ PART_LIST_SORT_FIELDS = {
 def part_list(request):
     parts, filter_context = _filter_parts(request.GET)
     parts = sorted_by_request(parts.order_by('part_number'), request, PART_LIST_SORT_FIELDS)
+    # __cabinet — как и в part_search: адрес ячейки (StorageCell.address)
+    # читает cabinet, и без предзагрузки сама ячейка была бы в кеше,
+    # а обращение к cabinet каждой из них всё равно билось бы в базу.
+    parts = parts.prefetch_related('storage_cells__cabinet')
 
     paginator = Paginator(parts, 25)
     page = request.GET.get('page')
+    page_obj = paginator.get_page(page)
+    # Ячейку читаем из уже загрученного списка, как в _part_search_row:
+    # current_cell делает свой запрос на каждую деталь и сводит prefetch
+    # на нет — на странице из 25 строк это до 25 лишних запросов дважды
+    # (адрес и ссылка на этикетку читают current_cell по отдельности).
+    for part in page_obj:
+        cells = list(part.storage_cells.all())
+        part.cell = cells[0] if cells else None
     remember_list_query(request, 'parts')
     return render(request, 'core/parts/list.html', {
-        'parts': paginator.get_page(page),
+        'parts': page_obj,
         **_part_choices(),
         'found_count': paginator.count,
         'filters_active': any(filter_context.values()),
@@ -2685,6 +2697,43 @@ def part_import(request):
                     messages.error(request, f'Отсутствуют обязательные колонки: {", ".join(missing)}')
                     return redirect('part_import')
 
+                # Не зависят от конкретной строки — заводить их заново
+                # на каждую из потенциально тысяч строк смысла нет.
+                def _parse_decimal(val):
+                    """Парсит значение в Decimal или None."""
+                    if val is None or val == '':
+                        return None
+                    try:
+                        # Если это уже число (int/float из Excel)
+                        if isinstance(val, (int, float)):
+                            return val
+                        # Если строка — чистим и парсим
+                        s = str(val).strip().replace(',', '.')
+                        # Убираем единицы измерения из строки если они есть
+                        s = re.sub(r'[^0-9.\-]', '', s)
+                        if s == '' or s == '.':
+                            return None
+                        return float(s)
+                    except (ValueError, TypeError):
+                        return None
+
+                def _parse_int(val, default):
+                    """Парсит значение в int или возвращает default."""
+                    if val is None or val == '':
+                        return default
+                    try:
+                        if isinstance(val, (int, float)):
+                            return int(val)
+                        return int(str(val).strip())
+                    except (ValueError, TypeError):
+                        return default
+
+                def _get_str(val):
+                    """Возвращает строку или пустую строку."""
+                    if val is None:
+                        return ''
+                    return str(val).strip()
+
                 created_count = 0
                 updated_count = 0
                 error_count = 0
@@ -2695,42 +2744,6 @@ def part_import(request):
                     part_number = str(data.get('part_number', '')).strip()
                     if not part_number:
                         continue
-
-                    # --- Вспомогательная функция для парсинга чисел ---
-                    def _parse_decimal(val):
-                        """Парсит значение в Decimal или None."""
-                        if val is None or val == '':
-                            return None
-                        try:
-                            # Если это уже число (int/float из Excel)
-                            if isinstance(val, (int, float)):
-                                return val
-                            # Если строка — чистим и парсим
-                            s = str(val).strip().replace(',', '.')
-                            # Убираем единицы измерения из строки если они есть
-                            s = re.sub(r'[^0-9.\-]', '', s)
-                            if s == '' or s == '.':
-                                return None
-                            return float(s)
-                        except (ValueError, TypeError):
-                            return None
-
-                    def _parse_int(val, default):
-                        """Парсит значение в int или возвращает default."""
-                        if val is None or val == '':
-                            return default
-                        try:
-                            if isinstance(val, (int, float)):
-                                return int(val)
-                            return int(str(val).strip())
-                        except (ValueError, TypeError):
-                            return default
-
-                    def _get_str(val):
-                        """Возвращает строку или пустую строку."""
-                        if val is None:
-                            return ''
-                        return str(val).strip()
 
                     # --- Формируем defaults ---
                     defaults = {
@@ -2784,12 +2797,9 @@ def part_import(request):
                             created_count += 1
                         else:
                             updated_count += 1
-                    except Exception as e:
+                    except (IntegrityError, ValueError, TypeError) as e:
                         error_count += 1
                         error_details.append(f'{part_number}: {str(e)[:100]}')
-                        if error_count <= 5:
-                            import traceback
-                            traceback.print_exc()
 
                 msg = f'Импорт завершён: создано {created_count}, обновлено {updated_count}, ошибок {error_count}'
                 if error_details and error_count <= 10:
@@ -3022,8 +3032,6 @@ def storage_cell_move(request):
             return JsonResponse({'success': True, 'message': 'Перемещение выполнено', 'address': to_cell.address if to_cell else None})
     except (SparePart.DoesNotExist, StorageCell.DoesNotExist):
         return JsonResponse({'error': 'Деталь или ячейка не найдена'}, status=400)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
 
 
 @login_required
@@ -3066,8 +3074,6 @@ def storage_cell_move_all(request):
             })
     except StorageCell.DoesNotExist:
         return JsonResponse({'error': 'Ячейка не найдена'}, status=400)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
 
 
 @login_required
@@ -3680,16 +3686,19 @@ def report_purchase_plan_export(request):
         'Срок поставки, дней', 'Поставщик', 'Ячейка',
     ]
     parts = list(_purchase_plan_parts())
-    rows = [
-        [
+    # Ячейку читаем из уже прогруженного storage_cells (prefetch_related
+    # в _purchase_plan_parts), а не через current_cell — то свойство всегда
+    # делает свой запрос, даже когда список уже загружен целиком.
+    rows = []
+    for part in parts:
+        cells = list(part.storage_cells.all())
+        rows.append([
             part.part_number, part.name, part.component_type, part.specs_display,
             part.current_stock, part.min_stock, part.stock_deficit,
             part.price, part.purchase_cost,
             part.lead_time_days, part.preferred_supplier,
-            part.current_cell.address if part.current_cell else '',
-        ]
-        for part in parts
-    ]
+            cells[0].address if cells else '',
+        ])
     # Итог в самой книге: файл уходит поставщику и начальству, и сумму
     # из него достают в первую очередь
     if rows:
@@ -3842,7 +3851,12 @@ def report_debtors(request):
         last_reminder=Max(
             'notifications__created_at',
             filter=Q(notifications__event='debt_reminder'),
-        )
+        ),
+        # Стоимость и оплата — тем же подзапросом, что у total_debt выше,
+        # а не через paid_amount/total_repair_cost на каждой строке:
+        # без этого страница делала бы ещё по 2 aggregate-запроса на заказ.
+        _annotated_total_repair_cost=_order_cost_subquery(),
+        _annotated_paid_amount=_order_paid_subquery(),
     )
 
     return render(request, 'core/reports/debtors.html', {

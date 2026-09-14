@@ -34,7 +34,7 @@
         {% for fault in selected %}
         <div class="fault-picker-row d-flex align-items-center gap-2 border-bottom py-1" data-id="{{ fault.pk }}">
             <input type="hidden" name="{{ field.html_name }}" value="{{ fault.pk }}">
-            <span class="badge {% if fault.complexity == 'complex' %}bg-danger{% else %}bg-success{% endif %}">{{ fault.get_complexity_display }}</span>
+            <span class="badge {{ fault.complexity_css }}">{{ fault.get_complexity_display }}</span>
             <span class="flex-grow-1">{{ fault.name }}</span>
             <button type="button" class="btn btn-sm btn-outline-danger fault-picker-remove"
                     title="Убрать неисправность"><i class="bi bi-x-lg"></i></button>

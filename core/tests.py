@@ -4757,6 +4757,32 @@ class DebtReportTests(TestCase):
         self.assertEqual(resp.context['total_debt'], 2500)
         self.assertEqual(len(resp.context['orders']), 1)
 
+    def test_cost_and_paid_do_not_fan_out_into_queries(self):
+        """Сумма и оплата приходят annotate'ом (_order_cost_subquery/
+        _order_paid_subquery), а не paid_amount/total_repair_cost на
+        каждой строке — без этого лишний заказ добавлял бы по два
+        отдельных aggregate-запроса."""
+        def queries_for(count, tag):
+            RepairOrder.objects.exclude(pk=self.order.pk).delete()
+            Equipment.objects.exclude(pk=self.order.order_equipments.get().equipment_id).delete()
+            model = EquipmentModel.objects.get(name='БУАД-отчёт')
+            for number in range(count):
+                order = RepairOrder.objects.create(
+                    client=self.order.client, payment_status='unpaid')
+                RepairOrderEquipment.objects.create(
+                    repair_order=order,
+                    equipment=Equipment.objects.create(
+                        model=model, serial_number='SN-Q-%s-%d' % (tag, number)),
+                    repair_cost=1000,
+                )
+            with CaptureQueriesContext(connection) as captured:
+                self.client_http.get('/reports/debtors/')
+            return len(captured)
+
+        two, five = queries_for(2, 'A'), queries_for(5, 'B')
+
+        self.assertEqual(two, five)
+
 
 class MaxTransportTests(TestCase):
     """Отправка в MAX: что именно уходит в сеть и как разбирается ответ."""
@@ -5792,6 +5818,16 @@ class BankOperationsListFilterTests(TestCase):
 
         self.assertEqual(resp.context['status'], 'new')
         self.assertEqual(len(resp.context['rows']), 1)
+
+    def test_the_apply_cell_carries_its_real_column_name(self):
+        """Регрессия: было `data-label="Разнести на заказЗаказ"` — на
+        телефоне карточка показывала эту склейку вместо подписи."""
+        self._operation(external_id='op-new', status='new')
+
+        content = self.client_http.get('/bank/operations/').content.decode()
+
+        self.assertIn('data-label="Разнести на заказ"', content)
+        self.assertNotIn('заказЗаказ', content)
 
     def test_suggestions_are_computed_per_row_status_within_the_all_tab(self):
         """На «Все» статусы перемешаны — подсказку не просят у неновых строк."""
@@ -7887,6 +7923,28 @@ class SortableTableTests(TestCase):
         # Ячейка — python-свойство, не поле: сортировки по ней нет и быть
         # не может, шапка не должна её обещать
         self.assertNotIn('data-sort="current_cell"', content)
+
+    def test_the_cell_column_does_not_fan_out_into_queries(self):
+        """current_cell всегда делает свой запрос, даже когда список уже
+        прогружен prefetch_related — список должен читать ячейку из уже
+        загруженного, а не через это свойство на каждую строку дважды
+        (адрес и ссылка на этикетку ячейки)."""
+        cabinet = Cabinet.objects.get_or_create(number=1)[0]
+
+        def queries_for(count):
+            SparePart.objects.all().delete()
+            StorageCell.objects.filter(cabinet=cabinet).delete()
+            for number in range(count):
+                part = SparePart.objects.create(part_number='CQ-%d' % number, name='Деталь')
+                cell = StorageCell.objects.create(cabinet=cabinet, row_number=1, cell_row=number + 1)
+                cell.parts.add(part)
+            with CaptureQueriesContext(connection) as captured:
+                self.http.get('/parts/')
+            return len(captured)
+
+        two, five = queries_for(2), queries_for(5)
+
+        self.assertEqual(two, five)
 
     def test_client_list_sorts_by_the_requested_column(self):
         ClientModel.objects.create(name='Яков')
@@ -21680,7 +21738,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.120.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.121.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

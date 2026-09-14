@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.120.1{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.121.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </button>
                             </form>
                             {% else %}
-                            <div><span class="status-badge bg-{% if order.payment_status == 'unpaid' %}danger{% elif order.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ order.get_payment_status_display }}</span></div>
+                            <div><span class="status-badge {{ order.payment_status_css }}">{{ order.get_payment_status_display }}</span></div>
                             {% endif %}
                             {% if order.paid_amount %}
                             <div class="small text-muted mt-1">
@@ -898,7 +898,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 <span class="status-badge {{ h.status_css }}">{{ h.get_status_display }}</span>
                                 {% endif %}
                                 {% if h.payment_status %}
-                                <span class="status-badge bg-{% if h.payment_status == 'unpaid' %}danger{% elif h.payment_status == 'partially_paid' %}warning{% else %}success{% endif %}">{{ h.get_payment_status_display }}</span>
+                                <span class="status-badge {{ h.payment_status_css }}">{{ h.get_payment_status_display }}</span>
                                 {% endif %}
                             </div>
                             <small class="text-muted">{{ h.changed_at|date:"d.m.Y H:i" }}</small>

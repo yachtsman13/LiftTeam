@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Поступления — LiftTeam v2.120.1{% endblock %}
+{% block title %}Поступления — LiftTeam v2.121.0{% endblock %}
 
 {% block content %}
 {% comment %}
@@ -113,7 +113,7 @@
                             {% endif %}
                         </td>
                         <td class="small" data-label="Назначение платежа">{{ row.operation.purpose|default:"—" }}</td>
-                        <td data-label="Разнести на заказЗаказ">
+                        <td data-label="Разнести на заказ">
                             {% if row.operation.status == 'applied' %}
                                 {% if row.operation.payment %}
                                 <a href="{% url 'repair_order_detail' row.operation.payment.repair_order.pk %}">

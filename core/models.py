@@ -161,6 +161,22 @@ def order_status_css(status):
     }.get(status, 'bg-secondary')
 
 
+def payment_status_css(status):
+    """Цвет отметки оплаты — один на всю программу.
+
+    Та же цепочка `{% if payment_status == 'unpaid' %}danger{% elif ...`
+    была скопирована по шаблонам вручную (список заказов, карточка заказа
+    дважды, отчёт по задолженностям) и в отчёте уже успела разойтись
+    на двухветочный вариант — то же расхождение, о котором предупреждает
+    docstring `complexity_css` и `order_status_css` выше.
+    """
+    if status == 'unpaid':
+        return 'bg-danger'
+    if status == 'partially_paid':
+        return 'bg-warning'
+    return 'bg-success'
+
+
 def plural_genitive(word):
     """Родительный падеж множественного числа: «резистор» → «резисторов».
 
@@ -1958,8 +1974,24 @@ class RepairOrder(models.Model):
         return order_status_css(self.status)
 
     @property
+    def payment_status_css(self):
+        """Цвет отметки оплаты — считается одним местом на всю программу."""
+        return payment_status_css(self.payment_status)
+
+    @property
     def paid_amount(self):
-        """Сколько денег по заказу уже поступило."""
+        """Сколько денег по заказу уже поступило.
+
+        Список заказов и отчёт по задолженностям приносят это значение
+        уже посчитанным подзапросом (`_order_paid_subquery`, `views.py`) —
+        `annotate(_annotated_paid_amount=...)`; тогда используется оно,
+        а не отдельный `aggregate` на каждую строку списка. Без разбора
+        annotated-варианта список из полусотни заказов делал бы полсотни
+        лишних запросов только на эту колонку.
+        """
+        annotated = getattr(self, '_annotated_paid_amount', None)
+        if annotated is not None:
+            return annotated
         return self.payments.aggregate(total=Sum('amount'))['total'] or 0
 
     @property
@@ -2038,7 +2070,16 @@ class RepairOrder(models.Model):
 
     @property
     def total_repair_cost(self):
-        """Общая стоимость ремонта по сумме стоимостей всех единиц оборудования в заказе."""
+        """Общая стоимость ремонта по сумме стоимостей всех единиц оборудования в заказе.
+
+        Тот же приём, что у `paid_amount` выше: список заказов и отчёт
+        по задолженностям читают уже посчитанный подзапросом
+        `_order_cost_subquery` результат (`_annotated_total_repair_cost`),
+        а не пересчитывают заново на каждую строку.
+        """
+        annotated = getattr(self, '_annotated_total_repair_cost', None)
+        if annotated is not None:
+            return annotated
         total = self.order_equipments.aggregate(
             total=Sum('repair_cost')
         )['total']
@@ -3134,6 +3175,11 @@ class OrderStatusHistory(models.Model):
         """Тот же цвет, что и у самого заказа — считается одним местом."""
         return order_status_css(self.status)
 
+    @property
+    def payment_status_css(self):
+        """Тот же цвет, что и у самого заказа — считается одним местом."""
+        return payment_status_css(self.payment_status)
+
 
 class SparePartQuerySet(models.QuerySet):
     """Отбор по остатку. Единственное место, где записаны эти условия:
@@ -3433,11 +3479,6 @@ class StorageCell(models.Model):
         related_name='storage_cells', verbose_name='Детали'
     )
 
-    @property
-    def qr_data(self):
-        """Данные для QR-кода: адрес ячейки. Специально не включаем список деталей —
-        иначе для ячеек с несколькими деталями QR разрастается и не помещается на этикетку."""
-        return self.address
 
     class Meta:
         verbose_name = 'Ячейка хранения'
