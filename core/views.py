@@ -5588,6 +5588,30 @@ def repair_order_utd(request, pk):
     return response
 
 
+@login_required
+@permission_required('invoices_send')
+def repair_order_diadoc_positions(request, pk):
+    """Список позиций документа — для ручного переноса в веб-интерфейс
+    Диадока, без обращения к его платному API.
+
+    API Диадока (кнопка «УПД» выше) стоит отдельных денег сверх самого
+    Диадока; пока за него не платят, УПД собирают вручную на сайте
+    Диадока, а эта страница экономит только сверку цифр — что вписывать,
+    отсюда видно сразу, а не пересчитывать по карточкам единиц заново.
+    Строки те же самые, что уже строит `invoice_items()` для счёта
+    и для УПД через API, — второй такой список разошёлся бы с первым.
+    Ничего не генерирует и никуда не отправляет.
+    """
+    order = get_object_or_404(RepairOrder.objects.select_related('client'), pk=pk)
+    items = order.invoice_items()
+    items_total = sum(item['price'] * item['amount'] for item in items)
+    return render(request, 'core/repair_orders/diadoc_positions.html', {
+        'order': order,
+        'items': items,
+        'items_total': items_total,
+    })
+
+
 def _diadoc_utd_version(document_types):
     """Версия формата УПД, включённая в ящике, — из ответа GetDocumentTypes.
 

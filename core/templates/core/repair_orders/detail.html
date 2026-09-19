@@ -1,6 +1,6 @@
 {% extends 'core/base.html' %}
 
-{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.121.1{% endblock %}
+{% block title %}Заказ {{ order.order_number }} — LiftTeam v2.122.0{% endblock %}
 
 {% block extra_js %}
 <script>
@@ -100,6 +100,15 @@ document.addEventListener('DOMContentLoaded', function () {
         {% endcomment %}
         <a href="{% url 'repair_order_utd' order.pk %}" class="btn btn-outline-success me-2">
             <i class="bi bi-file-earmark-arrow-down me-2"></i>УПД
+        </a>
+        {% comment %}
+            Бесплатная альтернатива кнопке выше — те же строки, но без
+            обращения к платному API Диадока: пока за него не платят,
+            УПД собирают вручную на сайте Диадока, глядя на эти цифры.
+        {% endcomment %}
+        <a href="{% url 'repair_order_diadoc_positions' order.pk %}" class="btn btn-outline-secondary me-2"
+           title="Те же позиции текстом — для ручного переноса в Диадок, без API">
+            <i class="bi bi-list-check me-2"></i>Список для Диадока
         </a>
         {% endif %}
         <a href="{% url 'repair_order_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-2"></i>Назад</a>

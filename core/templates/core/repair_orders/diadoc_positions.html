@@ -1,0 +1,75 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Список для Диадока — заказ {{ order.order_number }} — LiftTeam v2.122.0{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-list-check me-2"></i>Список для Диадока</h2>
+    <a href="{% url 'repair_order_detail' order.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>К заказу {{ order.order_number }}
+    </a>
+</div>
+
+{% comment %}
+    Не документ и не файл — просто те же строки, что уже есть в счёте
+    и в УПД через API, показанные для переноса руками. Формирует и
+    отправляет УПД по-прежнему сам бухгалтер, в веб-интерфейсе Диадока
+    (см. подсказку у кнопки «УПД» на карточке заказа): у API Диадока нет
+    способа подписать документ за пользователя, поэтому от этой страницы
+    ничего, кроме удобной сверки цифр, и не требуется.
+{% endcomment %}
+<div class="alert alert-light border">
+    Заполните документ на сайте Диадока вручную, глядя на эти строки —
+    ничего отсюда никуда не отправляется и не сохраняется.
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Заказ {{ order.order_number }}</h5>
+    </div>
+    <div class="card-body">
+        <p class="mb-3">
+            <strong>Заказчик:</strong> {{ order.client.name }}{% if order.client.inn %}, ИНН {{ order.client.inn }}{% endif %}{% if order.client.kpp %}, КПП {{ order.client.kpp }}{% endif %}
+        </p>
+
+        <div class="table-responsive table-scroll">
+            <table class="table table-sm list-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>Наименование</th>
+                        <th class="text-end">Кол-во</th>
+                        <th class="text-end">Цена, ₽</th>
+                        <th>НДС</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    <tr>
+                        <td class="small" data-label="Наименование">{{ item.name }}</td>
+                        <td class="text-end" data-label="Кол-во">{{ item.amount }} {{ item.unit }}</td>
+                        <td class="text-end text-nowrap" data-label="Цена, ₽">{{ item.price|floatformat:2 }}</td>
+                        <td class="small" data-label="НДС">{{ item.vat }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="4" class="text-danger">
+                            Ни у одной единицы не проставлена стоимость ремонта —
+                            вписывать нечего.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                {% if items %}
+                <tfoot>
+                    <tr>
+                        <th colspan="2" class="text-end">Итого:</th>
+                        <th class="text-end text-nowrap">{{ items_total|floatformat:2 }} ₽</th>
+                        <th></th>
+                    </tr>
+                </tfoot>
+                {% endif %}
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

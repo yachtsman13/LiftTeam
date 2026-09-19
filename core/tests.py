@@ -10279,6 +10279,76 @@ class DiadocUtdXmlTests(TestCase):
         self.assertIn('нет', str(caught.exception))
 
 
+class DiadocPositionsListViewTests(TestCase):
+    """Бесплатная альтернатива кнопке «УПД» — с v2.122.0.
+
+    Пока за API Диадока не платят, УПД собирают вручную на его сайте;
+    эта страница просто показывает те же строки, что invoice_items()
+    даёт счёту и УПД через API, — ничего не генерирует и не отправляет.
+    """
+
+    def setUp(self):
+        self.staff = Employee.objects.create_user(
+            username='diadoc_positions_staff', full_name='Бухгалтер', password='pass',
+            position=position_with('invoices_send', name='Бухгалтер-Диадок'))
+        self.http = TestClient()
+        self.http.force_login(self.staff)
+
+        self.client_obj = ClientModel.objects.create(name='ООО «Список»')
+        self.order = RepairOrder.objects.create(
+            client=self.client_obj, order_number='2026-0200')
+        model = EquipmentModel.objects.create(name='Emotron-список')
+        RepairOrderEquipment.objects.create(
+            repair_order=self.order,
+            equipment=Equipment.objects.create(model=model, serial_number='SN-LIST-1'),
+            repair_cost=Decimal('12000'),
+        )
+
+    def _url(self, order=None):
+        return reverse('repair_order_diadoc_positions', args=[(order or self.order).pk])
+
+    def test_requires_the_invoices_send_permission(self):
+        powerless = Employee.objects.create_user(
+            username='diadoc_positions_powerless', full_name='Мастер', password='pass',
+            position=position_with(name='Без прав на счета'))
+        http = TestClient()
+        http.force_login(powerless)
+
+        response = http.get(self._url())
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_shows_the_same_lines_as_invoice_items(self):
+        response = self.http.get(self._url())
+
+        self.assertEqual(response.context['items'], self.order.invoice_items())
+        self.assertContains(response, self.order.invoice_items()[0]['name'])
+        self.assertContains(response, '12000,00')
+
+    def test_total_matches_the_sum_of_lines(self):
+        response = self.http.get(self._url())
+
+        self.assertEqual(response.context['items_total'], Decimal('12000'))
+
+    def test_an_order_without_priced_units_says_so_instead_of_an_empty_table(self):
+        empty_order = RepairOrder.objects.create(
+            client=self.client_obj, order_number='2026-0201')
+
+        response = self.http.get(self._url(empty_order))
+
+        self.assertContains(response, 'вписывать нечего')
+
+    def test_nothing_is_generated_or_sent(self):
+        """Регрессия: страница только показывает — заказ не должен
+        измениться от одного её открытия."""
+        before = (self.order.invoice_sent_at, self.order.invoice_pdf_url)
+
+        self.http.get(self._url())
+
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.invoice_sent_at, self.order.invoice_pdf_url), before)
+
+
 @override_settings(DIADOC_CLIENT_ID='client', DIADOC_CLIENT_SECRET='secret')
 class DiadocTokenRefreshTests(SimpleTestCase):
     """Обновление access_token — и перезапись refresh_token, если Диадок
@@ -21748,7 +21818,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.121.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.122.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
