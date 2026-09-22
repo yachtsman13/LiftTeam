@@ -7794,6 +7794,37 @@ class CommonLabelLayoutTests(TestCase):
 
         self.assertEqual(response.context['package'], '')
 
+    def test_a_set_that_differs_only_by_package_says_so_in_the_list(self):
+        """Набор стабилизаторов: номиналы у всех одни и те же, а корпуса
+        разные — и до v2.123.0 корпус пропадал с этикетки вовсе (в общую
+        строку он не идёт, раз не общий), в списке оставались одни
+        артикулы. Чем 78M12 отличается от L7812ACD2T, сказано не было.
+        """
+        another_cell = self.cabinet.cells.all()[3]
+        for number, package in (('78M12', 'TO-220'), ('L7812ACD2T', 'D2PAK')):
+            another_cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Стабилизатор {number}',
+                component_type='Линейный стабилизатор', package=package,
+                voltage=12, voltage_unit='В', current=1.5, current_unit='А',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{another_cell.pk}/label/')
+
+        self.assertEqual(response.context['specs'], '12В, 1.5А')
+        self.assertEqual(response.context['package'], '')
+        self.assertEqual(response.context['items'],
+                         ['78M12 TO-220', 'L7812ACD2T D2PAK'])
+
+    def test_a_common_package_stays_out_of_the_list(self):
+        """Обратная сторона того же правила: корпус у всех один — он общий,
+        печатается раз в служебной строке и в список не лезет, иначе
+        «0805» стояло бы у каждого номинала и съедало ширину."""
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertEqual(response.context['package'], '0805')
+        for item in response.context['items']:
+            self.assertNotIn('0805', item)
+
     def test_different_types_are_listed_by_article(self):
         self.cell.parts.add(SparePart.objects.create(
             part_number='CL-D', name='Диод', component_type='Диод',
@@ -21875,7 +21906,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.122.1).
+    """Строка списка ведёт на карточку — этап 5 (v2.123.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

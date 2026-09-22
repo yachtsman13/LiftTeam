@@ -3404,6 +3404,19 @@ def _grouped_specs(parts):
     # («2Вт, 2Вт, 2Вт»), а номинал живёт в артикуле. Тогда перечисляем артикулы
     if len(set(distinct)) < len(distinct):
         distinct = [part.part_number for part in parts]
+
+    # Корпус — такая же характеристика набора, как номинал, и делится так же:
+    # у всех один — он общий и печатается в служебной строке (`_cell_label`,
+    # то же условие), разный — он и есть то, чем детали различаются.
+    # Без этого набор стабилизаторов с равными номиналами получал в список
+    # одни артикулы, а чем 78M12 отличается от L7812ACD2T — на наклейке
+    # не было сказано вовсе, хотя один из них в корпусе под пайку в плату,
+    # а другой поверхностного монтажа.
+    if len({part.package for part in parts if part.package}) > 1:
+        distinct = [
+            ' '.join(piece for piece in (item, part.package) if piece)
+            for item, part in zip(distinct, parts)
+        ]
     return ', '.join(common), distinct
 
 
