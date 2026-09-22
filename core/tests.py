@@ -7717,6 +7717,24 @@ class CommonLabelLayoutTests(TestCase):
 
         self.assertEqual(response.context['title'], 'Набор диодов Шоттки')
 
+    def test_a_set_of_an_adjective_type_declines_both_words(self):
+        """«Линейный стабилизатор» → «Набор линейных стабилизаторов».
+
+        Регрессия v2.122.1: правило «склоняется первое слово» принимало
+        прилагательное за считаемый предмет, и на этикетке печаталось
+        «Набор линейныев стабилизатор».
+        """
+        another_cell = self.cabinet.cells.all()[2]
+        for number in ('L78-1', 'L78-2'):
+            another_cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Стабилизатор {number}',
+                component_type='Линейный стабилизатор',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{another_cell.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'Набор линейных стабилизаторов')
+
     def test_what_a_set_has_in_common_is_printed_once(self):
         """«0.125Вт» у каждого номинала — это шум, а место на этикетке жёсткое."""
         self.part.power, self.part.power_unit = 0.125, 'Вт'
@@ -7865,6 +7883,32 @@ class PluralGenitiveTests(TestCase):
         for word, expected in cases.items():
             with self.subTest(word=word):
                 self.assertEqual(plural_genitive(word), expected)
+
+    def test_an_adjective_in_front_declines_together_with_its_noun(self):
+        """«Линейный стабилизатор» → «линейных стабилизаторов»: впереди
+        не предмет, а признак, и склоняются оба слова согласованно.
+
+        Регрессия v2.122.1: прежнее правило «склоняется первое слово»
+        выдавало «Линейныев стабилизатор» — и это печаталось на этикетке.
+        """
+        cases = {
+            'Линейный стабилизатор': 'Линейных стабилизаторов',
+            'Керамический конденсатор': 'Керамических конденсаторов',
+            'Электролитический конденсатор': 'Электролитических конденсаторов',
+            'Подстроечный резистор': 'Подстроечных резисторов',
+            'Сквозной резистор': 'Сквозных резисторов',
+            'Керамическая плата': 'Керамических плат',
+            # Прилагательных может быть и два, а за предметом ещё и эпоним
+            'Импульсный диод Шоттки': 'Импульсных диодов Шоттки',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(plural_genitive(word), expected)
+
+    def test_a_lone_word_is_taken_for_a_noun_even_with_an_adjective_ending(self):
+        """Одиночный тип — почти наверняка существительное, и похожий
+        хвост не повод считать его признаком: «Алюминий» не «Алюминих»."""
+        self.assertEqual(plural_genitive('Алюминий'), 'Алюминиев')
 
 
 class SortableTableTests(TestCase):
@@ -20728,6 +20772,19 @@ class LabelReadsBottomUpTests(TestCase):
         self.assertIn('justify-content: flex-end', block)
         self.assertIn('align-items: flex-end', body)
 
+    def test_the_title_wraps_instead_of_running_off_the_label(self):
+        """Регрессия v2.122.1: с `white-space: nowrap` длинный заголовок
+        («Набор электролитических конденсаторов») молча обрезался — браузер
+        не сообщает о переполнении строки по ширине, и подгонка шрифта
+        считала, что всё поместилось. Переполнение должно быть
+        вертикальным: его блок выше показывает честно."""
+        styles = render_to_string('core/_label_part_styles.html')
+        number = styles.split('.label-number {')[1].split('}')[0]
+
+        self.assertNotIn('nowrap', number)
+        # Артикул пробелов не содержит — по словам его не перенести
+        self.assertIn('overflow-wrap: anywhere', number)
+
 
 class CellLabelHiddenTopTests(TestCase):
     """Сколько сверху закрыто выступом — настройкой, потому что кассетницы
@@ -21818,7 +21875,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.122.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.122.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
