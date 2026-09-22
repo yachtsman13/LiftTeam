@@ -59,7 +59,13 @@ data-fit — подсказка сценарию label-fit.js: если соде
                 было нельзя. В сетке каждый элемент занимает свою клетку
                 целиком и стоит под таким же элементом строкой выше.
             {% endcomment %}
-            <div class="label-items" data-fit="0.55">
+            {% comment %}
+                Плотная раскладка (два столбца) стоит изначально, а скрипт
+                её снимает, если строка на деталь помещается целиком:
+                без скрипта этикетка остаётся прежней, а не теряет строки.
+            {% endcomment %}
+            <div class="label-items label-items-dense" data-fit="0.55"
+                 data-fit-dense="label-items-dense">
                 {% for item in items %}<span class="label-item">{{ item }}</span>{% endfor %}
             </div>
             {% else %}

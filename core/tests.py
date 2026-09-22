@@ -7843,9 +7843,30 @@ class CommonLabelLayoutTests(TestCase):
 
         response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
 
-        self.assertContains(response, 'class="label-items"')
+        self.assertContains(response, 'class="label-items label-items-dense"')
         self.assertContains(response, '<span class="label-item">CL-1</span>', html=False)
         self.assertContains(response, '<span class="label-item">CG-1</span>', html=False)
+
+    def test_the_list_starts_dense_and_is_relaxed_only_by_the_script(self):
+        """Плотная раскладка (два столбца) стоит в разметке изначально,
+        а строку на деталь навешивает `label-fit.js`, когда она помещается
+        целиком. Наоборот нельзя: не доехал скрипт — и этикетка молча
+        теряла бы строки вместо того, чтобы остаться прежней."""
+        self.cell.parts.add(SparePart.objects.create(
+            part_number='CG-2', name='Диод', component_type='Диод'))
+
+        response = self.client_http.get(f'/storage-cells/{self.cell.pk}/label/')
+
+        self.assertContains(response, 'data-fit-dense="label-items-dense"')
+
+        styles = render_to_string('core/_label_part_styles.html')
+        grid = styles.split('.label-items {')[1].split('}')[0]
+        # По строке на деталь — в неё целиком влезает артикул с корпусом
+        self.assertIn('grid-template-columns: 1fr;', grid)
+        self.assertIn('.label-items-dense { grid-template-columns: 1fr 1fr; }', styles)
+        # Перечень обязан давать себя укоротить, иначе он растёт за край
+        # этикетки, где переполнение уже никто не измерит
+        self.assertIn('min-height: 0', grid)
 
     def test_a_single_part_has_no_grid(self):
         """У одной детали перечислять нечего — печатается описание."""
@@ -21906,7 +21927,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.123.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.124.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

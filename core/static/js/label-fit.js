@@ -47,6 +47,31 @@
                element.scrollHeight > element.clientHeight + TOLERANCE;
     }
 
+    /**
+     * Просторная раскладка, пока она помещается.
+     *
+     * Перечень деталей ячейки читается лучше по строке на деталь — артикул
+     * и корпус рядом, целиком, — но при десятке строк в один столбец они
+     * не влезают. Пробуем просторную раскладку при полном кегле: не вышло —
+     * возвращаем плотную и уменьшаем шрифт уже в ней. Уменьшать кегль ради
+     * одного столбца было бы хуже: на термопринтере четыре пункта читаются
+     * с трудом, а два столбца читаются.
+     *
+     * Плотный класс стоит в разметке изначально и здесь только снимается:
+     * не доехал скрипт — этикетка осталась прежней, а не потеряла строки.
+     */
+    function relax(element) {
+        var dense = element.dataset.fitDense;
+        if (!dense || !element.classList.contains(dense)) {
+            return;
+        }
+        element.classList.remove(dense);
+        element.style.setProperty('--fit', 1);
+        if (overflows(element)) {
+            element.classList.add(dense);
+        }
+    }
+
     function fit(element) {
         var min = parseFloat(element.dataset.fit);
         if (!min || min <= 0 || min > 1) {
@@ -56,6 +81,7 @@
         var scale = 1;
         element.style.setProperty('--fit', scale);
         resetClamp(element);
+        relax(element);
         while (scale - STEP >= min && overflows(element)) {
             scale = Math.round((scale - STEP) * 100) / 100;
             element.style.setProperty('--fit', scale);
