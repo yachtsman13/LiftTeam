@@ -7815,6 +7815,47 @@ class CommonLabelLayoutTests(TestCase):
         self.assertEqual(response.context['items'],
                          ['78M12 TO-220', 'L7812ACD2T D2PAK'])
 
+    def test_a_set_of_diodes_is_listed_by_article_not_by_limit_ratings(self):
+        """BAV70(A4) и BAV70W(A4) лежат в одной ячейке и различаются одной
+        буквой в артикуле — а на этикетке стояло «100В, 0.215A» против
+        «70В, 0.2A», то есть предельные величины, которыми у стола не
+        различают ничего. Имя такого прибора — это артикул: владелец
+        дописывает в него даже маркировку корпуса, «(A4)».
+        """
+        another_cell = self.cabinet.cells.all()[1]
+        for number, package, volt, amp in (
+            ('BAV70(A4)', 'SOT-23-3', 100, 0.215),
+            ('BAV70W(A4)', 'SOT-323', 70, 0.2),
+        ):
+            another_cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Диод {number}', component_type='Диод',
+                package=package, voltage=volt, voltage_unit='В',
+                current=amp, current_unit='A',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{another_cell.pk}/label/')
+
+        self.assertEqual(response.context['title'], 'Набор диодов')
+        self.assertEqual(response.context['items'],
+                         ['BAV70(A4) SOT-23-3', 'BAV70W(A4) SOT-323'])
+
+    def test_a_set_of_resistors_is_still_listed_by_its_nominals(self):
+        """Обратная сторона того же правила: сопротивление и ёмкость деталь
+        как раз называют — резистор спрашивают «десять килоом», и артикул
+        у него чаще складской. Подменить номиналы артикулами здесь значило
+        бы сделать этикетку нечитаемой ровно там, где она работала."""
+        another_cell = self.cabinet.cells.all()[2]
+        for number, value in (('RR-1', 10), ('RR-2', 4.7)):
+            another_cell.parts.add(SparePart.objects.create(
+                part_number=number, name=f'Резистор {value}к',
+                component_type='Резистор', package='0805',
+                resistance=value, resistance_unit='кОм',
+            ))
+
+        response = self.client_http.get(f'/storage-cells/{another_cell.pk}/label/')
+
+        self.assertEqual(response.context['items'], ['10кОм', '4.7кОм'])
+
     def test_a_common_package_stays_out_of_the_list(self):
         """Обратная сторона того же правила: корпус у всех один — он общий,
         печатается раз в служебной строке и в список не лезет, иначе
@@ -21927,7 +21968,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.124.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.125.0).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает

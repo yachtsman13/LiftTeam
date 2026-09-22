@@ -40,7 +40,7 @@ from .models import (
     Notification, Payment, Organization, BankOperation, Cabinet,
     InventorySession, InventorySessionLine, SettingChange,
     LastAdminError, Position, admin_access_exists, permissions_by_section,
-    add_months, warranty_cutoff, warranty_months, plural_genitive,
+    add_months, warranty_cutoff, warranty_months, plural_genitive, format_spec,
 )
 from .forms import (
     LoginForm, ClientForm, ClientContactFormSet, EquipmentModelForm, EquipmentTypeForm,
@@ -3385,6 +3385,28 @@ def _label_specs(part):
     return ' · '.join(value for value in (part.component_type, part.specs_display) if value)
 
 
+def _identifying_specs(part):
+    """Номиналы, по которым деталь и называют вслух.
+
+    Сопротивление и ёмкость — это и есть сама деталь: резистор спрашивают
+    «десять килоом», конденсатор — «сорок семь микрофарад», и артикул
+    у них чаще складской, а не заводской. У диода, транзистора и
+    стабилизатора наоборот: имя — это артикул (владелец дописывает в него
+    даже маркировку корпуса, «BAV70(A4)»), а напряжение и ток в карточке —
+    предельные, и соседние приборы одной серии ими не различаются.
+    Поэтому набор, различающийся только ими, на этикетке перечисляется
+    артикулами — см. `_grouped_specs`.
+    """
+    return {
+        f'{format_spec(value)}{unit}'
+        for value, unit in (
+            (part.resistance, part.resistance_unit),
+            (part.capacitance, part.capacitance_unit),
+        )
+        if value is not None
+    }
+
+
 def _grouped_specs(parts):
     """Что у набора общее и чем детали в нём различаются.
 
@@ -3395,14 +3417,26 @@ def _grouped_specs(parts):
     """
     values = [[value for value in part.specs_display.split(', ') if value] for part in parts]
     common = [value for value in values[0] if all(value in row for row in values[1:])]
+    differing = [[value for value in row if value not in common] for row in values]
     distinct = [
-        ', '.join(value for value in row if value not in common) or part.part_number
-        for part, row in zip(parts, values)
+        ', '.join(row) or part.part_number
+        for part, row in zip(parts, differing)
     ]
-    # Если после вычитания общего номиналы совпадают, различить детали по ним
-    # нельзя: так вышло с россыпью резисторов, где заполнена только мощность
-    # («2Вт, 2Вт, 2Вт»), а номинал живёт в артикуле. Тогда перечисляем артикулы
-    if len(set(distinct)) < len(distinct):
+
+    # Артикул вместо номиналов — в двух случаях, и оба означают одно:
+    # номинал здесь деталь не называет. Первый — номиналы после вычитания
+    # общего совпали (россыпь резисторов, где заполнена только мощность:
+    # «2Вт, 2Вт, 2Вт»). Второй — различает их не сопротивление и не ёмкость,
+    # а предельные напряжение с током (`_identifying_specs`): так вышло
+    # с диодами BAV70(A4) и BAV70W(A4), где на этикетке стояло «100В,
+    # 0.215A» против «70В, 0.2A», а сами артикулы — то единственное, чем
+    # эти два прибора и различают у стола, — не печатались вовсе.
+    identifies = any(
+        value in _identifying_specs(part)
+        for part, row in zip(parts, differing)
+        for value in row
+    )
+    if not identifies or len(set(distinct)) < len(distinct):
         distinct = [part.part_number for part in parts]
 
     # Корпус — такая же характеристика набора, как номинал, и делится так же:
