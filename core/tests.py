@@ -21968,7 +21968,7 @@ class NotificationsByPermissionTests(TestCase):
 
 
 class ClickableListRowsTests(TestCase):
-    """Строка списка ведёт на карточку — этап 5 (v2.125.0).
+    """Строка списка ведёт на карточку — этап 5 (v2.125.1).
 
     Не сплошной перебор всех списков программы: проверены те страницы,
     где строка получила `data-href` в этом выпуске. Клик обрабатывает
@@ -22064,3 +22064,81 @@ class ClickableListRowsTests(TestCase):
         )
 
         self._assert_clickable('/reports/purchase-plan/', f'/parts/{part.pk}/')
+
+
+class StaticManifestDoesNotCloseTheProgramTests(SimpleTestCase):
+    """Несобранный файл статики не должен закрывать программу целиком.
+
+    Готовое `ManifestStaticFilesStorage` при отсутствии имени
+    в `staticfiles.json` бросает исключение из шаблона — то есть «500»
+    на каждой странице, где есть `{% static %}`. В `base.html` таких
+    ссылок два десятка, а на странице входа — ровно одна (логотип),
+    поэтому промах сборки выглядит как «вход открывается, дальше ничего».
+    """
+
+    @property
+    def production_settings(self):
+        return (settings.BASE_DIR / 'lifteam/settings_pi.py').read_text(encoding='utf-8')
+
+    def test_an_unknown_file_gives_its_own_name_instead_of_an_exception(self):
+        """Ни манифеста, ни собранного файла — и всё равно не исключение:
+        страница должна открыться без этого скрипта, а не вместо неё «500».
+        """
+        from lifteam import storage as storage_module
+
+        store = storage_module.ForgivingManifestStaticFilesStorage()
+        storage_module._reported.discard('js/never-collected.js')
+
+        with self.assertLogs('lifteam.storage', level='WARNING') as logged:
+            self.assertEqual(store.stored_name('js/never-collected.js'),
+                             'js/never-collected.js')
+
+        self.assertIn('collectstatic', logged.output[0])
+
+    def test_the_same_missing_file_is_reported_once_not_on_every_page(self):
+        """Несобранный файл из `base.html` иначе писал бы строку в журнал
+        на каждый показ каждой страницы."""
+        from lifteam import storage as storage_module
+
+        store = storage_module.ForgivingManifestStaticFilesStorage()
+        storage_module._reported.discard('js/said-once.js')
+
+        with self.assertLogs('lifteam.storage', level='WARNING') as logged:
+            store.stored_name('js/said-once.js')
+            store.stored_name('js/said-once.js')
+
+        self.assertEqual(len(logged.output), 1)
+
+    def test_a_collected_file_still_gets_its_hashed_name(self):
+        """Прощающее хранилище остаётся хранилищем с манифестом: имя
+        с хэшем — это то, ради чего оно и стоит (браузер не держит в кэше
+        вчерашний скрипт)."""
+        from lifteam.storage import ForgivingManifestStaticFilesStorage
+
+        store = ForgivingManifestStaticFilesStorage()
+        store.hashed_files = {'js/autogrow.js': 'js/autogrow.0123456789ab.js'}
+
+        self.assertEqual(store.stored_name('js/autogrow.js'),
+                         'js/autogrow.0123456789ab.js')
+
+    def test_the_ready_made_strict_storage_is_not_used_on_the_pi(self):
+        self.assertIn('lifteam.storage.ForgivingManifestStaticFilesStorage',
+                      self.production_settings)
+        self.assertNotIn(
+            "'BACKEND': 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'",
+            self.production_settings,
+        )
+
+    def test_every_static_file_asked_for_by_a_template_exists(self):
+        """Промах в имени файла виден только на рабочей установке:
+        в разработке статику отдаёт сам Django, и опечатка превращается
+        в тихий 404, а под манифестом — в отказ страницы.
+        """
+        static_dir = settings.BASE_DIR / 'core/static'
+        missing = []
+        for template in (settings.BASE_DIR / 'core/templates').rglob('*.html'):
+            text = template.read_text(encoding='utf-8')
+            for name in re.findall(r"{%\s*static\s+'([^']+)'", text):
+                if not (static_dir / name).exists():
+                    missing.append(f'{template.name}: {name}')
+        self.assertEqual(missing, [])

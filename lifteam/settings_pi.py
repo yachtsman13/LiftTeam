@@ -45,9 +45,14 @@ if not CSRF_TRUSTED_ORIGINS:
 # --- Статика ----------------------------------------------------------------
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+# Манифест с хэшами в именах — чтобы браузер не держал в кэше вчерашний
+# скрипт. Хранилище своё, а не готовое: у готового отсутствие имени
+# в манифесте означает исключение в шаблоне, то есть «500» на каждой
+# странице с `{% static %}` — на всех, кроме входа. Почему так нельзя,
+# подробно написано в `lifteam/storage.py`.
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'},
+    'staticfiles': {'BACKEND': 'lifteam.storage.ForgivingManifestStaticFilesStorage'},
 }
 
 # --- Безопасность -----------------------------------------------------------
