@@ -230,6 +230,8 @@ python manage.py test core
 - [TZ.md](TZ.md) — техническое задание
 - [CHANGELOG.md](CHANGELOG.md) — история версий
 - [PROMPT.md](PROMPT.md) — правила работы над проектом
+- [DoorDriveStand](https://github.com/yachtsman13/DoorDriveStand) — отдельный
+  проект стенда проверки приводов дверей
 
 ## Безопасность
 
