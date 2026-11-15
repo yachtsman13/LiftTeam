@@ -1,0 +1,44 @@
+name: Проверка кода и тесты
+
+on:
+  push:
+    paths:
+      - ".github/workflows/check.yml"
+      - "core/**"
+      - "lifteam/**"
+      - "manage.py"
+      - "requirements.txt"
+      - "requirements-pi.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить репозиторий
+        uses: actions/checkout@v4
+
+      - name: Установить Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Проверить конфигурацию и синхронность миграций
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+
+      - name: Запустить тесты core
+        run: python manage.py test core
